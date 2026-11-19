@@ -135,18 +135,56 @@ export function cacheTranscript(
   if (!sessionId) return
   const store = resolveStorage(storage)
   if (!store) return
-  // The paint IS this cache: serializeTranscript drops those rows, so writing
-  // while they are on screen replaces the history with the turns taken since.
-  if (messages.some(m => m?.fromCache)) return
-  const items = serializeTranscript(messages)
-  if (items.length === 0) return // never clobber a good cache with nothing
+  const live = serializeTranscript(messages)
+  if (live.length === 0) return // never clobber a good cache with nothing
+  const sessions = readSessions(store, userId)
+  // While the optimistic paint is on screen, serializeTranscript has dropped it,
+  // so the turns taken since are added to the stored history the paint came from,
+  // never written in its place. Writing nothing instead froze the cache for good
+  // whenever no replay ever came to clear the paint (#195).
+  let items = live
+  if (messages.some(m => m?.fromCache)) {
+    const liveIds = new Set(live.map(i => i.id))
+    const stored = sessions.find(s => s.id === sessionId)?.items ?? []
+    items = [...stored.filter(i => !liveIds.has(i.id)), ...live].slice(-MAX_ITEMS)
+  }
   // Re-appended at the end, so the session touched longest ago is evicted.
-  const all = [...readSessions(store, userId).filter(s => s.id !== sessionId), { id: sessionId, items }]
+  const all = [...sessions.filter(s => s.id !== sessionId), { id: sessionId, items }]
   try {
     store.setItem(transcriptCacheKey(userId), JSON.stringify(all.slice(-MAX_SESSIONS)))
   } catch {
     // Quota / serialization failure — give up quietly; the replay still hydrates.
   }
+}
+
+const turnText = (m: ChatMessage) =>
+  (typeof m.content === 'string' ? m.content : '').slice(0, MAX_CONTENT).trim()
+const isTurn = (m: ChatMessage) => m.role === 'user' || m.role === 'assistant'
+const timeOf = (m: ChatMessage) => (m.timestamp instanceof Date ? m.timestamp.getTime() : NaN)
+
+/**
+ * Put the authoritative replay in place of the optimistic paint (#153). The
+ * replay can lag the session by a turn or more, so a cached turn is kept, after
+ * the replay, when it is NEWER than the replay's newest turn and the replay does
+ * not hold it (same role, one text containing the other: a live bubble and the
+ * stored rows of one reply need not split the same way). Everything else the
+ * paint showed is dropped, as before. Live rows (not from the cache) follow.
+ * Pass `current` without its cache rows when the replay is for another session.
+ */
+export function reconcileReplay(replay: ChatMessage[], current: ChatMessage[]): ChatMessage[] {
+  const live = current.filter(m => !m.fromCache)
+  const turns = replay.filter(isTurn)
+  const newest = Math.max(0, ...turns.map(timeOf).filter(t => !Number.isNaN(t)))
+  const held = (m: ChatMessage) => {
+    const text = turnText(m)
+    return turns.some(r => r.role === m.role && (turnText(r).includes(text) || text.includes(turnText(r))))
+  }
+  const ahead = newest > 0
+    ? current
+      .filter(m => m.fromCache && isTurn(m) && timeOf(m) > newest && !held(m))
+      .map(m => ({ ...m, id: `prior-ahead-${m.id}`, fromCache: false }))
+    : []
+  return [...replay, ...ahead, ...live]
 }
 
 /** This account's cached transcript for a session, or [] when none/unreadable. */

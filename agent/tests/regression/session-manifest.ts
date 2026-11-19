@@ -62,7 +62,7 @@ const aKey = join(projDir, `${sA}.jsonl`)
 check('M1c', !!m1.entries?.[aKey] && m1.entries[aKey].lastMessage === 'A-LAST-MSG' && typeof m1.entries[aKey].mtimeMs === 'number' && typeof m1.entries[aKey].size === 'number',
   'manifest entry carries lastMessage + mtimeMs + size')
 // Older manifests are discarded on load; this pin is the single owner of the version.
-check('M1d', m1.v === 3, `manifest version is 3 (got ${m1.v})`)
+check('M1d', m1.v === 4, `manifest version is 4 (got ${m1.v})`)
 check('M1e', m1.entries?.[aKey]?.title === 'q1', `manifest entry carries the clean title (got ${JSON.stringify(m1.entries?.[aKey]?.title)})`)
 
 // ── M2: cold boot (in-memory cache wiped) → same results from the manifest ──

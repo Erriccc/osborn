@@ -778,9 +778,9 @@ function scanPreviewLines(text: string, skipFirstPartial: boolean): PreviewAcc {
  * gate and (b) the LAST user message. So: small files are read whole (exact);
  * large files read a bounded HEAD (gate + density sample + first turn/title) +
  * TAIL (last user message, last activity), turning a hundreds-of-MB parse into
- * ~192KB. messageCount becomes an estimate for large files — it's display-only,
- * and is derived from BOTH samples because a compacted transcript can have no
- * countable turn in the head at all.
+ * ~192KB. messageCount becomes a lower bound for large files (the turns in
+ * both samples) — it's display-only, and counts BOTH samples because a
+ * compacted transcript can have no countable turn in the head at all.
  */
 async function getSessionPreview(filePath: string, fileSize?: number): Promise<SessionPreview> {
   const HEAD = 64 * 1024
@@ -818,10 +818,12 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
       const head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
       const tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
       const lastMessage = tail.lastUser ?? head.lastUser
-      // Density from BOTH samples: a compacted transcript opens with a
-      // compact_boundary plus tool records, so head.count alone can be 0.
-      const sampled = head.count + tail.count
-      const messageCount = sampled > 0 ? Math.max(3, Math.round(size * sampled / (hn + tn))) : 3
+      // The turns seen in BOTH samples (a compacted transcript can have none in
+      // the head). Not extrapolated over the unread middle: that is mostly giant
+      // tool results, so scaling by size inflated a few hundred turns to tens of
+      // thousands, cached forever and deciding dedupe winners (#192). A lower
+      // bound, floored at 3 so a large session always clears the list gate.
+      const messageCount = Math.max(3, head.count + tail.count)
       return {
         lastMessage,
         title: tail.aiTitle ?? head.aiTitle ?? head.firstUser,
@@ -971,7 +973,8 @@ interface SessionManifestEntry {
 interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
 // Older manifests are discarded on load. v2: sanitized preview fields. v3: the
 // large-file messageCount estimate changed, and unchanged files are never re-read.
-const SESSION_MANIFEST_VERSION = 3
+// v4: the large-file count is the sampled lower bound, not an extrapolation (#192).
+const SESSION_MANIFEST_VERSION = 4
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')
 }

@@ -11,6 +11,7 @@ import {
   readCachedTranscript,
   clearSignOutLocalState,
   serializeTranscript,
+  reconcileReplay,
   type CacheStorage,
 } from '../src/lib/transcript-cache'
 import type { ChatMessage } from '../src/components/voice/shared'
@@ -105,7 +106,73 @@ t('never clobbers a good cache with an empty transcript', () => {
   // A cold boot the user spoke during: the optimistic paint is still on screen,
   // so the live turn must not replace the history the paint came from.
   cacheTranscript('u1', 'sess', [msg({ id: 'c1', content: 'real', fromCache: true }), msg({ id: 'l1', content: 'said during the boot' })], s)
-  eq(readCachedTranscript('u1', 'sess', s).map(m => m.content), ['real'], 'kept the real cache')
+  eq(readCachedTranscript('u1', 'sess', s).map(m => m.content), ['real', 'said during the boot'], 'kept the real cache, the live turn added after it')
+})
+
+t('#195: a paint no replay ever clears does not freeze the cache', () => {
+  const s = fakeStorage()
+  cacheTranscript('u1', 'sess', [msg({ id: 'h1', content: 'old history' })], s)
+  // Reload: the paint is on screen, hydration gave up on empty, the user keeps talking.
+  const paint = [msg({ id: 'prior-0-sess', content: 'old history', fromCache: true })]
+  cacheTranscript('u1', 'sess', [...paint, msg({ id: 'l1', content: 'turn one' })], s)
+  cacheTranscript('u1', 'sess', [...paint, msg({ id: 'l1', content: 'turn one' }), msg({ id: 'l2', role: 'assistant', content: 'reply one' })], s)
+  eq(readCachedTranscript('u1', 'sess', s).map(m => m.content), ['old history', 'turn one', 'reply one'], 'the cache advances, each live row once')
+  // The next reload paints all of it, and talking again still advances it.
+  const paint2 = readCachedTranscript('u1', 'sess', s).map((c, i) => msg({ id: `prior-${i}-sess`, role: c.role, content: c.content, fromCache: true }))
+  cacheTranscript('u1', 'sess', [...paint2, msg({ id: 'l3', content: 'turn two' })], s)
+  eq(readCachedTranscript('u1', 'sess', s).map(m => m.content), ['old history', 'turn one', 'reply one', 'turn two'], 'still advancing after a second reload')
+})
+
+t('#195: a paint of another session is never copied into this one', () => {
+  const s = fakeStorage()
+  cacheTranscript('u1', 'B', [msg({ id: 'b1', content: 'B history' })], s)
+  cacheTranscript('u1', 'B', [msg({ id: 'prior-0-A', content: 'A history', fromCache: true }), msg({ id: 'l1', content: 'said in B' })], s)
+  eq(readCachedTranscript('u1', 'B', s).map(m => m.content), ['B history', 'said in B'], 'B holds only B')
+})
+
+const at = (iso: string) => new Date(iso)
+t('#153: a lagging replay keeps the newer cached exchange after it', () => {
+  const replay = [
+    msg({ id: 'prior-0-s', content: 'earlier question', timestamp: at('2026-11-11T23:20:00Z') }),
+    msg({ id: 'prior-1-s', role: 'assistant', content: 'earlier answer', timestamp: at('2026-11-11T23:20:05Z') }),
+    msg({ id: 'prior-sep-s', role: 'system', content: '── Today ──', timestamp: at('2026-11-11T23:31:00Z') }),
+  ]
+  const current = [
+    msg({ id: 'prior-0-s', content: 'earlier question', timestamp: at('2026-11-11T23:20:00Z'), fromCache: true }),
+    msg({ id: 'prior-1-s', role: 'assistant', content: 'earlier answer', timestamp: at('2026-11-11T23:20:05Z'), fromCache: true }),
+    msg({ id: 'prior-2-s', content: 'NEWEST question', timestamp: at('2026-11-11T23:30:00Z'), fromCache: true }),
+    msg({ id: 'prior-3-s', role: 'assistant', content: 'NEWEST answer', timestamp: at('2026-11-11T23:30:10Z'), fromCache: true }),
+    msg({ id: 'live-1', content: 'said after reload', timestamp: at('2026-11-11T23:31:30Z') }),
+  ]
+  const out = reconcileReplay(replay, current)
+  eq(out.map(m => m.content), ['earlier question', 'earlier answer', '── Today ──', 'NEWEST question', 'NEWEST answer', 'said after reload'], 'order')
+  ok(out.every(m => !m.fromCache), 'kept rows are ordinary history, so caching resumes')
+  eq(new Set(out.map(m => m.id)).size, out.length, 'no id collides with the replay')
+  ok(out.slice(3, 5).every(m => m.id.startsWith('prior-')), 'kept rows read as replayed history (a later push dedupes, a switch clears them)')
+})
+
+t('#153: a replay that caught up drops the cache copies, even split differently', () => {
+  const replay = [
+    msg({ id: 'prior-0-s', content: 'NEWEST question', timestamp: at('2026-11-11T23:30:00Z') }),
+    msg({ id: 'prior-1-s', role: 'assistant', content: 'Part one.', timestamp: at('2026-11-11T23:30:04Z') }),
+    msg({ id: 'prior-2-s', role: 'assistant', content: 'Part two.', timestamp: at('2026-11-11T23:30:08Z') }),
+  ]
+  const current = [
+    msg({ id: 'prior-0-s', content: 'NEWEST question', timestamp: at('2026-11-11T23:30:00Z'), fromCache: true }),
+    // the live bubble, cached with a client clock a little after the stored row
+    msg({ id: 'prior-1-s', role: 'assistant', content: 'Part one. Part two.', timestamp: at('2026-11-11T23:30:09Z'), fromCache: true }),
+  ]
+  eq(reconcileReplay(replay, current).map(m => m.content), ['NEWEST question', 'Part one.', 'Part two.'], 'no duplicate')
+})
+
+t('#153: older cache rows the replay window no longer holds are not resurrected', () => {
+  const replay = [msg({ id: 'prior-0-s', content: 'q50', timestamp: at('2026-11-11T23:30:00Z') })]
+  const current = [
+    msg({ id: 'prior-0-s', content: 'q1', timestamp: at('2026-11-10T10:00:00Z'), fromCache: true }),
+    msg({ id: 'prior-1-s', content: 'no time', timestamp: new Date(0), fromCache: true }),
+  ]
+  eq(reconcileReplay(replay, current).map(m => m.content), ['q50'], 'only the replay')
+  eq(reconcileReplay([], current).map(m => m.content), [], 'an undated replay keeps nothing from the cache')
 })
 
 t('content and tail are bounded by what the replay can return', () => {

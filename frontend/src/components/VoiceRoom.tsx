@@ -23,7 +23,7 @@ import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
-import { cacheTranscript, readCachedTranscript } from '@/lib/transcript-cache'
+import { cacheTranscript, readCachedTranscript, reconcileReplay } from '@/lib/transcript-cache'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -887,10 +887,10 @@ function VoiceRoomInner({
           console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length} (+${Array.isArray(d.compactions) ? d.compactions.length : 0} compaction markers)`)
           const priorItems = buildPriorItems(preSelectedSessionId, d.messages, Array.isArray(d.compactions) ? d.compactions : undefined, d.steward)
           // Reconcile: if an authoritative replay already painted, leave it;
-          // otherwise drop the optimistic cache rows and show the live history.
+          // otherwise replace the optimistic cache rows the replay holds.
           setMessages(prev => (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)
             ? prev
-            : [...priorItems, ...prev.filter(m => !m.fromCache)]))
+            : reconcileReplay(priorItems, prev)))
           return // painted — stop retrying
         } catch { /* cold machine / network — retry */ }
       }
@@ -2915,8 +2915,10 @@ function VoiceRoomInner({
           setMessages(prev => {
             // Don't double-inject: skip if an authoritative replay already painted.
             if (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)) return prev
-            // Drop the optimistic cache rows (#136) and show the live history.
-            return [...priorItems, ...prev.filter(m => !m.fromCache)]
+            // Replace the optimistic cache rows (#136) the replay holds; they were
+            // painted for the session asked for, so none survive a different one.
+            const sameSession = !data.sessionId || data.sessionId === preSelectedSessionId
+            return reconcileReplay(priorItems, sameSession ? prev : prev.filter(m => !m.fromCache))
           })
         }
       } else if (data.type === 'checkpoint_captured' || data.type === 'tts_chunks') {

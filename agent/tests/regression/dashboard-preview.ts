@@ -12,6 +12,8 @@
  *   D6  clear the gate for a COMPACTED large session (no countable turn in the head)
  *   D7  a large transcript with no countable turn in EITHER sample surfaces
  *       rather than vanishing — deliberate: losing a real conversation is worse
+ *   D8  a large file whose turns sit in the sampled windows around a huge
+ *       tool-result middle never reports more turns than it holds (#192)
  */
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
@@ -71,6 +73,17 @@ const toolOnly = uuid(6)
 writeFileSync(join(dir, `${toolOnly}.jsonl`),
   [JSON.stringify({ type: 'summary', cwd: PROJECT }), toolLine(250 * 1024), toolLine(10 * 1024)].join('\n') + '\n')
 
+// D8 — 40 short turns in the head and 40 in the tail around a ~2MB tool-result
+// middle: the old size extrapolation reported ~800 here; the real count is 80.
+const sparse = uuid(7)
+const turns = (tag: string) => Array.from({ length: 20 }, (_, i) => [userLine(`${tag} q${i}`), asstLine(`${tag} a${i}`)]).flat()
+writeFileSync(join(dir, `${sparse}.jsonl`), [
+  JSON.stringify({ type: 'summary', cwd: PROJECT }),
+  ...turns('head'),
+  ...Array.from({ length: 8 }, () => toolLine(250 * 1024)),
+  ...turns('tail'),
+].join('\n') + '\n')
+
 const t0 = Date.now()
 const sessions = await listSessions(PROJECT)
 const ms = Date.now() - t0
@@ -90,6 +103,9 @@ const cp = byId.get(compacted)
 check('D6b', !!cp && cp.messageCount > 2, `compacted session clears >2 gate (got ${cp?.messageCount})`)
 check('D6c', !!cp && cp.lastMessage === 'COMPACTED-TAIL-USER-MSG', `compacted last user message via TAIL (got ${JSON.stringify(cp?.lastMessage)})`)
 check('D7', byId.has(toolOnly), 'tool-only large transcript surfaces rather than vanishing (accepted trade-off)')
+
+const sp = byId.get(sparse)
+check('D8', !!sp && sp.messageCount > 2 && sp.messageCount <= 80, `sparse-window large session is never inflated past its 80 turns (got ${sp?.messageCount})`)
 
 rmSync(PROJECT, { recursive: true, force: true })
 void HOME

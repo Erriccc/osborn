@@ -1309,6 +1309,7 @@ export class ClaudeLLM extends llm.LLM {
   // the FULL source set — main JSONL + every sub-agent JSONL — exactly like the flat
   // index. Incremental (byte-offset resume) + fire-and-forget, so it never blocks a turn.
   #storeUpdating: boolean = false
+  #storeUpdateAgain: { sessionId: string; workingDir: string } | null = null
 
   // Turbo mode — when true, every spawned agent (main + sub-agents) runs on
   // FAST_MODEL regardless of individual model config. Default off = no-op.
@@ -1428,8 +1429,10 @@ export class ClaudeLLM extends llm.LLM {
    * write can't overlap the next turn's write. Never throws; never blocks the caller.
    */
   triggerStoreUpdate(sessionId: string, workingDir: string): void {
-    if (this.#storeUpdating || !sessionId || sessionId === 'pending' || !workingDir) return
+    if (!sessionId || sessionId === 'pending' || !workingDir) return
     if (process.env.OSBORN_STORE === '0') return
+    // A request during a sweep runs once after it, so the turn-end sweep is never lost.
+    if (this.#storeUpdating) { this.#storeUpdateAgain = { sessionId, workingDir }; return }
     this.#storeUpdating = true
     ;(async () => {
       try {
@@ -1440,6 +1443,9 @@ export class ClaudeLLM extends llm.LLM {
         console.error('🗄️  [store] update failed:', err?.message)
       } finally {
         this.#storeUpdating = false
+        const again = this.#storeUpdateAgain
+        this.#storeUpdateAgain = null
+        if (again) this.triggerStoreUpdate(again.sessionId, again.workingDir)
       }
     })()
   }
@@ -2365,6 +2371,10 @@ export class ClaudeLLM extends llm.LLM {
           // errored, or its turn aborted) — drop it so it can't poison the next
           // agent_id pairing of the same type.
           this.#pendingToolUseByType.clear()
+          // Ingest the finished reply now: the submit-time sweep ran before it was
+          // written, so /session-messages would lack it until the next turn (#153).
+          const sid = (msg as any).session_id || this.#sessionId
+          if (sid && this.#opts.workingDirectory) this.triggerStoreUpdate(sid, this.#opts.workingDirectory)
           console.log('✅ Claude turn complete (persistent session stays alive)')
         }
       }
