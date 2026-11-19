@@ -80,3 +80,40 @@ Final reply: status per goal item, findings with severity, STUCK moments.
   takeovers instead of polling.
 - Turn FINDING entries into issues with the ledger lines and clip links as
   evidence; fix them on the PR under test or a follow-up.
+
+## Dual view — the tester sees the page, you see the backend
+
+The tester (the engine or a spec) is app-agnostic: its only senses are the
+frontend ones — screenshot, screen text, audio capture and the DevTools buffer
+(`lib/devtools.ts`: console, page errors, failed requests, websocket events).
+It never assumes backend access, which is what makes it portable to any site.
+
+The orchestrating agent additionally has our backend: Fly machine logs,
+`/health`, Railway. When testing osborn, watch the backend log in parallel with
+the frontend run and correlate the two. Pair each browser observation with
+machine ground truth:
+
+```bash
+curl -s -H "Authorization: Bearer $FLY_API_TOKEN" -X POST \
+  "https://api.machines.dev/v1/apps/<app>/machines/<id>/exec" \
+  -d '{"command":["sh","-c","grep -E \"FINAL transcript|TTS say\" /workspace/osborn.log | tail"]}'
+```
+`FINAL transcript` is what the agent heard; `TTS say` is what it spoke. When a UI
+assertion fails, check here first — twice the backend was right and the DOM
+assertion was the liar.
+
+## Supervisor loop for Playwright specs (`lib/flightlog.ts`)
+
+A one-shot spec reports through files instead of a ledger. Before starting it,
+watch its flight log:
+
+```bash
+tail -f results/live/flight.jsonl   # milestones: in-room, tester-says, agent-heard, assistance-requested, complete
+```
+
+When it is stuck beyond self-recovery it writes `results/live/assist-request.json`
+(problem, URL, screen text, DevTools view) and waits up to 3 minutes. Investigate
+(backend logs, `/health`, site knowledge) and write `results/live/assist-response.json`:
+- `{"instruction": "click the ... button"}` — fed to the brain;
+- `{"command": "reload"}` — agent re-seat and a fresh entry;
+- no response — the spec runs its own end-game and fails with evidence.

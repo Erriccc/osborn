@@ -54,7 +54,7 @@ jobs:
       - name: Served skill + harness bundle are in sync with tests/voice-e2e
         run: |
           node scripts/build-harness-bundle.mjs
-          git diff --exit-code -- public/browser-screen-recorder-skill.md public/browser-screen-recorder-bundle.json public/voice-e2e-bundle.json \
+          git diff --exit-code -- public/browser-screen-recorder-skill.md public/browser-screen-recorder-bundle.json public/voice-e2e-bundle.json ../.claude/skills/browser-screen-recorder/SKILL.md \
             || { echo "::error::frontend/public skill/bundle is stale. Run 'node frontend/scripts/build-harness-bundle.mjs' and commit the result."; exit 1; }
 
       # Neither of these is a devDependency: Railway's build is `cd frontend &&

@@ -39,8 +39,9 @@ async function signedInUser() {
 }
 
 // The engine's driver identity for a person using the panel. Set here on the
-// server so a browser cannot claim to be another driver (or an agent).
-const personDriver = (u: { email?: string | null; id: string }) => `person:${u.email ?? u.id}`
+// server so a browser cannot claim to be another driver (or an agent). Lowercased, as
+// the engine canonicalises a person's id, so the panel's "you" matches the engine's owner.
+const personDriver = (u: { email?: string | null; id: string }) => `person:${(u.email ?? u.id).trim().toLowerCase()}`
 
 function engineHeaders(extra?: Record<string, string>): Record<string, string> {
   const tok = engineToken()

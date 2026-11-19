@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { eventOwners, eventVisibleTo, ownerSeenBy, personMayTake, personOwns, seesTabOf, tabsFor } from './event-scope'
+import { canonicalDriverId, eventOwners, eventVisibleTo, ownerSeenBy, personMayTake, personOwns, seesTabOf, tabsFor } from './event-scope'
 
 // Tab 0 is the voice room (unowned); tab 1 person A's; tab 2 an agent's; tab 3 unowned; tab 4 person B's.
 const A = 'person:a@x.com', B = 'person:b@x.com', AGENT = 'agent-1'
@@ -59,4 +59,11 @@ assert.deepEqual(list(AGENT).map((t) => t.url), urls, 'agents keep URLs')
 assert.deepEqual(list(B).map((t) => t.owner), [null, 'person', AGENT, null, B], 'another person is just "person"; agent ids stay')
 assert.deepEqual(list(AGENT).map((t) => t.owner), owners, 'agents see every id')
 assert.equal(ownerSeenBy(null, B), null)
+// One spelling per driver (#243, #235): a person's id in any case or padding is one driver.
+assert.equal(canonicalDriverId(' person:A@X.com '), A, 'person id: trimmed, email lowercased')
+assert.equal(canonicalDriverId('Person:Bot'), 'Person:Bot', 'the person: prefix is case-sensitive: other spellings are agent ids, unchanged')
+assert.equal(canonicalDriverId(' Muse-Parity '), 'Muse-Parity', 'agent ids keep their case')
+assert.equal(canonicalDriverId(undefined), 'default', 'no header')
+assert.equal(canonicalDriverId('   '), 'default', 'blank header')
+assert.equal(canonicalDriverId('x'.repeat(500)).length, 200, 'bounded')
 console.log('event-scope: all assertions passed')

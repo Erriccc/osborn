@@ -21,6 +21,9 @@ const HARNESS_VERSION = Number(servedSkill?.match(/^Version: (\d+)$/m)?.[1] ?? 6
 if (servedSkill) {
   writeFileSync(join(__dirname, '..', 'public', 'browser-screen-recorder-skill.md'), servedSkill)
   console.log(`[harness-bundle] served skill v${HARNESS_VERSION} copied to public/browser-screen-recorder-skill.md`)
+  // The repo's own copy (what a Claude Code session in this repo loads) is the served skill too.
+  const repoSkillDir = join(__dirname, '..', '..', '.claude', 'skills', 'browser-screen-recorder')
+  if (existsSync(repoSkillDir)) writeFileSync(join(repoSkillDir, 'SKILL.md'), servedSkill)
 }
 const INCLUDE_DIRS = ['lib', 'specs', 'scenarios', 'scripts', 'references']
 const INCLUDE_ROOT = ['SKILL.served.md', 'package.json', 'playwright.config.ts', 'Dockerfile', 'fly.toml', '.gitignore', '.dockerignore']

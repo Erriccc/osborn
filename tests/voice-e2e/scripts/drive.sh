@@ -21,22 +21,48 @@
 #   the engine's IP with --resolve, only when DNS is unreliable), BSR_OUT (default /tmp/bsr).
 set -euo pipefail
 
-ENGINE="${BSR_ENGINE:-https://osborn-voice-e2e-n.fly.dev/control}"; ENGINE="${ENGINE%/}"
 TOKEN="${BSR_TOKEN:-$(cat ~/osborn-backups/voice-e2e-engine-token.txt 2>/dev/null || true)}"
-HOSTPORT="${ENGINE#*://}"; HOSTPORT="${HOSTPORT%%/*}"
-HOST="${HOSTPORT%%:*}"; PORT="${HOSTPORT##*:}"
-if [ "$PORT" = "$HOST" ]; then case "$ENGINE" in http://*) PORT=80 ;; *) PORT=443 ;; esac; fi
+# Parse the engine URL once with a real parser: scheme and host lowercased, query, fragment and
+# every trailing slash dropped, IPv6 brackets understood; no scheme means http://. A URL with
+# user:pass@ or a scheme other than http(s) is refused. PIN=1 only for a DNS name that is not loopback.
+PARSED=$(python3 - "${BSR_ENGINE:-https://osborn-voice-e2e-n.fly.dev/control}" <<'PY'
+import ipaddress, sys, urllib.parse
+raw = sys.argv[1].strip()
+u = urllib.parse.urlsplit(raw if '://' in raw else 'http://' + raw)
+scheme = u.scheme.lower()
+if scheme not in ('http', 'https') or not u.hostname:
+    sys.exit(f'drive.sh: BSR_ENGINE must be an http(s) URL with a host, got {raw!r}')
+if u.username is not None or u.password is not None:
+    sys.exit('drive.sh: BSR_ENGINE must not carry user:password@ - the token goes in BSR_TOKEN')
+try:
+    port = u.port
+except ValueError:
+    sys.exit(f'drive.sh: BSR_ENGINE has a bad port: {raw!r}')
+host = u.hostname
+try:
+    ipaddress.ip_address(host)
+    named = False
+except ValueError:
+    named = host != 'localhost' and not host.endswith('.localhost')
+shown = f'[{host}]' if ':' in host else host
+base = f"{scheme}://{shown}{f':{port}' if port else ''}{u.path.rstrip('/')}"
+print(base, host, port or (80 if scheme == 'http' else 443), 1 if named else 0)
+PY
+) || exit 1
+read -r ENGINE HOST PORT PIN <<<"$PARSED"
 IP="${BSR_IP:-}"
 OUT="${BSR_OUT:-/tmp/bsr}"; mkdir -p "$OUT"
 CMD="${1:-}"; ARG="${2:-}"
 
-# Pin the engine IP only when asked (BSR_IP); otherwise use normal DNS.
+# Pin the engine IP only when asked (BSR_IP), and only for a DNS name; an IP or loopback host is used as is.
 RESOLVE=()
-[[ -n "$IP" && "$HOST" != "127.0.0.1" && "$HOST" != "localhost" ]] && RESOLVE=(--resolve "$HOST:$PORT:$IP")
+if [ -n "$IP" ]; then
+  if [ "$PIN" = 1 ]; then RESOLVE=(--resolve "$HOST:$PORT:$IP"); else echo "drive.sh: BSR_IP ignored - $HOST is an IP or loopback address, not a DNS name" >&2; fi
+fi
 DRIVER="${BSR_DRIVER:-$(whoami 2>/dev/null || echo default)}"
 # nounset-safe empty-array expansion (bash 3.2 on macOS errors on "${RESOLVE[@]}" when empty)
 PROFILE="${BSR_PROFILE:-}"  # your own browser profile: sign in once, kept across restarts
-cc() { curl -s ${RESOLVE[@]+"${RESOLVE[@]}"} -H "x-engine-token: $TOKEN" -H "x-driver-id: $DRIVER" ${PROFILE:+-H "x-profile: $PROFILE"} "$@"; }
+cc() { curl -s -g ${RESOLVE[@]+"${RESOLVE[@]}"} -H "x-engine-token: $TOKEN" -H "x-driver-id: $DRIVER" ${PROFILE:+-H "x-profile: $PROFILE"} "$@"; }
 
 case "$CMD" in
   act|say)
@@ -55,8 +81,9 @@ case "$CMD" in
       n=$(printf '%s' "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('window',{}).get('n',''))" 2>/dev/null || true)
       [ -n "$n" ] && break
       { [ "$CMD" = "say" ] && [ "$tryn" -lt "$attempts" ]; } || break
-      # Structured engine error (ok:false + code) → settled app failure, don't re-attach.
-      struct=$(printf '%s' "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('1' if d.get('ok') is False and d.get('code') else '')" 2>/dev/null || true)
+      # Structured engine error (ok:false + code) → settled app failure, don't re-attach,
+      # except engine_restarting: the engine answered on its way down, so wait and re-attach.
+      struct=$(printf '%s' "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print('1' if d.get('ok') is False and d.get('code') and d.get('code') != 'engine_restarting' else '')" 2>/dev/null || true)
       [ -n "$struct" ] && break
       echo "  ⟳ Say returned no task (transient — likely an engine restart at Say, #120); waiting for the engine to wake, then re-attaching to the recovered journey…" >&2
       for _w in 1 2 3 4 5 6 7 8 9 10 11 12; do

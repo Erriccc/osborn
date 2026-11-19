@@ -2,6 +2,19 @@
 export const isPersonDriver = (driver: string) => driver.startsWith('person:')
 
 /**
+ * One spelling per driver, used for every ownership, working and profile check:
+ * trimmed, and a person's email lowercased, so `person:A@x.com` and
+ * `person:a@x.com` are the same driver. The `person:` prefix itself is matched
+ * as written (as isPersonDriver does), so agent ids are never changed. No id is
+ * the default driver.
+ */
+export const canonicalDriverId = (raw: unknown): string => {
+  const d = String(raw ?? '').trim().slice(0, 200)
+  if (!d) return 'default'
+  return isPersonDriver(d) ? d.toLowerCase() : d
+}
+
+/**
  * THE RULE for people: the only tab a person may see or act on is one they own.
  * Unowned tabs (tab 0, the voice room, included) are invisible and untouchable
  * to them. Every person check in the engine goes through this.

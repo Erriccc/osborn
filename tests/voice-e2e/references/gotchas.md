@@ -81,3 +81,6 @@ harness itself or trusting any surprising result.
 - Stagehand attach needs the ws URL from `http://127.0.0.1:<port>/json/version`,
   not the bare port; set `GOOGLE_GENERATIVE_AI_API_KEY` for its model client.
 - Room hygiene: every run leaves the room via the UI outro + `POST /leave-room`.
+- A manual `chromium.launch` bypasses config-level video recording — pass
+  `recordVideo` on the context, and `video.saveAs` after `context.close()` but
+  before `browser.close()`.

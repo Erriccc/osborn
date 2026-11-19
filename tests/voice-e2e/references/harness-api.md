@@ -75,7 +75,7 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   re-issues them for any stored run. `OSBORN_SHARE_SECRET` overrides the signing secret (default: derived
   from the engine token). `OSBORN_KEEP_RUNS` default is now 30.
 
-## Error codes and tab defaults (v46–v55)
+## Error codes and tab defaults (v46–v56)
 
 Every failure reply is `{ok:false, code, error, ...}`.
 
@@ -90,10 +90,12 @@ Every failure reply is `{ok:false, code, error, ...}`.
 | 409 | `tab_owned` | the tab belongs to another driver (`/act`, `/say`, `/eval`, `/shot`, `/recover`, `/tab navigate\|release`) |
 | 409 | `not_your_tab` | `/input`, `/stream?tab=i` or `/tab cast` on a tab you neither opened nor took over; `/tab uncast` of someone else's cast |
 | 409 | `paused_by_supervisor` | your tab is taken over; retry after `retryAfterSec` |
+| 409 | `journey_owned` | `/journey end` of another driver's journey while that driver sent a command in the last 10 minutes |
 | 413 | `too_large` | an `/act` instruction over 4,000 characters |
 | 500 | `no_screenshot` | `/shot` could not capture your tab; still recorded as `task` |
 | 502 | `nav_failed` | the page did not load; `netError` is the browser's `net::…` code, and `reusedTab` names the tab when `/tab open` reused one |
 | 502 / 503 | `brain_error` / `brain_unavailable` | the brain's provider failed, or the brain is down |
+| 503 | `engine_restarting` | the engine was stopped (a deploy or restart) while your request ran; `retryable:true`, retry after `retryAfterSec` — an active journey is carried across the restart |
 | 503 | `engine_token_missing` | a public engine has no `OSBORN_ENGINE_TOKEN`; only `/health` and signed `/media` links answer |
 | 200 | `noop` (`ok:false`) | `/act` found nothing on the page to do; `drive.sh act` exits 5 |
 
@@ -101,6 +103,9 @@ Every failure reply is `{ok:false, code, error, ...}`.
 - `/tab navigate` and `/tab close` with no `i` act on a tab you OWN (the one you last used, else the newest you own), never tab 0 (the voice room), an unowned tab or a tab another driver fronted. After a close, `/tab list` and the close reply report the same `activeTab`.
 - `/shot` returns `ok:true`, `task` and `evidence`; the base64 image only with `"inline":true` (or `?inline=1`). A screenshot that times out uses the tab's own recorded frame or fails: never another tab's frame.
 - Signed `/media` links answer `GET` and `HEAD`.
+- `/tab navigate` makes the navigated tab your current tab (your next `/act` runs there, and it counts as the tab you are working in). `x-driver-id` is trimmed, and a `person:` id lowercased: one driver whatever the spelling.
+- `/journey end` cleans up the journey owner's tabs; a tab the owner had taken over is handed back, not closed. `/end` decides who else is using the engine at once, outside the action lock (the close-my-tabs reply re-checks who is still here under it); a tab of yours someone has taken over is released to nobody when they hand it back after your `/end`.
+- A saved profile (`x-profile` or a person's) that cannot be read is moved aside (`.bad`) and opens fresh, like the shared one.
 - **Person scoping — the rule.** For a caller whose `x-driver-id` is `person:<email>` (the /browser panel), the only tab they can see or act on is one they own (`personOwns` in `lib/event-scope.ts`, the one check every person rule goes through). Unowned tabs, tab 0 included, are invisible and untouchable to them. Reads: `/status` and `/tab` replies list other tabs with `url:""` and no `marks`, and report their own tab (`activeTab:null`, `pageState:"none"` with none); `/tasks`, `/clip`/`/artifact` (`403 not_your_task`), `/logs`, `/audio`, `/hear` and `/stream` cover only their tabs; `/events` sends only events with no tab context or whose every tab owner is them. Any other driver id, including no header (`default`), keeps the full view.
 - **Person extras.** `takeover`/`claim`/`switch` of tab 0 is `409 room_tab` for a person even after an agent claimed it. After a takeover, a person's `/logs`, `/audio` and `/hear` start at the takeover. A person's `/act`/`/say` clips use only their tab's own recording. `/status` gives a person `journey`/`mission` only for their own journey and `taskCount` of their visible tasks. A person's `/end {"shutdown":true}` is `409 engine_in_use` (with `otherCount`) while other drivers hold tabs. `GET /stream` for agents and the default driver: any tab (`?tab=i`) or, without it, their current tab, tab 0 included.
 - **Person actions.** `claim`, `switch`, `navigate`/`close`/`release` with an explicit `i`, and `cast` refuse (`409 not_your_tab`) any tab the person does not own; `takeover` is allowed only on an agent's tab, and their `release` of a taken-over tab hands it back to its previous owner; `release` of their own-profile tab closes it. `guardOwnership` (`/act`, `/say`, `/shot`, `/eval`, `/recover`) answers `409 no_own_tab` instead of falling back to tab 0. Other people show as `"person"` in every owner field; `/end` gives a person `otherCount` instead of `others`. The `tab` event carries `by` and only the caller's own tab.
