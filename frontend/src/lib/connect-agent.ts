@@ -20,13 +20,18 @@ export async function connectUserAgent(
   sandboxId: string | undefined,
   getSyncToken: () => Promise<string | undefined>,
   roomName?: string,
+  /** Called once when the agent is not already up (machine asleep or service unhealthy). */
+  onWaking?: () => void,
 ): Promise<ConnectAgentResult> {
   const sb = await findUserSandbox(userId, sandboxId)
   if (!sb?.previewUrl) return { ok: false, reason: 'no-sandbox' }
 
   // Wake the machine if it isn't running (boot time is inherent — the agent
   // must be up to join the room). Idempotent: a no-op when already running.
+  let waking = false
+  const wake = () => { if (!waking) { waking = true; onWaking?.() } }
   if (sb.status !== 'running') {
+    wake()
     console.log(`[connect-agent] sandbox is ${sb.status}, starting...`)
     const woken = await startSandbox(sb.id, userId, await getSyncToken())
     if (!woken || woken.status !== 'running') return { ok: false, reason: 'wake-failed' }
@@ -36,6 +41,7 @@ export async function connectUserAgent(
   // or frozen agent won't). Restart the service only if it's unhealthy.
   const agentUrl = sb.previewUrl
   if (!(await checkOsbornHealth(agentUrl))) {
+    wake()
     console.log(`[connect-agent] osborn health check failed, restarting service...`)
     await restartService(sb.id)
     await waitForHealth(agentUrl, 15)

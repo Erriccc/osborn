@@ -8,6 +8,11 @@ import { connectUserAgent } from '@/lib/connect-agent'
 
 const BUSY_LINE = 'Your Osborn is in a session in the browser right now. End that session, then call again. Goodbye.'
 const BUSY_HANGUP_MS = 12_000
+// Static lines served from the frontend (public/phone/), for when the agent's
+// own /tts is not up: the hold line repeats every ~15s for ~2 min.
+export const HOLD_AUDIO_PATH = '/phone/hold.mp3'
+export const FAILED_AUDIO_PATH = '/phone/call-failed.mp3'
+const FAILED_HANGUP_MS = 7_000
 
 // The server SDK clients take the wss:// URL as is (TwirpRpc maps ws→http).
 const livekitHost = () => process.env.LIVEKIT_URL || process.env.NEXT_PUBLIC_LIVEKIT_URL
@@ -22,31 +27,47 @@ async function hangUp(roomName: string): Promise<void> {
   }
 }
 
-/** Plays the busy line into the caller's room (the agent's own /tts as a URL ingress), then hangs up. */
-async function sayBusyThenHangUp(roomName: string, agentUrl: string | undefined): Promise<void> {
+/**
+ * Plays an audio URL into the caller's room as a URL ingress. Resolves to a
+ * function that stops it, or null when nothing plays (no LiveKit, no URL, or
+ * the ingress could not be created).
+ */
+async function playInto(roomName: string, name: string, url: string | undefined): Promise<(() => Promise<void>) | null> {
   const host = livekitHost()
-  const ingress = host && agentUrl ? new IngressClient(host, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET) : null
-  let ingressId: string | undefined
-  if (ingress) {
-    try {
-      ingressId = (await ingress.createIngress(IngressInput.URL_INPUT, {
-        name: `busy-${roomName}`,
-        roomName,
-        participantIdentity: 'osborn-busy',
-        participantName: 'Osborn',
-        url: `${agentUrl}/tts?text=${encodeURIComponent(BUSY_LINE)}`,
-      })).ingressId
-      await new Promise((r) => setTimeout(r, BUSY_HANGUP_MS))
-    } catch (e) {
-      console.warn(`[phone] busy line failed for ${roomName}: ${(e as Error).message}`)
-    }
+  if (!host || !url) return null
+  const ingress = new IngressClient(host, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET)
+  try {
+    const { ingressId } = await ingress.createIngress(IngressInput.URL_INPUT, {
+      name: `${name}-${roomName}`,
+      roomName,
+      participantIdentity: `osborn-${name}`,
+      participantName: 'Osborn',
+      url,
+    })
+    return async () => { if (ingressId) await ingress.deleteIngress(ingressId).catch(() => {}) }
+  } catch (e) {
+    console.warn(`[phone] ${name} line failed for ${roomName}: ${(e as Error).message}`)
+    return null
   }
-  await hangUp(roomName)
-  if (ingress && ingressId) await ingress.deleteIngress(ingressId).catch(() => {})
 }
 
-/** Caller → verified account → that account's machine → agent joins the caller's room. */
-export async function routeCall(call: { roomName: string; callerE164: string }): Promise<'connected' | 'busy' | 'rejected'> {
+/** Plays a line into the caller's room, lets it finish, then hangs up. */
+async function sayThenHangUp(roomName: string, name: string, url: string | undefined, ms: number): Promise<void> {
+  const stop = await playInto(roomName, name, url)
+  if (stop) await new Promise((r) => setTimeout(r, ms))
+  await hangUp(roomName)
+  await stop?.()
+}
+
+/**
+ * Caller → verified account → that account's machine → agent joins the caller's room.
+ * `publicOrigin` (this frontend's public URL) serves the static hold and
+ * could-not-reach lines; without it the caller hears ringing/silence as before.
+ */
+export async function routeCall(
+  call: { roomName: string; callerE164: string },
+  publicOrigin?: string,
+): Promise<'connected' | 'busy' | 'rejected'> {
   const admin = serviceClient()
   if (!admin) {
     console.warn('[phone] SUPABASE_SERVICE_ROLE_KEY not set; cannot route calls')
@@ -70,14 +91,24 @@ export async function routeCall(call: { roomName: string; callerE164: string }):
       await hangUp(call.roomName)
       return 'rejected'
     }
-    const r = await connectUserAgent(userId, sandboxId, async () => syncToken, call.roomName)
+    // A sleeping machine can take minutes: the caller hears the hold line
+    // until the agent has joined (or the wake has failed).
+    const lineUrl = (path: string) => (publicOrigin ? `${publicOrigin}${path}` : undefined)
+    const hold: { playing?: ReturnType<typeof playInto> } = {}
+    let r: Awaited<ReturnType<typeof connectUserAgent>>
+    try {
+      r = await connectUserAgent(userId, sandboxId, async () => syncToken, call.roomName,
+        () => { hold.playing = playInto(call.roomName, 'hold', lineUrl(HOLD_AUDIO_PATH)) })
+    } finally {
+      await (await hold.playing)?.()
+    }
     if (r.ok) return 'connected'
     if (r.reason === 'busy') {
-      await sayBusyThenHangUp(call.roomName, r.agentUrl)
+      await sayThenHangUp(call.roomName, 'busy', r.agentUrl && `${r.agentUrl}/tts?text=${encodeURIComponent(BUSY_LINE)}`, BUSY_HANGUP_MS)
       return 'busy'
     }
     console.warn(`[phone] could not bring the agent into ${call.roomName}: ${r.reason}`)
-    await hangUp(call.roomName)
+    await sayThenHangUp(call.roomName, 'failed', lineUrl(FAILED_AUDIO_PATH), FAILED_HANGUP_MS)
     return 'rejected'
   } catch (e) {
     await hangUp(call.roomName)

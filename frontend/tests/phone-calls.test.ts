@@ -333,6 +333,64 @@ async function main() {
     eq(st.ingressDeleted, ['IN_1'], 'ingress cleaned up')
   })
 
+  // ── Hold line while the machine wakes (#365) ──
+  const FRONT = 'https://front.example'
+  await t('hold (#365): sleeping machine -> hold line plays, stops once the agent joins', async () => {
+    reset(); st.sandbox = { ...st.sandbox, status: 'stopped' }
+    const order: string[] = []
+    const reply = st.fetchReply
+    st.fetchReply = (u: string) => { if (u.endsWith('/connect-room')) order.push('joined'); return reply(u) }
+    eq(await calls.routeCall(call, FRONT), 'connected', 'outcome')
+    eq(st.ingresses.map((x: any) => x.opts.url), [`${FRONT}${calls.HOLD_AUDIO_PATH}`], 'hold line only')
+    eq(st.ingresses[0].opts.roomName, ROOM, 'caller room')
+    eq(st.ingresses[0].opts.participantIdentity, 'osborn-hold', 'identity')
+    eq(st.ingressDeleted, ['IN_1'], 'hold stopped')
+    eq(order, ['joined'], 'agent joined before the hold was stopped')
+    eq(st.deleted, [], 'not hung up')
+  })
+  await t('hold (#365): unhealthy running agent (restart) also gets the hold line', async () => {
+    reset(); st.healthy = false
+    eq(await calls.routeCall(call, FRONT), 'connected', 'outcome')
+    eq(st.ingresses.length, 1, 'hold played')
+    eq(st.ingressDeleted, ['IN_1'], 'hold stopped')
+  })
+  await t('hold (#365): machine already up -> no hold line', async () => {
+    reset()
+    eq(await calls.routeCall(call, FRONT), 'connected', 'outcome')
+    eq(st.ingresses, [], 'no ingress')
+  })
+  await t('hold (#365): wake fails -> hold stops, could-not-reach line, then hang up', async () => {
+    reset(); st.sandbox = { ...st.sandbox, status: 'stopped' }; st.woken = { status: 'error' }
+    try {
+      eq(await calls.routeCall(call, FRONT), 'rejected', 'outcome')
+      eq(st.ingresses.map((x: any) => x.opts.url), [`${FRONT}${calls.HOLD_AUDIO_PATH}`, `${FRONT}${calls.FAILED_AUDIO_PATH}`], 'hold then failed line')
+      eq(st.ingressDeleted, ['IN_1', 'IN_1'], 'both stopped')
+      eq(st.deleted, [ROOM], 'hung up')
+    } finally { st.woken = undefined }
+  })
+  await t('hold (#365): agent unreachable after waking -> could-not-reach line', async () => {
+    reset(); st.fetchReply = () => ({ status: 500, body: {} })
+    eq(await calls.routeCall(call, FRONT), 'rejected', 'outcome')
+    eq(st.ingresses.map((x: any) => x.opts.url), [`${FRONT}${calls.FAILED_AUDIO_PATH}`], 'failed line')
+    eq(st.deleted, [ROOM], 'hung up')
+  })
+  await t('hold (#365): no public origin -> no lines, behaviour as before', async () => {
+    reset(); st.sandbox = { ...st.sandbox, status: 'stopped' }; st.woken = { status: 'error' }
+    try {
+      eq(await calls.routeCall(call), 'rejected', 'outcome')
+      eq(st.ingresses, [], 'no ingress')
+      eq(st.deleted, [ROOM], 'hung up')
+    } finally { st.woken = undefined }
+  })
+  await t('hold (#365): the static lines ship as mp3 in public/', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    for (const p of [calls.HOLD_AUDIO_PATH, calls.FAILED_AUDIO_PATH]) {
+      const buf = readFileSync(join(__dirname, '..', 'public', p))
+      ok(buf.length > 1000 && (buf.subarray(0, 3).toString('latin1') === 'ID3' || (buf[0] === 0xff && (buf[1] & 0xe0) === 0xe0)), `${p} is mp3`)
+    }
+  })
+
   // ── /api/phone/livekit ──
   const signedReq = async (body: string, key = process.env.LIVEKIT_API_KEY!, secret = process.env.LIVEKIT_API_SECRET!) => {
     const at = new realSdk.AccessToken(key, secret)
@@ -364,6 +422,16 @@ async function main() {
     for (let i = 0; i < 50 && !st.fetches.some((x: any) => x.url.endsWith('/connect-room')); i++) await new Promise((res) => realSetTimeout(res, 5))
     eq(st.rpcArgs?.args, { p_phone: '+15552234567' }, 'lookup')
     ok(st.fetches.some((x: any) => x.url === 'https://agent.example/connect-room'), 'agent asked to join')
+  })
+  await t('webhook (#365): hold line URL uses the public origin, not the container URL', async () => {
+    reset(); st.sandbox = { ...st.sandbox, status: 'stopped' }
+    const signed = await signedReq(joinBody)
+    const headers = new Headers(signed.headers)
+    headers.set('x-forwarded-host', 'www.voice-native.com')
+    const r = await lkRoute.POST(new Request('http://localhost:8080/api/phone/livekit', { method: 'POST', headers, body: joinBody }))
+    eq(r.status, 200, 'status')
+    for (let i = 0; i < 50 && !st.ingressDeleted.length; i++) await new Promise((res) => realSetTimeout(res, 5))
+    eq(st.ingresses[0]?.opts.url, 'https://www.voice-native.com/phone/hold.mp3', 'hold url')
   })
   await t('webhook: signed non-SIP join is ignored', async () => {
     reset()
