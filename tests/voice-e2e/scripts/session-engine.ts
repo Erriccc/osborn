@@ -70,7 +70,7 @@ import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
 import { actWithCache, forgetCached } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
-import { attachDevtools, redactDiagnostics, type DevtoolsBuffer } from '../lib/devtools'
+import { attachDevtools, redactDiagnostics, redactJson, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
 import { optionalEnvKey } from '../lib/env'
@@ -126,7 +126,7 @@ const manifest: Record<string, unknown> = {
   previousRun: null,
 }
 const writeManifest = () => {
-  try { writeFileSync(join(RUN_DIR, 'manifest.json'), JSON.stringify({ ...manifest, marks: marks.slice(-200) }, null, 2)) } catch { /* ignore */ }
+  try { writeFileSync(join(RUN_DIR, 'manifest.json'), redactJson({ ...manifest, marks: marks.slice(-200) }, 2)) } catch { /* ignore */ }
 }
 const mark = (m: string) => { marks.push({ t: Date.now(), mark: m }); writeManifest(); console.log(`[engine] ${m}`) }
 
@@ -141,7 +141,7 @@ const writeScenario = () => {
       `description: Auto-exported from a directed engine session (${RUN_STAMP}).`,
       `profile: ${manifest.profile ?? 'osborn-tester'}`,
       'steps:',
-      ...scenarioSteps.map((s) => `  - ${s.kind}: ${JSON.stringify(s.value)}`),
+      ...scenarioSteps.map((s) => `  - ${s.kind}: ${redactJson(s.value)}`),
     ].join('\n')
     writeFileSync(join(RUN_DIR, 'scenario.yaml'), y + '\n')
   } catch { /* ignore */ }
@@ -309,14 +309,15 @@ async function main() {
     // Browser events → webhooks: navigations ("the browser got forwarded")
     // and page errors, tagged with the tab they happened on.
     p.on('framenavigated', (f) => { if (f === p.mainFrame()) notifyRef('navigation', { url: f.url(), tab: allPages().indexOf(p) }) })
-    p.on('pageerror', (e) => notifyRef('page_error', { message: e.message.slice(0, 300), tab: allPages().indexOf(p) }))
+    p.on('pageerror', (e) => notifyRef('page_error', { message: redactDiagnostics(e.message).slice(0, 300), tab: allPages().indexOf(p) }))
     // Meeting/agent activity → first-class events: the frontend logs its data
     // messages to console; promote transcripts and agent output so directors
     // detect activity on ONE stream instead of tailing three log sources.
     p.on('console', (m) => {
       const t = m.text()
-      if (/Meeting transcript|user_transcript/i.test(t)) notifyRef('transcript', { text: t.slice(0, 250), tab: allPages().indexOf(p) })
-      else if (t.includes('claude_output')) notifyRef('agent_output', { text: t.slice(0, 200), tab: allPages().indexOf(p) })
+      // Redact before cutting: a token cut short no longer looks like one to notify()'s redaction.
+      if (/Meeting transcript|user_transcript/i.test(t)) notifyRef('transcript', { text: redactDiagnostics(t).slice(0, 250), tab: allPages().indexOf(p) })
+      else if (t.includes('claude_output')) notifyRef('agent_output', { text: redactDiagnostics(t).slice(0, 200), tab: allPages().indexOf(p) })
     })
   }
   const writeDevtoolsFile = () => {
@@ -494,8 +495,7 @@ async function main() {
   // WHY instead of the chat spinning on "Connecting…" forever.
   let agentUnreachable: string | null = null
 
-  // Every reply, event and webhook is redacted like the public logs (#328); stored records stay raw for replay.
-  const redactJson = (v: unknown) => JSON.stringify(v, (_k, x) => (typeof x === 'string' ? redactDiagnostics(x) : x))
+  // Every reply, event and webhook is redacted like the public logs (#328); in-memory records and the journey restart state stay raw for replay.
   // A reply already sent (an open command answered on SIGTERM, #324) is never written twice.
   const json = (res: any, body: any, code = 200, raw = false) => { if (res.headersSent) return; res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(raw ? JSON.stringify(body) : redactJson(body)) }
   // goto with a clean error: 400 for a bad URL, 502 for a failed load (no ANSI codes),

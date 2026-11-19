@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { redactJson } from './devtools'
 
 /**
  * Self-healing action cache + per-site knowledge profiles.
@@ -147,6 +148,11 @@ export async function actWithCache(
     return { cached: false, healed: false, noop: true, did: null }
   }
   await stagehand.act(action, on)
+  // A step carrying a secret is never written into the shareable cache.
+  if (holdsSecret({ key, action })) {
+    if (hit) { delete store[key]; saveStore(url.hostname, store) }
+    return { cached: false, healed: false, did: describeAction(action) }
+  }
   const newSel = (action as { selector?: string })?.selector
   store[key] = {
     instruction,
@@ -161,6 +167,9 @@ export async function actWithCache(
   console.log(`[step-cache] ${hit ? 'HEALED' : 'MISS'} (${url.hostname}) — resolved + cached: "${instruction.slice(0, 60)}"`)
   return { cached: false, healed: !!hit, did: describeAction(action) }
 }
+
+/** True when redaction would change it: such a step stays out of actions.json. */
+export const holdsSecret = (v: unknown): boolean => redactJson(v) !== JSON.stringify(v)
 
 /** What the brain decided to do, in one line — returned to the director. */
 function describeAction(action: any): string | null {

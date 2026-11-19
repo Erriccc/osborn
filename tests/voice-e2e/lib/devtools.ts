@@ -33,6 +33,9 @@ export type DevtoolsBuffer = {
 const SECRET_PARAM = /([?&#](?:[\w-]*(?:token|secret|password|signature)|apikey|api_key|key|auth|code|sig)=)[^&#\s]+/gi
 export const redactDiagnostics = (line: string): string =>
   redactSecrets(line.replace(SECRET_PARAM, '$1••••'))
+// JSON with every string redacted: replies, events, webhooks and files people copy.
+export const redactJson = (v: unknown, space?: number): string =>
+  JSON.stringify(v, (_k, x) => (typeof x === 'string' ? redactDiagnostics(x) : x), space)
 
 export function attachDevtools(page: Page, cap = 250): DevtoolsBuffer {
   const consoleBuf: string[] = []
