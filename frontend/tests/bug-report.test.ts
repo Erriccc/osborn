@@ -2,7 +2,7 @@
 // Spec: buildBugReportRow mirrors the agent /report-bug validation (title >= 3,
 // description required, severity enum) + the bug_reports column limits, and always
 // stamps the reporter + a non-null osborn_version so the RLS insert never fails.
-import { buildBugReportRow, type BugReportInput } from '../src/lib/bug-report'
+import { buildBugReportRow, ownReportExists, reportRowId, type BugReportInput } from '../src/lib/bug-report'
 
 const results: [string, boolean, string?][] = []
 function t(name: string, fn: () => void) {
@@ -71,7 +71,50 @@ t('null email is tolerated', () => {
   if (r.ok) eq(r.row.reporter_email, null, 'null email')
 })
 
-let fail = 0
-for (const [n, p, m] of results) { console.log(`${p ? 'PASS' : 'FAIL'}  ${n}${m ? `\n      ${m}` : ''}`); if (!p) fail++ }
-console.log(`\n${results.length - fail}/${results.length} passed`)
-process.exit(fail ? 1 : 0)
+t('the agent reportId is the row id, so a redelivery cannot file twice (#297)', () => {
+  const rid = '3F2504E0-4F89-41D3-9A0C-0305E82C3301'
+  const mint = () => 'minted'
+  const a = reportRowId({ source: 'agent', reportId: rid }, mint)
+  eq(a.id, rid.toLowerCase(), 'reportId used'); eq(a.idempotent, true, 'idempotent')
+  eq(reportRowId({ source: 'agent', reportId: rid }, mint).id, a.id, 'same id on redelivery')
+  for (const m of [undefined, null, {}, { reportId: 'abc' }, { reportId: 42 }]) {
+    const r = reportRowId(m, mint)
+    eq(r.id, 'minted', `fresh id for ${JSON.stringify(m)}`); eq(r.idempotent, false, 'not idempotent')
+  }
+})
+
+// A fake bug_reports table: rows the query filters reach, with the filters it was given.
+const fakeDb = (rows: { id: string; reporter_user_id: string }[], fail = false) => ({
+  from: (table: string) => {
+    eq(table, 'bug_reports', 'table')
+    const filters: Record<string, string> = {}
+    const q = {
+      select: () => q,
+      eq: (col: string, v: string) => { filters[col] = v; return q },
+      maybeSingle: async () => fail ? { data: null, error: { message: 'boom' } }
+        : { data: rows.find((r) => Object.entries(filters).every(([k, v]) => (r as any)[k] === v)) ?? null, error: null },
+    }
+    return q
+  },
+})
+
+const asyncTests: Promise<void>[] = []
+const at = (name: string, fn: () => Promise<void>) => asyncTests.push(fn().then(() => { results.push([name, true]) }, (e) => { results.push([name, false, String(e.message)]) }))
+const RID = '3f2504e0-4f89-41d3-9a0c-0305e82c3301'
+at('a redelivery of my own report is found (#297)', async () => {
+  eq(await ownReportExists(fakeDb([{ id: RID, reporter_user_id: 'u-1' }]), RID, 'u-1'), true, 'own row')
+})
+at("another user's report with the same id is never a duplicate for me", async () => {
+  eq(await ownReportExists(fakeDb([{ id: RID, reporter_user_id: 'u-2' }]), RID, 'u-1'), false, 'foreign row')
+})
+at('no row, or a failed lookup, is not a duplicate', async () => {
+  eq(await ownReportExists(fakeDb([]), RID, 'u-1'), false, 'no row')
+  eq(await ownReportExists(fakeDb([{ id: RID, reporter_user_id: 'u-1' }], true), RID, 'u-1'), false, 'lookup error')
+})
+
+void Promise.all(asyncTests).then(() => {
+  let fail = 0
+  for (const [n, p, m] of results) { console.log(`${p ? 'PASS' : 'FAIL'}  ${n}${m ? `\n      ${m}` : ''}`); if (!p) fail++ }
+  console.log(`\n${results.length - fail}/${results.length} passed`)
+  process.exit(fail ? 1 : 0)
+})

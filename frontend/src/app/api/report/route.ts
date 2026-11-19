@@ -7,7 +7,7 @@
 // the mirror is a best-effort downstream step that never blocks the report.
 import { NextResponse } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
-import { buildBugReportRow, type BugReportInput } from '@/lib/bug-report'
+import { buildBugReportRow, ownReportExists, reportRowId, type BugReportInput } from '@/lib/bug-report'
 import { mirrorReportToGitHub } from '@/lib/github-issue-mirror'
 import { knownSandboxClaim } from '@/lib/sandbox-claims'
 import { execInSprite } from '@/lib/machines'
@@ -55,7 +55,9 @@ export async function POST(request: Request) {
     // tail of the reporter's own machine (best-effort; the report files without it).
     // The exec target is always the caller's recorded, undisputed sandbox, never an
     // id from the body, which would let a caller exec into any machine.
-    const id = randomUUID()
+    const { id, idempotent } = reportRowId(body.metadata, randomUUID)
+    // A redelivery of a report this user already filed: answer with it, before any log tail or upload.
+    if (idempotent && (await ownReportExists(supabase, id, user.id))) return NextResponse.json({ ok: true, id, duplicate: true })
     let logUrl: string | null = null
     try {
       const known = body.sandbox_id ? await knownSandboxClaim(supabase, user.id) : null
@@ -79,6 +81,13 @@ export async function POST(request: Request) {
       .insert({ id, ...built.row, log_url: logUrl })
       .select('id')
       .single()
+    // 23505 on the agent's id: a concurrent redelivery won the insert (not filed or mirrored again),
+    // or the id is another user's report, which is never confirmed to this caller.
+    if (error?.code === '23505' && idempotent) {
+      return (await ownReportExists(supabase, id, user.id))
+        ? NextResponse.json({ ok: true, id, duplicate: true })
+        : NextResponse.json({ ok: false, error: 'This report id cannot be used.' }, { status: 409 })
+    }
     if (error) {
       console.error('[report] insert failed', error)
       // Surface the REAL Postgres/PostgREST error (code + message [+ hint]) so the
