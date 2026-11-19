@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 53
+Version: 54
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -127,6 +127,7 @@ when the engine has one, `x-driver-id: <you>` on every call. Open your OWN tab f
 E=https://osborn-voice-e2e-n.fly.dev/control; H=(-H 'content-type: application/json' -H "x-driver-id: me" -H "x-engine-token: $TOKEN")
 curl -s "${H[@]}" -X POST $E/tab -d '{"op":"open","url":"https://example.com"}'   # your tab; navigate/act/shot go to it
 curl -s "${H[@]}" -X POST $E/act -d '{"instruction":"click Learn more"}'           # → evidence.screenshot / evidence.clip (public URLs)
+curl -s "${H[@]}" -X POST $E/input -d '{"type":"key","key":"Enter"}'              # a real key press (submit a form); also type|click|scroll
 curl -s "${H[@]}" -X POST $E/shot -d '{}'                                         # → evidence.screenshot (add "inline":true for base64)
 curl -s "${H[@]}" -X POST $E/tab -d '{"op":"close"}'                               # close your tab when done
 ```
@@ -199,6 +200,10 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v54
+- `/act` can fill a field but does not reliably press keys: "type X and press Enter" leaves X in the box unsent. Press the key yourself: `POST /input {"type":"key","key":"Enter"}` (Playwright key names: `Enter`, `Tab`, `Escape`, `ArrowDown`, `Control+A`). `/input` also takes `{"type":"type","text":…}` (real keystrokes into the focused field), `{"type":"click","x":0.5,"y":0.5}` (fractions of the frame) and `{"type":"scroll","dy":600}`, on your own tab.
+- Setting a field's value from `/eval` does not submit a React form; a synthetic `keydown` does not either. Use `/input`, or `form.requestSubmit()` from `/eval`.
 
 ## What's new in v53
 - `viewport:"mobile"` is now a real phone: the tab opens in its own browser context from Playwright's `iPhone 13` descriptor (touch, iOS user agent, devicePixelRatio 3, 390×664 page), so `(hover:none)`/`(pointer:coarse)` CSS and touch-only code run. `viewport:"tablet"` = `iPad (gen 7)` (810×1080, 2×). A `{width,height}` viewport is still a desktop window resized.
