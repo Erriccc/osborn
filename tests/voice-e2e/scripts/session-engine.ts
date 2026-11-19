@@ -872,7 +872,7 @@ async function main() {
   const stampTask = (n: number, label: string, startMs: number, clip: string | null, artifact: string | null, text?: string, heard?: string, page: Page = active, clipPending = false) => {
     const endMs = Date.now()
     touchTab(page)
-    const devtools = devtoolsBufs.get(page)?.summary() ?? null
+    const devtools = devtoolsBufs.get(page)?.summary(takenSince(ownerOf(page) ?? '', page) ?? undefined) ?? null
     const rec = { n, label, text, heard, tab: activeTab(page), startMs, endMs, rel0: Math.max(0, startMs - tCapture), rel1: Math.max(0, endMs - tCapture), clip, clipPending, artifact, devtools }
     tasks.push(rec); writeManifest(); writeDevtoolsFile(); saveTabState()
     // #120: snapshot journey progress on every task so a restart recovers a
@@ -1511,7 +1511,7 @@ async function main() {
           if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
           // The highest-numbered non-shot task: a /shot in between must not hide an
           // unreviewed clip, and a task that stamped out of order must not be skipped (#262).
-          const prevTask = tasks.reduce<(typeof tasks)[number] | undefined>((best, t) => t.label !== 'shot' && (!best || t.n > best.n) ? t : best, undefined)
+          const prevTask = tasks.reduce<(typeof tasks)[number] | undefined>((best, t) => t.label !== 'shot' && seesTask(driver, t) && (!best || t.n > best.n) ? t : best, undefined)
           const nag = (prevTask?.clip || (prevTask as any)?.clipPending) && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
           actionCount++; noteVisit(page)
           const n = ++reqN
@@ -1519,7 +1519,7 @@ async function main() {
         })
         if (!post) return  // answered inside the lock (refused, invalid, or failed)
         const { page, opened, n, t0, r, effect, warning, nag } = post
-        const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000)
+        const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000, takenSince(driver, page) ?? 0)
         const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page, isPersonDriver(driver)).catch(() => null) : null
         const clip = actRange?.path ?? null
         const clipError = clip ? null : (live ? (live.clipFailure() ?? 'clip failed') : 'live stream unavailable — no clips this session')
@@ -1621,7 +1621,7 @@ async function main() {
           // the reply (#215), and GET /clip?n waits for them. waitClip:true restores
           // the old in-reply clip.
           const tClip = Date.now()
-          const rangeJob = live?.clipRange ? live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), t0 - 1000, tClip, page, isPersonDriver(driver)).catch(() => null) : Promise.resolve(null)
+          const rangeJob = live?.clipRange ? live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), Math.max(t0 - 1000, takenSince(driver, page) ?? 0), tClip, page, isPersonDriver(driver)).catch(() => null) : Promise.resolve(null)
           let hearError: string | null = null
           // Skip decoding and hearing when the ears clearly heard nothing this
           // turn: no page audio ever tapped, or no sound since speaking (#201).

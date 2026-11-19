@@ -59,9 +59,11 @@ export function attachDevtools(page: Page, cap = 250): DevtoolsBuffer {
     since: (ms: number) => ({ console: after(consoleBuf, ms), network: after(networkBuf, ms) }),
     // What the brain reads when deciding "is something broken": recent
     // errors/warnings + network failures, compact.
-    summary() {
-      const errors = consoleBuf.filter((l) => /\[(error|warning|pageerror)\]/.test(l)).slice(-15)
-      const net = networkBuf.slice(-15)
+    // ms: only lines from then on (a person who took the tab over sees nothing from before).
+    summary(ms?: number) {
+      const c = ms == null ? consoleBuf : after(consoleBuf, ms)
+      const errors = c.filter((l) => /\[(error|warning|pageerror)\]/.test(l)).slice(-15)
+      const net = (ms == null ? networkBuf : after(networkBuf, ms)).slice(-15)
       return `RECENT CONSOLE ERRORS/WARNINGS:\n${errors.join('\n') || '(none)'}\n\nRECENT NETWORK ISSUES/WS EVENTS:\n${net.join('\n') || '(none)'}`
     },
   }
