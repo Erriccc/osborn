@@ -28,7 +28,7 @@ import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
-import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type StewardGateRecord, stewardGateLine, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
+import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type StewardGateRecord, stewardGateLine, stewardGateRow, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
@@ -217,13 +217,7 @@ function buildPriorItems(
       items.push({ id: `prior-day-${day}-${sessionId}`, role: 'system', content: `── ${day} ──`, timestamp: t })
     }
     if (r.kind === 3) {
-      items.push({
-        id: `prior-steward-gate-${r.idx}-${sessionId}`,
-        role: 'system',
-        content: stewardGateLine(r.gate),
-        timestamp: t,
-        stewardGate: r.gate,
-      })
+      items.push(stewardGateRow(`prior-steward-gate-${r.idx}-${sessionId}`, r.gate))
     } else if (r.kind === 2) {
       items.push({
         id: `prior-steward-${r.idx}-${sessionId}`,
@@ -2884,9 +2878,13 @@ function VoiceRoomInner({
             return next
           })
         }
-      } else if (data.type === 'steward_verdict' && data.verdict && data.slotId) {
-        // A background session's steward (#255): its card lives in that session's own history.
-        addMessageRef.current?.('system', `${backgroundSessionTitle(String(data.slotId))}: Steward ${data.verdict}${data.summary ? ` — ${data.summary}` : ''}`, undefined, 'chat')
+      } else if (data.type === 'background_steward' && data.slotId) {
+        // A background session's steward verdict or gate (#255), as one labelled line. Its card and
+        // gate record live in that session's own history; nothing here is cached for this chat.
+        const what = data.gate
+          ? stewardGateLine({ gate: data.gate === 'deny' ? 'deny' : 'advise', message: String(data.message ?? '') })
+          : `Steward ${data.verdict}${data.summary ? ` — ${data.summary}` : ''}`
+        addMessageRef.current?.('system', `${backgroundSessionTitle(String(data.slotId))}: ${what}`, undefined, 'chat')
       } else if (data.type === 'steward_verdict' && data.verdict) {
         // Steward verdict card (#221): persisted by the agent, rebuilt on reload by buildPriorItems.
         const { type: _type, ...verdict } = data
@@ -2899,21 +2897,9 @@ function VoiceRoomInner({
           steward: verdict as StewardVerdict,
         }])
       } else if (data.type === 'steward_gate') {
-        // The steward sign-off gate advised on or refused a commit / push / PR. Persisted by the
-        // agent (#254); a background session's line is labelled and kept in that session (#255).
+        // The steward sign-off gate advised on or refused a commit / push / PR. Persisted by the agent (#254).
         const gate: StewardGateRecord = { gate: data.decision === 'deny' ? 'deny' : 'advise', message: String(data.message ?? ''), at: new Date().toISOString() }
-        if (data.slotId) {
-          addMessageRef.current?.('system', `${backgroundSessionTitle(String(data.slotId))}: ${stewardGateLine(gate)}`, undefined, 'chat')
-        } else {
-          setMessages(prev => [...prev, {
-            id: `steward-gate-${Date.now()}-${Math.random()}`,
-            role: 'system' as const,
-            content: stewardGateLine(gate),
-            timestamp: new Date(gate.at),
-            category: 'chat' as const,
-            stewardGate: gate,
-          }])
-        }
+        setMessages(prev => [...prev, stewardGateRow(`steward-gate-${Date.now()}-${Math.random()}`, gate)])
       } else if (data.type === 'tool_blocked') {
         // A refused tool call in this session (a background slot's carry slotId). The
         // one-time history reminder is a nudge, not a refusal, so it gets no line.

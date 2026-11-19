@@ -52,11 +52,18 @@ try {
   t('#253 B1: an unterminated comment or &nbsp; is not content', () => {
     assert.equal(check(body({ Tested: '<!-- unterminated comment' })), 'template')
     assert.equal(check(body({ Tested: 'ran it <!-- note' })), 'pass')
-    assert.equal(check(body({ Tested: '&nbsp;' })), 'template')
+    for (const blank of ['&nbsp;', '&#160;', '&#xA0;', '&#xa0;', '<br>', '<br/>', '<BR />', '&nbsp;<br>\n&#160;']) {
+      assert.equal(check(body({ Tested: blank })), 'template', blank)
+    }
   })
   t('#253 B2: a heading that only starts with the template word is not the section', () => {
     assert.equal(check(body().replace('## Tested', '## Testedfoo')), 'template')
     assert.equal(check(body().replace('## Net-new', '## Net-newery')), 'template')
+    assert.equal(check(body().replace('## Tested', '## Tested_x')), 'template')
+  })
+  t('#253: punctuation after the heading word still counts as the section', () => {
+    for (const h of ['## Why?', '## Why:']) assert.equal(check(body().replace('## Why', h)), 'pass', h)
+    for (const h of ['## Tested.', '## Tested—manual', '## Tested (manual)', '## Tested: by hand']) assert.equal(check(body().replace('## Tested', h)), 'pass', h)
   })
   t('#253 B3: duplicate headings pass when any occurrence is filled', () => {
     assert.equal(check(body({}, '\n## Tested\n\n')), 'pass')

@@ -197,6 +197,10 @@ export interface StewardGateRecord {
 }
 export const stewardGateLine = (g: Pick<StewardGateRecord, 'gate' | 'message'>) =>
   `Steward gate ${g.gate === 'deny' ? 'refused' : 'warned'}: ${g.message ?? ''}`
+/** The gate's chat row, live or rebuilt on reload: a system line that carries its record so it is cached. */
+export const stewardGateRow = (id: string, gate: StewardGateRecord): ChatMessage => ({
+  id, role: 'system', content: stewardGateLine(gate), timestamp: new Date(gate.at), category: 'chat', stewardGate: gate,
+})
 
 export interface ChatMessage {
   id: string

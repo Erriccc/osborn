@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath } = await import('../src/steward-verdict.js')
+const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath, stewardPushRecords } = await import('../src/steward-verdict.js')
 
 let pass = 0
 const t = (name: string, fn: () => unknown) => {
@@ -137,6 +137,20 @@ t('#259: an IMPACT-looking bullet inside HISTORY stays history', () => {
   assert.deepEqual(v.history, ['churn low'])
   assert.equal(v.rootCause, 'none found')
   assert.equal(v.decision, 'keep it?')
+})
+
+t('prior_messages push: last 10 verdicts and last 10 gates kept apart, raw and impact stripped, file order', () => {
+  const v = parseStewardVerdict(REFACTORED, '2026-11-13T00:00:00.000Z')!
+  const recs: any[] = [
+    ...Array.from({ length: 12 }, (_, i) => ({ ...v, summary: `v${i}` })),
+    ...Array.from({ length: 15 }, (_, i) => ({ gate: 'deny', message: `g${i}`, at: v.at })),
+  ]
+  const out: any[] = stewardPushRecords(recs)
+  assert.deepEqual(out.filter((r) => r.verdict).map((r) => r.summary), Array.from({ length: 10 }, (_, i) => `v${i + 2}`))
+  assert.deepEqual(out.filter((r) => r.gate).map((r) => r.message), Array.from({ length: 10 }, (_, i) => `g${i + 5}`))
+  assert.ok(out.every((r) => r.raw === undefined && r.impact === undefined))
+  assert.ok(!JSON.stringify(out).includes('"raw"') && !JSON.stringify(out).includes('getStorePath'))
+  assert.ok(recs[0].raw && recs[0].impact, 'source records untouched')
 })
 
 console.log(`\n${pass} passed`)

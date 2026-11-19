@@ -58,10 +58,10 @@ reviewed = open(marker).read().strip() if os.path.exists(marker) else ""
 body = str(inp.get("body") or "")
 if tool == "mcp__github__create_pull_request":
     sections = re.findall(r"^## (.+?)\s*$\n(.*?)(?=^## |\Z)", body, re.M | re.S)  # every occurrence, not last-wins
-    def empty(name):  # "## Tested (manual)" or "## net-new" still count as the section; "## Testedfoo" does not
-        texts = [v for k, v in sections if re.match(re.escape(name) + r"(?=$|[\s(:])", k.strip(), re.I)]
-        # A comment with no closing --> hides the rest of the section when rendered; &nbsp; renders blank.
-        return not any(re.sub(r"<!--.*?(?:-->|\Z)|&nbsp;", "", t, flags=re.S).strip() for t in texts)
+    def empty(name):  # "## Tested (manual)", "## Why?" or "## net-new" still count as the section; "## Testedfoo" does not
+        texts = [v for k, v in sections if re.match(re.escape(name) + r"(?!\w)", k.strip(), re.I)]
+        # A comment with no closing --> hides the rest of the section when rendered; a non-breaking space or <br> renders blank.
+        return not any(re.sub(r"<!--.*?(?:-->|\Z)|&nbsp;|&#160;|&#x[aA]0;|<br\s*/?>", "", t, flags=re.S | re.I).strip() for t in texts)
     tpl = os.path.join(git("rev-parse", "--show-toplevel"), ".github", "pull_request_template.md")
     headings = re.findall(r"^## (.+?)\s*$", open(tpl).read(), re.M) if os.path.exists(tpl) else []
     missing = [h for h in headings if empty(h)]

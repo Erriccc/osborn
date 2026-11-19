@@ -62,7 +62,7 @@ import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setL
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
-import { readStewardRecords } from './steward-verdict.js'
+import { readStewardRecords, stewardPushRecords } from './steward-verdict.js'
 import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, ClientNoteQueue, parseFavoriteChanged, parseLegacyFavoriteNotice } from './transcript-wiring.js'
 import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
@@ -2920,11 +2920,16 @@ async function main() {
     }
   }
 
-  // Steward verdict card + sign-off gate line (#221) → chat. A background slot's carry its slotId (#255).
+  // Steward verdict card + sign-off gate line (#221) → chat. A background slot sends only a one-line
+  // background_steward (#255): its card lives in that session's own sidecar, and an older frontend
+  // ignores the unknown type instead of painting the slot's card into the focused chat.
   function forwardStewardEvents(events: { on(event: string, fn: (d: any) => void): unknown }, slotId?: string): void {
-    const tag = slotId ? { slotId } : {}
-    events.on('steward_verdict', (v: any) => { sendToFrontend({ type: 'steward_verdict', ...tag, ...v }).catch(() => {}) })
-    events.on('steward_gate', (d: any) => { sendToFrontend({ type: 'steward_gate', ...tag, decision: d.decision, message: d.message }).catch(() => {}) })
+    events.on('steward_verdict', (v: any) => {
+      sendToFrontend(slotId ? { type: 'background_steward', slotId, verdict: v.verdict, summary: v.summary } : { type: 'steward_verdict', ...v }).catch(() => {})
+    })
+    events.on('steward_gate', (d: any) => {
+      sendToFrontend({ type: slotId ? 'background_steward' : 'steward_gate', ...(slotId ? { slotId, gate: d.decision } : { decision: d.decision }), message: d.message }).catch(() => {})
+    })
   }
 
   // ============================================================
@@ -6355,7 +6360,7 @@ async function main() {
                     // transcript rebuilds its "Conversation compacted" rows too.
                     const compactions = readCompactionMarkers(preSelectedSessionId!, workingDir)
                     // Last few cards, without the full return text, so the push stays under the packet limit.
-                    const steward = readStewardRecords(preSelectedSessionId!, workingDir).slice(-10).map(r => ({ ...r, raw: undefined }))
+                    const steward = stewardPushRecords(readStewardRecords(preSelectedSessionId!, workingDir))
                     if (priorMessages.length > 0) {
                       await sendToFrontend({ type: 'prior_messages', sessionId: preSelectedSessionId, messages: priorMessages, compactions, steward })
                       console.log(`💬 Sent ${priorMessages.length} prior messages (+${compactions.length} compaction markers) from DB for optimistic UI`)

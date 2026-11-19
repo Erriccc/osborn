@@ -108,6 +108,14 @@ export function parseStewardVerdict(text: string, at: string = new Date().toISOS
   }
 }
 
+/** The `prior_messages` push: the last `n` verdicts and the last `n` gate events (so gates never crowd the
+ *  verdicts out), file order, without `raw` and `impact` so it stays under the packet limit.
+ *  `/session-messages` serves the full records. */
+export function stewardPushRecords(records: StewardRecord[], n = 10): StewardRecord[] {
+  const keep = new Set([...records.filter((r) => 'verdict' in r).slice(-n), ...records.filter((r) => 'gate' in r).slice(-n)])
+  return records.filter((r) => keep.has(r)).map((r) => ('verdict' in r ? { ...r, raw: undefined, impact: undefined } : r))
+}
+
 /** Sidecar path: next to session.db and compactions.jsonl. */
 export function getStewardLogPath(sessionId: string, workingDir: string): string {
   return join(dirname(getStorePath(sessionId, workingDir)), 'steward.jsonl')
