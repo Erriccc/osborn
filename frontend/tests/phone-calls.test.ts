@@ -413,6 +413,59 @@ async function main() {
     st.fetchReply = () => ({ status: 400, body: { error: { message: 'bad' } } })
     const r = await hookRoute.POST(hookReq(hookBody))
     eq(r.status, 502, 'status')
+    eq(r.body.error.message, phone.META_SEND_FAILED, 'generic message, not Meta text')
+  })
+  await t('verify-hook (#366): a known Meta code becomes a plain message', async () => {
+    reset(); process.env.SUPABASE_SEND_SMS_HOOK_SECRET = SECRET
+    st.fetchReply = () => ({ status: 400, body: { error: { code: 131026, message: 'Message undeliverable' } } })
+    const r = await hookRoute.POST(hookReq(hookBody))
+    eq(r.status, 502, 'status')
+    ok(/isn't on WhatsApp/.test(r.body.error.message), `message ${r.body.error.message}`)
+  })
+  await t('verify-hook (#366): Graph version from META_WA_GRAPH_VERSION, v23.0 by default', async () => {
+    reset(); process.env.SUPABASE_SEND_SMS_HOOK_SECRET = SECRET
+    st.fetchReply = () => ({ status: 200, body: { messages: [{ id: 'wamid.1' }] } })
+    delete process.env.META_WA_GRAPH_VERSION
+    await hookRoute.POST(hookReq(hookBody))
+    ok(st.fetches[0].url.startsWith('https://graph.facebook.com/v23.0/'), `default ${st.fetches[0].url}`)
+    reset(); process.env.META_WA_GRAPH_VERSION = 'v25.0'
+    await hookRoute.POST(hookReq(hookBody))
+    ok(st.fetches[0].url.startsWith('https://graph.facebook.com/v25.0/'), `env ${st.fetches[0].url}`)
+    reset(); process.env.META_WA_GRAPH_VERSION = '../x'
+    await hookRoute.POST(hookReq(hookBody))
+    ok(st.fetches[0].url.startsWith('https://graph.facebook.com/v23.0/'), `malformed ${st.fetches[0].url}`)
+    delete process.env.META_WA_GRAPH_VERSION
+  })
+  await t('verify-hook (#366): logs the returned message id', async () => {
+    reset(); process.env.SUPABASE_SEND_SMS_HOOK_SECRET = SECRET
+    st.fetchReply = () => ({ status: 200, body: { messages: [{ id: 'wamid.HBgL' }] } })
+    const logs: string[] = []
+    const orig = console.log
+    console.log = (...a: any[]) => { logs.push(a.join(' ')) }
+    try { eq((await hookRoute.POST(hookReq(hookBody))).status, 200, 'status') } finally { console.log = orig }
+    ok(logs.some((l) => l.includes('wamid.HBgL')), `logged ${logs.join('|')}`)
+  })
+  await t('verify-hook (#366): Meta request is aborted at about 4s -> 504 with a plain message', async () => {
+    reset(); process.env.SUPABASE_SEND_SMS_HOOK_SECRET = SECRET
+    const realTimeout = AbortSignal.timeout
+    let asked = 0
+    // AbortSignal.timeout's own timer is unref'd and would let the test process exit.
+    ;(AbortSignal as any).timeout = (ms: number) => {
+      asked = ms
+      const c = new AbortController()
+      realSetTimeout(() => c.abort(new DOMException('The operation timed out.', 'TimeoutError')), 1)
+      return c.signal
+    }
+    const savedFetch = globalThis.fetch
+    globalThis.fetch = ((_u: any, init: any) => new Promise((_res, rej) => {
+      init.signal.addEventListener('abort', () => rej(init.signal.reason))
+    })) as any
+    try {
+      const r = await hookRoute.POST(hookReq(hookBody))
+      eq(r.status, 504, 'status')
+      ok(/too long/.test(r.body.error.message), `message ${r.body.error.message}`)
+      ok(asked > 0 && asked < 5000, `timeout ${asked}ms must be under the 5s hook limit`)
+    } finally { (AbortSignal as any).timeout = realTimeout; globalThis.fetch = savedFetch }
   })
 
   globalThis.fetch = realFetch

@@ -96,3 +96,47 @@ export function whatsappAuthMessage(to: string, otp: string, template: string, l
     },
   }
 }
+
+/** Graph API version for the WhatsApp Cloud API (META_WA_GRAPH_VERSION, default v23.0). */
+export function graphVersion(raw: string | undefined = process.env.META_WA_GRAPH_VERSION): string {
+  const v = String(raw ?? '').trim()
+  return /^v[0-9]+\.[0-9]+$/.test(v) ? v : 'v23.0'
+}
+
+/** The message id Meta returns for an accepted send (`messages[0].id`), or null. */
+export function whatsappMessageId(body: unknown): string | null {
+  const id = (body as { messages?: { id?: unknown }[] } | null)?.messages?.[0]?.id
+  return typeof id === 'string' && id ? id : null
+}
+
+const META_BUSY = 'WhatsApp is busy right now. Try again in a minute.'
+// Meta Cloud API error codes, in plain words.
+// https://developers.facebook.com/docs/whatsapp/cloud-api/support/error-codes
+const META_ERRORS: Record<number, string> = {
+  131026: "This number isn't on WhatsApp. Check the number, or use one that has WhatsApp.",
+  131030: "This number isn't allowed to receive codes from our WhatsApp sender yet.",
+  131009: "That doesn't look like a valid phone number. Check it and try again.",
+  131021: "This number can't receive a code from itself.",
+  131056: 'Too many codes sent to this number. Wait a few minutes and try again.',
+  131048: 'WhatsApp is limiting messages to this number. Try again later.',
+  130429: META_BUSY,
+  80007: META_BUSY,
+  4: META_BUSY,
+  132001: 'Code delivery on WhatsApp is not set up correctly (template missing).',
+  132015: 'Code delivery on WhatsApp is paused (template paused).',
+  132016: 'Code delivery on WhatsApp is turned off (template disabled).',
+  190: 'Code delivery on WhatsApp is not set up correctly (access token expired).',
+  133010: 'Code delivery on WhatsApp is not set up correctly (sender not registered).',
+}
+export const META_SEND_FAILED = 'Could not send the code on WhatsApp. Try again in a minute.'
+
+/**
+ * A plain message for a refused Meta send, from its error body
+ * (`{ error: { code, message } }`). Unknown codes and unreadable bodies get a
+ * generic message, never Meta's raw text.
+ */
+export function metaSendError(body: unknown): { code: number | null; message: string } {
+  const raw = (body as { error?: { code?: unknown } } | null)?.error?.code
+  const code = typeof raw === 'number' ? raw : null
+  return { code, message: (code !== null && META_ERRORS[code]) || META_SEND_FAILED }
+}
