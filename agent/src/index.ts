@@ -76,7 +76,7 @@ import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
-import { matchVoiceAction, phoneMayChangeMode, sayBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, saySwitchOutcome, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
+import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, saySwitchOutcome, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -4068,13 +4068,14 @@ async function main() {
     return b && !b.idle ? 'busy' : 'idle'
   }
 
-  function cancelPendingSwitch(reason: string, notify = true): void {
+  // `reply`: where the cancel notice goes (default the room; a voice switch passes its own so it can speak it).
+  function cancelPendingSwitch(reason: string, notify = true, reply: typeof sendToFrontend = publishToRoom): void {
     if (!pendingSwitch) return
     const { target, timer } = pendingSwitch
     clearInterval(timer)
     pendingSwitch = null
     console.log(`↩️ Pending switch to ${target.slice(0, 8)} cancelled (${reason})`)
-    if (notify) void sendToFrontend({ type: 'session_switch_cancelled', sessionId: target, reason })
+    if (notify) void reply({ type: 'session_switch_cancelled', sessionId: target, reason })
   }
 
   const SWITCH_REJECT_COPY: Record<string, string> = {
@@ -4140,7 +4141,7 @@ async function main() {
     console.log(`🔀 Switch request (${opts.origin}) → ${target.slice(0, 8)}: ${decision.action}/${decision.leave} → ${plan.kind} (${plan.reason}) busy=${JSON.stringify(busy)}`)
 
     if (plan.kind === 'noop') {
-      if (pendingSwitch) cancelPendingSwitch('already_live')
+      if (pendingSwitch) cancelPendingSwitch('already_live', true, sendToFrontend)
       else await sendToFrontend({ type: 'session_switch_cancelled', sessionId: target, reason: 'already_live' })
       return 'noop'
     }
@@ -4791,9 +4792,10 @@ async function main() {
         phonePromptedRequestId = null
         phoneSwitchProposal = null  // a "yes" now must never be read as confirming a switch
         void Promise.resolve((currentSession as any)?.say?.(phoneApprovalPrompt(toolName, input)))
-          .then((handle: any) => handle?.waitForPlayout?.())
-          .then(() => {
-            if (pendingPermissionHolder()?.getPendingPermission?.()?.requestId === requestId) phonePromptedRequestId = requestId
+          .then((handle: any) => promptHeard(handle))
+          .then((heard) => {
+            // Talked over (interrupted) = not heard: the keypad and "yes" stay inert for it.
+            if (heard && pendingPermissionHolder()?.getPendingPermission?.()?.requestId === requestId) phonePromptedRequestId = requestId
           })
           .catch(() => {})
       }
@@ -7679,6 +7681,7 @@ async function main() {
           tasks: llmNow?.getRunningTasks?.() ?? [],
           pending: pending ? speakablePermission(pending.toolName, pending.input) : null,
           keypad: PHONE_KEYPAD_APPROVALS_ENABLED,
+          heard: !!pending && pending.requestId === phonePromptedRequestId,
         })
       }
       case 'stop': {
@@ -7702,7 +7705,8 @@ async function main() {
       case 'blocked': {
         if (action.what === 'switch') phoneSwitchProposal = null
         const pending = pendingPermissionHolder()?.getPendingPermission?.()
-        return sayBlocked(action.what, pending ? speakablePermission(pending.toolName, pending.input) : null, PHONE_KEYPAD_APPROVALS_ENABLED)
+        const heard = !!pending && pending.requestId === phonePromptedRequestId
+        return sayBlocked(action.what, pending ? speakablePermission(pending.toolName, pending.input) : null, PHONE_KEYPAD_APPROVALS_ENABLED, heard)
       }
       case 'switch': {
         // matchVoiceAction only returns a switch whose name picked a session by
@@ -7724,7 +7728,8 @@ async function main() {
         const name = target.title || 'that session'
         // Speak what the switch really did (done, pending, or why it was refused).
         const replies = await runAppAction({ type: 'switch_session', sessionId: target.sessionId, workingDirectory: target.cwd })
-        return saySwitchOutcome(replies.filter((r) => r?.sessionId === target.sessionId), name)
+        // Replies about this target, plus an already_live cancel (the target was live; a pending switch elsewhere was dropped).
+        return saySwitchOutcome(replies.filter((r) => r?.sessionId === target.sessionId || (r?.type === 'session_switch_cancelled' && r?.reason === 'already_live')), name)
       }
       case 'outputs': {
         const sessionId = llmNow?.sessionId

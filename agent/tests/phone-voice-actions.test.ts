@@ -9,6 +9,8 @@ import {
   normalizeUtterance,
   phoneMayChangeMode,
   pickSession,
+  howToAnswer,
+  promptHeard,
   sayBlocked,
   saySwitchOutcome,
   sayModeChanged,
@@ -19,8 +21,15 @@ import {
 import { CONTROL_MESSAGE_TYPES, PHONE_ACTION_TYPES, READ_ONLY_MESSAGE_TYPES, phoneAnswerAllowed } from '../src/data-sender-auth.js'
 
 let pass = 0
+const asyncTests: Promise<void>[] = []
 const t = (name: string, fn: () => unknown) => {
-  try { fn(); pass++; console.log('ok   ', name) } catch (e: any) { console.log('FAIL ', name, '\n     ', e.message.split('\n')[0]); process.exitCode = 1 }
+  const ok = () => { pass++; console.log('ok   ', name) }
+  const fail = (e: any) => { console.log('FAIL ', name, '\n     ', String(e?.message ?? e).split('\n')[0]); process.exitCode = 1 }
+  try {
+    const r = fn()
+    if (r && typeof (r as Promise<unknown>).then === 'function') asyncTests.push((r as Promise<unknown>).then(ok, fail))
+    else ok()
+  } catch (e: any) { fail(e) }
 }
 const here = dirname(fileURLToPath(import.meta.url))
 const src = readFileSync(join(here, '..', 'src', 'index.ts'), 'utf8')
@@ -122,8 +131,8 @@ t('2. a mode command while a request is pending changes nothing and says how to 
     assert.deepEqual(matchVoiceAction('switch to auto review', ctx), { kind: 'blocked', what: 'mode' })
     assert.notEqual((matchVoiceAction('allow everything', ctx) as any)?.kind, 'answer', '"allow everything" is never an answer')
   }
-  assert.match(sayBlocked('mode', 'run the command npm test', false), /request waiting, so I didn't change the approval mode\. Osborn wants to run the command npm test\. Say no to deny it, or approve it in the app\./)
-  assert.match(sayBlocked('mode', null, true), /Press 1 to allow or 2 to deny\./)
+  assert.match(sayBlocked('mode', 'run the command npm test', false, true), /request waiting, so I didn't change the approval mode\. Osborn wants to run the command npm test\. Say no to deny it, or approve it in the app\./)
+  assert.match(sayBlocked('mode', null, true, true), /Press 1 to allow or 2 to deny\./)
   const run = src.slice(src.indexOf("case 'blocked': {"), src.indexOf("case 'blocked': {") + 400)
   assert.doesNotMatch(run, /set_approval_mode|switch_session/)
   assert.match(src, /anyPermissionPending: !!pendingPermissionHolder\(\)/)
@@ -135,7 +144,7 @@ t('1. no switch is proposed or confirmed while a request is pending; its "yes" n
   // A proposal made before the request arrived: its yes is blocked, not a confirm and not an answer.
   assert.deepEqual(matchVoiceAction('yes', { ...waiting, switchProposed: true }), { kind: 'blocked', what: 'switch' })
   assert.deepEqual(matchVoiceAction('no', { ...waiting, switchProposed: true }), { kind: 'cancel_switch' })
-  assert.match(sayBlocked('switch', 'search the web', false), /^There's a request waiting, so I didn't switch sessions\. Osborn wants to search the web\./)
+  assert.match(sayBlocked('switch', 'search the web', false, true), /^There's a request waiting, so I didn't switch sessions\. Osborn wants to search the web\./)
   // Reading a request out drops any switch proposal, and the blocked branch drops it too.
   const prompt = src.slice(src.indexOf('// The keypad and a spoken yes/no answer it only once'), src.indexOf('// The keypad and a spoken yes/no answer it only once') + 900)
   assert.match(prompt, /phoneSwitchProposal = null/)
@@ -144,8 +153,42 @@ t('1. no switch is proposed or confirmed while a request is pending; its "yes" n
 
 t('4. the keypad and a spoken yes/no answer a request only after its prompt has finished playing', () => {
   const prompt = src.slice(src.indexOf('// The keypad and a spoken yes/no answer it only once'), src.indexOf('// The keypad and a spoken yes/no answer it only once') + 900)
-  assert.match(prompt, /phonePromptedRequestId = null[\s\S]*?\.say\?\.\(phoneApprovalPrompt\(toolName, input\)\)\)\s+\.then\(\(handle: any\) => handle\?\.waitForPlayout\?\.\(\)\)\s+\.then\(\(\) => \{\s+if \(pendingPermissionHolder\(\)\?\.getPendingPermission\?\.\(\)\?\.requestId === requestId\) phonePromptedRequestId = requestId/)
+  assert.match(prompt, /phonePromptedRequestId = null[\s\S]*?\.say\?\.\(phoneApprovalPrompt\(toolName, input\)\)\)\s+\.then\(\(handle: any\) => promptHeard\(handle\)\)\s+\.then\(\(heard\) => \{[\s\S]{0,120}if \(heard && pendingPermissionHolder\(\)\?\.getPendingPermission\?\.\(\)\?\.requestId === requestId\) phonePromptedRequestId = requestId/)
   assert.equal((src.match(/phonePromptedRequestId = requestId/g) || []).length, 1, 'set in one place, after playout')
+})
+
+t('1. a prompt the caller talked over (interrupted) is not heard', async () => {
+  const handle = (interrupted: boolean) => {
+    let played = false
+    return { get interrupted() { return played && interrupted }, waitForPlayout: async () => { played = true } }
+  }
+  assert.equal(await promptHeard(handle(false)), true, 'played in full')
+  assert.equal(await promptHeard(handle(true)), false, 'interrupted: waitForPlayout resolved, but not heard')
+  assert.equal(await promptHeard(null), false, 'no speech handle')
+  assert.equal(await promptHeard({}), false, 'no playout to wait for')
+})
+
+t('2. the "how to answer" line is offered only for the request read out on the call', () => {
+  assert.equal(howToAnswer(false, true), 'Approve or deny it in the app.')
+  assert.equal(howToAnswer(false, false), 'Approve or deny it in the app.')
+  assert.equal(howToAnswer(true, true), 'Press 1 to allow or 2 to deny.')
+  assert.equal(howToAnswer(true, false), 'Say no to deny it, or approve it in the app.')
+  const unheard = sayStatus({ turnInFlight: false, tasks: [], pending: 'search the web', keypad: true, heard: false })
+  assert.equal(unheard, "I'm waiting for your OK to search the web. Approve or deny it in the app.")
+  assert.doesNotMatch(unheard, /Press 1|say no/i)
+  assert.doesNotMatch(sayBlocked('mode', 'search the web', true, false), /Press 1|say no/i)
+  assert.match(sayBlocked('switch', 'search the web', false, false), /Approve or deny it in the app\.$/)
+  // index.ts decides "heard" from phonePromptedRequestId, in both places.
+  assert.equal((src.match(/heard: !!pending && pending\.requestId === phonePromptedRequestId/g) || []).length, 1, 'status')
+  assert.match(src, /const heard = !!pending && pending\.requestId === phonePromptedRequestId\s+return sayBlocked\(action\.what, [^\n]+, heard\)/)
+})
+
+t('3. a voice switch to the already-live session (with another switch pending) speaks "already in"', () => {
+  assert.match(src, /function cancelPendingSwitch\(reason: string, notify = true, reply: typeof sendToFrontend = publishToRoom\): void \{[\s\S]{0,300}if \(notify\) void reply\(\{ type: 'session_switch_cancelled'/)
+  assert.match(src, /if \(pendingSwitch\) cancelPendingSwitch\('already_live', true, sendToFrontend\)/)
+  assert.match(src, /replies\.filter\(\(r\) => r\?\.sessionId === target\.sessionId \|\| \(r\?\.type === 'session_switch_cancelled' && r\?\.reason === 'already_live'\)\)/)
+  // The pending switch was to another session; its cancel still tells the caller the target was already live.
+  assert.equal(saySwitchOutcome([{ type: 'session_switch_cancelled', reason: 'already_live', sessionId: 'other' } as any], 'Billing'), "You're already in Billing.")
 })
 
 t('2 (confirmed switch). the spoken outcome is what switch_session really did', () => {
@@ -158,7 +201,7 @@ t('2 (confirmed switch). the spoken outcome is what switch_session really did', 
   assert.match(saySwitchOutcome([{ type: 'session_switched', success: false, reason: 'switch_in_progress' }], 'Billing'), /^I couldn't switch to Billing\.$/)
   assert.equal(saySwitchOutcome([{ type: 'session_switch_cancelled', reason: 'already_live' }], 'Billing'), "You're already in Billing.")
   // The runner reads switch_session's real replies: requestSessionSwitch and performSessionSwitch reply through the caller's `reply`.
-  assert.match(src, /const replies = await runAppAction\(\{ type: 'switch_session', sessionId: target\.sessionId, workingDirectory: target\.cwd \}\)\s+return saySwitchOutcome\(/)
+  assert.match(src, /const replies = await runAppAction\(\{ type: 'switch_session', sessionId: target\.sessionId, workingDirectory: target\.cwd \}\)[\s\S]{0,200}return saySwitchOutcome\(/)
   assert.match(src, /origin: 'switch_session', reply: sendToFrontend \}\)/)
   assert.match(src, /opts: \{ force\?: boolean; origin: string; reply\?: typeof sendToFrontend \},[\s\S]{0,200}const sendToFrontend = opts\.reply \?\? publishToRoom/)
   assert.match(src, /await performSessionSwitch\(target, cwd, plan, opts\.origin, opts\.reply\)/)
@@ -222,9 +265,9 @@ t('a call may only answer deny, and only make the mode stricter, until keypad ap
 
 t('spoken replies', () => {
   assert.equal(sayStatus({ turnInFlight: false, tasks: [], pending: null }), "I'm not working on anything right now.")
-  assert.match(sayStatus({ turnInFlight: true, tasks: [{ subagentType: 'researcher', description: 'compare SIP providers' }], pending: 'run the command npm test', keypad: false }),
-    /^I'm waiting for your OK to run the command npm test\. Approve it in the app, or say no to deny it\. One agent is running: the researcher agent on compare SIP providers\.$/)
-  assert.match(sayStatus({ turnInFlight: false, tasks: [], pending: 'search the web', keypad: true }), /Press 1 to allow or 2 to deny/)
+  assert.match(sayStatus({ turnInFlight: true, tasks: [{ subagentType: 'researcher', description: 'compare SIP providers' }], pending: 'run the command npm test', keypad: false, heard: true }),
+    /^I'm waiting for your OK to run the command npm test\. Say no to deny it, or approve it in the app\. One agent is running: the researcher agent on compare SIP providers\.$/)
+  assert.match(sayStatus({ turnInFlight: false, tasks: [], pending: 'search the web', keypad: true, heard: true }), /Press 1 to allow or 2 to deny/)
   assert.equal(saySessions([]), "I couldn't find any sessions.")
   assert.match(saySessions([{ sessionId: 'a', title: 'One' }, { sessionId: 'b', title: 'Two' }]), /^Your recent sessions: 1, One\. 2, Two\. /)
   assert.equal(sayOutputs([]), "This session hasn't made any files yet.")
@@ -291,4 +334,4 @@ t('prompts: no tool called respond_permission is referenced', () => {
   assert.doesNotMatch(prompts, /respond_permission/)
 })
 
-console.log(`\n${pass} passed${process.exitCode ? ', some FAILED' : ''}`)
+void Promise.all(asyncTests).then(() => console.log(`\n${pass} passed${process.exitCode ? ", some FAILED" : ""}`))

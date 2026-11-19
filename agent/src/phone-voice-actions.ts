@@ -161,9 +161,11 @@ export function sayStatus(s: {
   pending: string | null
   /** Keypad approvals on: the caller can allow from the phone. */
   keypad?: boolean
+  /** The pending request is the one read out on this call (only then can the caller answer it). */
+  heard?: boolean
 }): string {
   const parts: string[] = []
-  if (s.pending) parts.push(`I'm waiting for your OK to ${s.pending}. ${s.keypad ? 'Press 1 to allow or 2 to deny.' : 'Approve it in the app, or say no to deny it.'}`)
+  if (s.pending) parts.push(`I'm waiting for your OK to ${s.pending}. ${howToAnswer(!!s.heard, !!s.keypad)}`)
   if (s.tasks.length) {
     const named = s.tasks.slice(0, 3).map((t) => `the ${t.subagentType || 'helper'} agent${t.description ? ` on ${short(t.description, 50)}` : ''}`)
     parts.push(`${s.tasks.length === 1 ? 'One agent is' : `${s.tasks.length} agents are`} running: ${list(named)}.`)
@@ -189,11 +191,30 @@ export function sayOutputs(artifacts: { fileName?: string }[], max = 5): string 
 }
 
 /** A mode command while a request waits: nothing changed; how to answer the request instead. */
-export function sayBlocked(blocked: 'mode' | 'switch', pending: string | null, keypad: boolean): string {
+export function sayBlocked(blocked: 'mode' | 'switch', pending: string | null, keypad: boolean, heard: boolean): string {
   const didnt = blocked === 'mode' ? "didn't change the approval mode" : "didn't switch sessions"
   const what = pending ? `Osborn wants to ${pending}. ` : ''
-  const how = keypad ? 'Press 1 to allow or 2 to deny.' : 'Say no to deny it, or approve it in the app.'
-  return `There's a request waiting, so I ${didnt}. ${what}${how}`
+  return `There's a request waiting, so I ${didnt}. ${what}${howToAnswer(heard, keypad)}`
+}
+
+/**
+ * Whether the caller heard a spoken prompt in full: its playout finished and
+ * was not interrupted (talking over it does not count). No handle → not heard.
+ */
+export async function promptHeard(handle: { waitForPlayout?(): Promise<unknown>; interrupted?: boolean } | null | undefined): Promise<boolean> {
+  if (!handle?.waitForPlayout) return false
+  await handle.waitForPlayout()
+  return !handle.interrupted
+}
+
+/**
+ * How the caller can answer a pending request. Only the request read out on
+ * this call (phonePromptedRequestId, set after its prompt played in full) can
+ * be answered by phone; any other is answered in the app.
+ */
+export function howToAnswer(heard: boolean, keypad: boolean): string {
+  if (!heard) return 'Approve or deny it in the app.'
+  return keypad ? 'Press 1 to allow or 2 to deny.' : 'Say no to deny it, or approve it in the app.'
 }
 
 /**
