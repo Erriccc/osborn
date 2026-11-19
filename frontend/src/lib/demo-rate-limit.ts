@@ -1,5 +1,5 @@
 /**
- * Fixed-window-per-key limiter for /api/demo-access. Bounded: a key whose hits have all
+ * Sliding-window per-key limiter for /api/demo-access. Bounded: a key whose hits have all
  * expired is dropped, and past maxKeys the oldest keys go first, so rotating keys cannot
  * grow the map without limit.
  */
