@@ -52,20 +52,20 @@ export type BugReportResult = { ok: true; id?: string } | { ok: false; error: st
 
 const SEVERITIES: BugReportSeverity[] = ['low', 'medium', 'high', 'critical']
 
-// Pure: validate + shape a row for the bug_reports table. Mirrors the server-side
-// validation in the agent's /report-bug handler (title >= 3, description required,
-// severity in enum) and the column limits, so both entry paths behave identically.
-// osborn_version is NOT NULL in the schema; when filing straight from the web with
-// no live agent we stamp 'web' so the insert never fails on it.
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 /** The row id: the agent's reportId (a UUID minted once per report) when there is one, so a
  *  redelivered report hits the primary key instead of filing twice; otherwise a fresh id. */
 export function reportRowId(metadata: unknown, mint: () => string): { id: string; idempotent: boolean } {
   const rid = (metadata as { reportId?: unknown } | null)?.reportId
-  return typeof rid === 'string' && UUID.test(rid) ? { id: rid.toLowerCase(), idempotent: true } : { id: mint(), idempotent: false }
+  return typeof rid === 'string' && UUID_RE.test(rid) ? { id: rid.toLowerCase(), idempotent: true } : { id: mint(), idempotent: false }
 }
 
+// Pure: validate + shape a row for the bug_reports table. Mirrors the server-side
+// validation in the agent's /report-bug handler (title >= 3, description required,
+// severity in enum) and the column limits, so both entry paths behave identically.
+// osborn_version is NOT NULL in the schema; when filing straight from the web with
+// no live agent we stamp 'web' so the insert never fails on it.
 export function buildBugReportRow(
   input: BugReportInput,
   user: { id: string; email?: string | null },
