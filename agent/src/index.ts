@@ -43,7 +43,7 @@ import { createGunzip } from 'node:zlib'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, extractCwd, slugToPath, getClaudeProjectsDir, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, extractCwd, slugToPath, getClaudeProjectsDir, getSessionDir, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
 import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
@@ -54,7 +54,7 @@ import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fast
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
@@ -4135,6 +4135,7 @@ async function main() {
   function resolveCwdForSession(sessionId: string, hint?: string | null): Promise<string | null> {
     return resolveSessionCwd(sessionId, hint, workingDir, {
       exists: (id, wd) => sessionExists(id, wd),
+      recordedCwd: (id, wd) => extractCwd(join(getSessionDir(wd), `${id}.jsonl`)),
       lookupCwd: (id) => scanSlugCwd(id, getClaudeProjectsDir(), {
         readdir: (d) => readdirSync(d), exists: (p) => existsSync(p),
         decodeSlug: (s) => slugToPath(s), readCwd: (p) => extractCwd(p),
@@ -5640,13 +5641,13 @@ async function main() {
         try { resolvedConnectCwd = await resolveCwdForSession(preSelectedSessionId, wdHint) }
         catch (e) { console.warn('⚠️ connect cwd resolve failed:', e instanceof Error ? e.message : e) }
       }
-      workingDir = resolvedConnectCwd || wdHint || defaultWorkingDir
-      // Only the HINT is ever created: a resolved cwd can come from an imported
-      // session's JSONL and name another machine's path, and creating that tree
-      // would boot the agent in an empty dir (scanSlugCwd won't either).
-      if (workingDir === wdHint && !existsSync(workingDir)) {
+      const connectDir = connectWorkingDir(resolvedConnectCwd, wdHint, preSelectedSessionId, defaultWorkingDir, existsSync)
+      workingDir = connectDir.dir
+      if (connectDir.create) {
         mkdirSync(workingDir, { recursive: true })
         console.log(`📁 Created project directory: ${workingDir}`)
+      } else if (wdHint && !resolvedConnectCwd && workingDir !== wdHint) {
+        console.warn(`⚠️ Project folder not found, not created: ${wdHint}`)
       }
       console.log(`📂 Working directory: ${workingDir}`)
     } catch (err) {

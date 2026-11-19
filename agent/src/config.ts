@@ -1134,7 +1134,8 @@ export async function listAllClaudeSessions(limit = 1000, includeSubagents = fal
         sessionId: c.sessionId,
         projectSlug: c.slug,
         projectPath: cwd || slugPath,    // display / group key (original cwd)
-        cwd: slugPath || cwd,            // resume routing (file location)
+        // The recorded cwd when it encodes to this slug: the lossy decode can name another project (#181).
+        cwd: (cwd && projectPathToClaudeFolderName(cwd) === c.slug ? cwd : '') || slugPath || cwd,  // resume routing (file location)
         timestamp: c.mtime,
         lastMessage: preview.lastMessage,
         title: preview.title,
