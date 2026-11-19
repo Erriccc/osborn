@@ -465,29 +465,25 @@ async function main() {
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
     // A value below 10s (say "120", meant as seconds) would time every act out at once.
     const BRAIN_TIMEOUT_MS = Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) >= 10000 ? Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) : 120000
-    let timer: ReturnType<typeof setTimeout> | undefined
     // A timed-out call is fenced (#174): the abort stops it starting any action once the lock
     // is free, only ITS brain is closed (never a replacement), and a late finish is logged.
     const sh = stagehand
     const fence = new AbortController()
     const call = actWithCache(sh, p, i, fence.signal)
+    const why = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`
     try {
-      return await Promise.race([
-        call,
-        new Promise<never>((_, rej) => { timer = setTimeout(() => {
-          const why = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`
-          fence.abort(new Error(why))
-          call.then((r) => { if (!r.noop) mark(`brain: a timed-out act finished late and acted (${r.did ?? 'unknown action'}): "${i.slice(0, 60)}"`) }, () => {})
-          if (stagehand === sh) { brainAlive = false; brainError = why }
-          void sh.close().catch(() => {})
-          rej(new Error(why))
-        }, BRAIN_TIMEOUT_MS) }),
-      ])
+      return await withTimeout(call, BRAIN_TIMEOUT_MS, why)
     }
     catch (e) {
-      if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
+      if ((e as Error)?.message === why) {
+        fence.abort(e)
+        call.then((r) => { if (!r.noop) mark(`brain: a timed-out act finished late and acted (${r.did ?? 'unknown action'}): "${i.slice(0, 60)}"`) }, () => {})
+        if (stagehand === sh) { brainAlive = false; brainError = why }
+        void sh.close().catch(() => {})
+      }
+      else if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
       throw e
-    } finally { clearTimeout(timer) }
+    }
   }
 
   const chatUrl = `${APP_URL}/chat?provider=gemini&voiceArch=pipeline&agent=claude&agentUrl=${encodeURIComponent(AGENT_URL)}`
