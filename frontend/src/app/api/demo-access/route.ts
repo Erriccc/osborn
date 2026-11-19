@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseAnon } from '@/lib/supabase-anon'
 import { isMissingFunction, serviceClient } from '@/lib/sandbox-claims'
+import { createRateLimiter } from '@/lib/demo-rate-limit'
 
 /**
  * POST /api/demo-access — email gate for free/demo ("Connect without account")
@@ -14,26 +15,15 @@ import { isMissingFunction, serviceClient } from '@/lib/sandbox-claims'
  * Recording a lead must never cost the visitor the session, so a missing or
  * failing store logs and answers ok. Only a bad email (400) or the rate limit
  * (429) refuses — the login page still blocks the visitor on those.
+ *
+ * The limiter is not the lead store's protection: anyone can call record_demo_lead()
+ * directly with the public anon key, and the leftmost x-forwarded-for is client-set (#296).
  */
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
 
-/** Best-effort per-IP rate limit: 10 requests per minute (module-scoped Map). */
-const RATE_LIMIT = 10
-const RATE_WINDOW_MS = 60_000
-const hits = new Map<string, number[]>()
-
-function rateLimited(ip: string): boolean {
-  const now = Date.now()
-  const recent = (hits.get(ip) ?? []).filter((t) => now - t < RATE_WINDOW_MS)
-  if (recent.length >= RATE_LIMIT) {
-    hits.set(ip, recent)
-    return true
-  }
-  recent.push(now)
-  hits.set(ip, recent)
-  return false
-}
+/** Best-effort per-IP rate limit: 10 valid requests per minute, at most 10k addresses held. */
+const limiter = createRateLimiter({ limit: 10, windowMs: 60_000, maxKeys: 10_000 })
 
 /** Record the lead. Never throws, so a store outage cannot reach the visitor. */
 async function recordLead(email: string): Promise<void> {
@@ -67,13 +57,9 @@ async function recordLead(email: string): Promise<void> {
 }
 
 export async function POST(req: NextRequest) {
-  const ip =
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    req.headers.get('x-real-ip') ||
-    'unknown'
-  if (rateLimited(ip)) {
-    return NextResponse.json({ ok: false, error: 'Too many attempts. Try again shortly.' }, { status: 429 })
-  }
+  // The key is client-influenced, so keep only something IP-shaped and short (bounds memory per key).
+  const raw = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || req.headers.get('x-real-ip') || ''
+  const ip = /^[0-9a-fA-F:.]{2,45}$/.test(raw) ? raw : 'unknown'
 
   let email: string
   try {
@@ -85,6 +71,10 @@ export async function POST(req: NextRequest) {
 
   if (email.length > 320 || !EMAIL_RE.test(email)) {
     return NextResponse.json({ ok: false, error: 'Enter a valid email address.' }, { status: 400 })
+  }
+  // Only a valid email counts toward the limit.
+  if (limiter.limited(ip)) {
+    return NextResponse.json({ ok: false, error: 'Too many attempts. Try again shortly.' }, { status: 429 })
   }
 
   await recordLead(email)
