@@ -233,15 +233,13 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
         throw e
       }
     }
+    const timeStop = () => err({ kind: 'time', message: 'time budget reached; the rest waits for the next run' })
     // The guard refuses for the Library's daily cap, or (its deadline) the sweep's time budget.
-    const capStop = () =>
-      guard.capHit === 'time'
-        ? err({ kind: 'time', message: 'time budget reached; the rest waits for the next run' })
-        : err({ kind: 'cap', message: 'Library daily spend cap reached' })
+    const capStop = () => (guard.capHit === 'time' ? timeStop() : err({ kind: 'cap', message: 'Library daily spend cap reached' }))
     for (const it of items) {
       if (calls >= maxPages || Date.now() > deadline) {
         st.capHit = true
-        if (Date.now() > deadline) err({ kind: 'time', message: 'time budget reached; the rest waits for the next run' })
+        if (Date.now() > deadline) timeStop()
         break
       }
       if (infraFails >= 2) {
