@@ -17,6 +17,8 @@
 // relaxes the canUseTool / PreToolUse gate: a tool the agent denies stays denied,
 // and DENY always wins.
 
+import { homedir } from 'node:os'
+
 export type RiskTier = 'low' | 'high'
 
 // Default workspace root; the agent passes the session's working directory.
@@ -79,16 +81,21 @@ const SENSITIVE_NAMES: RegExp[] = [
   /^(?:azure-pipelines|bitbucket-pipelines|codemagic|cloudbuild|buildspec|appveyor)\.ya?ml$/i, // CI
   /^(?:fly|railway|nixpacks|netlify|vercel)\.(?:toml|json)$/i,  // deploy configs
   /\.(?:pem|key|p12|pfx|jks|keystore)$/i, /^id_(?:rsa|dsa|ecdsa|ed25519)/i, /credential/i, /secret/i,
+  // Files a build, install or test run executes or reads as config.
+  /^(?:setup\.py|setup\.cfg|pyproject\.toml|conftest\.py|pipfile|pipfile\.lock|cargo\.toml|build\.rs|gemfile|go\.mod)$/i,
+  /^requirements[\w.-]*\.txt$/i, /\.gemspec$/i,
+  /\.config\.(?:js|ts|mjs|cjs|mts|cts)$/i,                      // vite/next/jest/eslint/… configs
+  /^tsconfig[\w.-]*\.json$/i,
 ]
 
 // Paths that change how tools, the agent, builds or the repo behave, or hold
 // secrets: any dot segment (.git, .claude, .husky, .github, .gitlab-ci.yml,
-// .env*, node_modules/.bin, .githooks, .npmrc …), a hooks folder, and the
-// SENSITIVE_NAMES above. Never LOW, even inside the workspace.
+// .env*, .babelrc, .githooks, .npmrc …), anything under node_modules, a hooks
+// folder, and the SENSITIVE_NAMES above. Never LOW, even inside the workspace.
 export function isSensitivePath(rawPath: unknown): boolean {
   if (typeof rawPath !== 'string') return true
   const segs = rawPath.trim().split(/[\\/]+/).filter((s) => s && s !== '.')
-  if (segs.some((s) => s.startsWith('.') || /^hooks?$/i.test(s))) return true
+  if (segs.some((s) => s.startsWith('.') || /^hooks?$/i.test(s) || s === 'node_modules')) return true
   const base = segs[segs.length - 1] || ''
   return SENSITIVE_NAMES.some((re) => re.test(base))
 }
@@ -96,9 +103,15 @@ export function isSensitivePath(rawPath: unknown): boolean {
 // Grep/Glob search the workspace (cwd) when they are given no path.
 const DEFAULTS_TO_CWD = new Set<string>(['Grep', 'Glob'])
 
-/** True for tools that only read (the whole-tool "always allow" covers only these). */
-export function isReadOnlyTool(toolName: string): boolean {
-  return READ_ONLY_TOOLS.has(toolName)
+/**
+ * A cwd too broad to trust writes under: the filesystem root or the user's
+ * home folder (its dotfiles, ssh keys and shell profile all sit "inside" it).
+ */
+export function isBroadRoot(root: string | undefined, home: string = homedir()): boolean {
+  if (!root) return true
+  const norm = (p: string) => (p.length > 1 ? p.replace(/\/+$/, '') : p)
+  const r = norm(root)
+  return r === '/' || r === '' || (!!home && r === norm(home))
 }
 
 /**
@@ -114,6 +127,8 @@ export function classifyRisk(
   if (!toolName || typeof toolName !== 'string') return 'high'
   // LOW needs an in-workspace (session cwd), non-sensitive target.
   if (READ_ONLY_TOOLS.has(toolName) || WORKSPACE_WRITE_TOOLS.has(toolName)) {
+    // A home-folder or "/" cwd: no write is low risk.
+    if (WORKSPACE_WRITE_TOOLS.has(toolName) && workspaceRoot !== undefined && isBroadRoot(workspaceRoot)) return 'high'
     const target = targetPath(input)
     if (target === undefined && DEFAULTS_TO_CWD.has(toolName)) return 'low'
     return isInWorkspace(target, workspaceRoot) && !isSensitivePath(target) ? 'low' : 'high'

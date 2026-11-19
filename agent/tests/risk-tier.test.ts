@@ -2,7 +2,8 @@
 // Run:  npx tsx agent/tests/risk-tier.test.ts
 
 import assert from 'node:assert/strict'
-import { classifyRisk, isInWorkspace, isSensitivePath } from '../src/risk-tier.js'
+import { homedir } from 'node:os'
+import { classifyRisk, isBroadRoot, isInWorkspace, isSensitivePath } from '../src/risk-tier.js'
 import { autoApproval } from '../src/approval-policy.js'
 const canAutoApprove = (t: string, i: Record<string, unknown>) => autoApproval('auto-review', t, i, '/workspace').approve
 
@@ -127,6 +128,11 @@ check('config, VCS, hooks, settings and secrets are high in the workspace', () =
     'azure-pipelines.yml', 'bitbucket-pipelines.yml', 'codemagic.yaml', 'fly.toml', 'railway.toml', 'nixpacks.toml', 'vercel.json',
     // secret-looking names
     'certs/server.pem', 'tls.key', 'id_rsa', 'id_ed25519.pub', 'aws-credentials.json', 'config/credentials.yml', 'app-secrets.yaml', 'client_secret.json', 'store.p12',
+    // files a build, install or test run executes
+    'setup.py', 'setup.cfg', 'pyproject.toml', 'tests/conftest.py', 'requirements.txt', 'requirements-dev.txt', 'deps/requirements-base.txt',
+    'Pipfile', 'Cargo.toml', 'crates/core/build.rs', 'Gemfile', 'mylib.gemspec', 'go.mod',
+    'vite.config.ts', 'next.config.mjs', 'jest.config.js', 'eslint.config.cjs', 'tailwind.config.ts', 'tsconfig.json', 'tsconfig.build.json', 'packages/a/tsconfig.base.json',
+    '.babelrc', 'node_modules/left-pad/index.js', 'apps/web/node_modules/x/package/lib.js',
   ]) {
     assert.equal(isSensitivePath(p), true, p)
     assert.equal(classifyRisk('Edit', { file_path: p }, root), 'high', p)
@@ -145,6 +151,25 @@ check('auto-review never approves anything outside the cwd, or anything when the
   }
   assert.equal(autoApproval('auto-review', 'Edit', { file_path: 'src/a.ts' }, undefined).approve, false, 'no cwd → no auto-approve')
   assert.equal(autoApproval('auto-review', 'Grep', {}, undefined).approve, false)
+})
+
+check('a home-folder or "/" cwd: no write is low risk', () => {
+  const home = '/home/sprite'
+  for (const root of [home, `${home}/`, '/']) assert.equal(isBroadRoot(root, home), true, root)
+  for (const root of [homedir(), `${homedir()}/`, '/']) {
+    for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+      assert.equal(classifyRisk(tool, { file_path: 'notes.md', notebook_path: 'n.ipynb' }, root), 'high', `${tool} in ${root}`)
+    }
+  }
+  assert.equal(isBroadRoot(`${home}/workspace`, home), false)
+  assert.equal(isBroadRoot(undefined, home), true)
+  // The real home folder (os.homedir()) as the cwd: Auto-review approves no write.
+  const realHome = homedir()
+  assert.equal(autoApproval('auto-review', 'Edit', { file_path: `${realHome}/notes.md` }, realHome).approve, false)
+  assert.equal(autoApproval('auto-review', 'Write', { file_path: 'notes.md' }, realHome).approve, false)
+  assert.equal(autoApproval('auto-review', 'Write', { file_path: '/notes.md' }, '/').approve, false)
+  // A project folder inside home still works.
+  assert.equal(autoApproval('auto-review', 'Edit', { file_path: `${realHome}/proj/src/a.ts` }, `${realHome}/proj`).approve, true)
 })
 
 console.log(`\n${passed} test blocks passed`)

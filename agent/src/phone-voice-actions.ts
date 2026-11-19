@@ -14,10 +14,15 @@ import { approvalModeLabel, type ApprovalMode } from './approval-policy.js'
 export type VoiceAction =
   | { kind: 'answer'; answer: 'allow' | 'deny' }
   | { kind: 'mode'; mode: ApprovalMode }
+  /** A mode command while a request waits: not applied (the caller hears how to answer it). */
+  | { kind: 'mode_blocked'; mode: ApprovalMode }
+  /** "switch to …" picked a session: ask "Switch to <title>?" and wait for a yes. */
   | { kind: 'status' }
   | { kind: 'stop'; agent?: string }
   | { kind: 'sessions' }
   | { kind: 'switch'; query: string; target: SessionChoice }
+  | { kind: 'confirm_switch' }
+  | { kind: 'cancel_switch' }
   | { kind: 'outputs' }
   | { kind: 'keep_working' }
 
@@ -54,19 +59,29 @@ const AGENT_ROLES = '(?:researcher|reasoner|writer|steward|reviewer|tester|plann
 const STOP_AGENT = new RegExp(`^stop the (?:(${AGENT_ROLES})(?: agent)?|([a-z][a-z0-9 -]*?) (?:agent|sub agent|subagent))$`)
 const SESSIONS = /^(?:what (?:were|are) my recent (?:sessions|conversations)|(?:list|read me) my (?:recent )?sessions|my recent sessions)$/
 // Only an explicit switch: "switch to …", "switch session to …", "go back to …" (and then only a session that matches by name).
-const SWITCH = /^(?:switch(?: session)? to|go back to) (?:my |the )?(.+?)(?: session| project| conversation)?$/
+// Only an explicit session switch, with the noun said: "switch to the X
+// session/project/conversation" or "switch session to X". Then the name must
+// pick a session by its title, and the caller confirms with a yes.
+const SWITCH = /^(?:switch to (?:my |the )?(.+?) (?:session|project|conversation)|switch session to (?:my |the )?(.+))$/
+const CONFIRM_YES = /^(?:yes|yeah|yep|yup|yes please|do it|switch)$/
+const CONFIRM_NO = /^(?:no|nope|cancel|dont|do not|stay|stay here)$/
 const OUTPUTS = /^(?:what did you make(?: in this session)?|what files did you (?:make|create)(?: in this session)?|read me the session summary|what are (?:the|your) outputs)$/
 const KEEP_WORKING = /^(?:keep working (?:after i hang up|when i hang up|in the background)|work in the background)$/
 
 /**
  * The voice action a caller's utterance asks for, or null (a normal turn for
- * the model). A yes/no answers an approval only while one is pending. A
- * switch matches only when `sessions` holds a session the name picks
- * (pickSession); otherwise the turn goes to the model.
+ * the model).
+ * - `permissionPending` (the request the caller heard read out): a yes/no answers it.
+ * - `anyPermissionPending`: a mode command is not applied while any request
+ *   waits ('mode_blocked'); "allow all" is never taken as an answer.
+ * - `switchProposed`: the turn after "Switch to <title>?", a yes confirms and a
+ *   no cancels; anything else is a normal turn (and drops the proposal).
+ * - A switch is only proposed when `sessions` holds a session whose title the
+ *   name picks (pickSession); otherwise the turn goes to the model.
  */
 export function matchVoiceAction(
   text: string,
-  ctx: { permissionPending: boolean; sessions?: SessionChoice[] },
+  ctx: { permissionPending: boolean; anyPermissionPending?: boolean; switchProposed?: boolean; sessions?: SessionChoice[] },
 ): VoiceAction | null {
   const s = normalizeUtterance(text)
   if (!s || s.split(' ').length > MAX_WORDS) return null
@@ -74,7 +89,13 @@ export function matchVoiceAction(
     if (ANSWER_ALLOW.test(s)) return { kind: 'answer', answer: 'allow' }
     if (ANSWER_DENY.test(s)) return { kind: 'answer', answer: 'deny' }
   }
-  for (const [re, mode] of MODE_PATTERNS) if (re.test(s)) return { kind: 'mode', mode }
+  if (ctx.switchProposed) {
+    if (CONFIRM_YES.test(s)) return { kind: 'confirm_switch' }
+    if (CONFIRM_NO.test(s)) return { kind: 'cancel_switch' }
+  }
+  for (const [re, mode] of MODE_PATTERNS) {
+    if (re.test(s)) return ctx.permissionPending || ctx.anyPermissionPending ? { kind: 'mode_blocked', mode } : { kind: 'mode', mode }
+  }
   if (STATUS.test(s)) return { kind: 'status' }
   if (STOP_MAIN.test(s)) return { kind: 'stop' }
   const agent = STOP_AGENT.exec(s)
@@ -83,9 +104,10 @@ export function matchVoiceAction(
   if (OUTPUTS.test(s)) return { kind: 'outputs' }
   if (KEEP_WORKING.test(s)) return { kind: 'keep_working' }
   const sw = SWITCH.exec(s)
-  if (sw && sw[1].trim()) {
-    const target = pickSession(sw[1].trim(), ctx.sessions ?? [])
-    if (target) return { kind: 'switch', query: sw[1].trim(), target }
+  const query = (sw?.[1] || sw?.[2] || '').trim()
+  if (query) {
+    const target = pickSession(query, ctx.sessions ?? [])
+    if (target) return { kind: 'switch', query, target }
   }
   return null
 }
@@ -120,8 +142,8 @@ export function pickSession<T extends SessionChoice>(query: string, sessions: T[
   let best: T | null = null
   let bestScore = need - 1
   for (const s of sessions) {
-    const folder = String(s.cwd || s.projectPath || '').split('/').filter(Boolean).pop() || ''
-    const hay = new Set([...words(s.title || ''), ...words(folder.replace(/[-_.]+/g, ' '))])
+    // The title only: a project folder name alone ("api", "web") is too common in speech.
+    const hay = new Set(words(s.title || ''))
     const score = q.filter((w) => hay.has(w)).length
     if (score > bestScore) { best = s; bestScore = score }
   }
@@ -163,6 +185,13 @@ export function sayOutputs(artifacts: { fileName?: string }[], max = 5): string 
   if (!names.length) return "This session hasn't made any files yet."
   const more = names.length > max ? `, and ${names.length - max} more` : ''
   return `This session made ${names.length === 1 ? 'one file' : `${names.length} files`}: ${list(names.slice(0, max))}${more}. They are in the app under Outputs.`
+}
+
+/** A mode command while a request waits: nothing changed; how to answer the request instead. */
+export function sayModeBlocked(pending: string | null, keypad: boolean): string {
+  const what = pending ? `Osborn wants to ${pending}. ` : ''
+  const how = keypad ? 'Press 1 to allow or 2 to deny.' : 'Say no to deny it, or approve it in the app.'
+  return `There's a request waiting, so I didn't change the approval mode. ${what}${how}`
 }
 
 /** The spoken confirmation of a mode change. */

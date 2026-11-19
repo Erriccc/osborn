@@ -349,6 +349,8 @@ t('index.ts: a held request skips the always-allow list and the saved mode; the 
   assert.match(body, /if \(!holdForPerson && isAlwaysAllowed\(sessionAllows, toolName, input\)\)/)
   assert.match(body, /if \(auto\.approve && !holdForPerson\)/)
   assert.match(src, /phoneParkedBrain = phoneCallerLeft \? currentLLM : null\s+parkWarm\('participant_disconnected'\)/)
+  assert.match(src, /phoneParkedBrain = phoneCallerLeft \? currentLLM : null\s+parkWarm\('duplicate_identity'\)/, 'the device-handoff park marks a call brain too')
+  assert.equal((src.match(/parkWarm\('/g) || []).length, (src.match(/phoneParkedBrain = phoneCallerLeft \? currentLLM : null\s+parkWarm\('/g) || []).length, 'every park marks a call brain')
   assert.match(src, /const reused = claimWarm\(\)[\s\S]{0,200}if \(reused === phoneParkedBrain\) phoneParkedBrain = null[\s\S]{0,200}createDirectSession\(resumeSessionId, reused\)/)
 })
 

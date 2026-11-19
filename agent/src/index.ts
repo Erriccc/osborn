@@ -76,7 +76,7 @@ import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
-import { matchVoiceAction, phoneMayChangeMode, sayModeChanged, sayOutputs, saySessions, sayStatus, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
+import { matchVoiceAction, phoneMayChangeMode, sayModeBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -3059,6 +3059,8 @@ async function main() {
   let phonePromptedRequestId: string | null = null
   // Sessions a call's "switch to …" picks from: loaded when the call starts, refreshed by "recent sessions".
   let phoneSessions: SessionChoice[] = []
+  // "Switch to <title>?" asked on a call: switched only on a yes in the next turn.
+  let phoneSwitchProposal: { target: SessionChoice; expires: number } | null = null
   // A brain parked after "keep working" on a call: its requests keep the phone
   // policy (denied, or left pending) until a browser or app session re-attaches it.
   let phoneParkedBrain: unknown = null
@@ -6439,6 +6441,8 @@ async function main() {
       // participantConnectedHandler owns continuation (re-attach or, on a
       // mismatch, it frees the warm slot). The warm watchdog is the backstop.
       console.log('🔀 [KEEP-WARM] duplicate-identity eviction — device handoff; parking brain, keeping room')
+      // A call's brain parked here keeps the phone policy too, until re-attached.
+      phoneParkedBrain = phoneCallerLeft ? currentLLM : null
       parkWarm('duplicate_identity')
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
@@ -7607,7 +7611,13 @@ async function main() {
     if (!inPhoneRoom()) return false
     // A yes/no counts only for the request the caller heard read out.
     const heard = !!phonePromptedRequestId && pendingPermissionHolder()?.getPendingPermission?.()?.requestId === phonePromptedRequestId
-    const action = matchVoiceAction(text, { permissionPending: heard, sessions: phoneSessions })
+    // A proposed switch waits one turn for its yes/no (and a minute at most).
+    const switchProposed = !!phoneSwitchProposal && Date.now() < phoneSwitchProposal.expires
+    const action = matchVoiceAction(text, {
+      permissionPending: heard, anyPermissionPending: !!pendingPermissionHolder(), switchProposed, sessions: phoneSessions,
+    })
+    // Any other turn drops the proposal: only the very next yes switches.
+    if (action?.kind !== 'confirm_switch' && action?.kind !== 'switch') phoneSwitchProposal = null
     if (!action) return false
     console.log(`📞 Voice action: ${JSON.stringify(action)}`)
     void runPhoneVoiceAction(action)
@@ -7661,11 +7671,28 @@ async function main() {
         phoneSessions = sessions
         return saySessions(sessions)
       }
+      case 'mode_blocked': {
+        const pending = pendingPermissionHolder()?.getPendingPermission?.()
+        return sayModeBlocked(pending ? speakablePermission(pending.toolName, pending.input) : null, PHONE_KEYPAD_APPROVALS_ENABLED)
+      }
       case 'switch': {
-        // matchVoiceAction only returns a switch whose name picked a session (pickSession).
+        // matchVoiceAction only returns a switch whose name picked a session by
+        // title (pickSession). Nothing switches until the caller says yes.
         const target = action.target
         const name = target.title || action.query
-        if (target.sessionId === llmNow?.sessionId) return `You're already in ${name}.`
+        if (target.sessionId === llmNow?.sessionId) { phoneSwitchProposal = null; return `You're already in ${name}.` }
+        phoneSwitchProposal = { target, expires: Date.now() + 60_000 }
+        return `Switch to ${name}?`
+      }
+      case 'cancel_switch': {
+        phoneSwitchProposal = null
+        return 'OK, staying here.'
+      }
+      case 'confirm_switch': {
+        const target = phoneSwitchProposal?.target
+        phoneSwitchProposal = null
+        if (!target) return 'There is nothing to switch to.'
+        const name = target.title || 'that session'
         const busy = llmNow?.busyState?.()
         await runAppAction({ type: 'switch_session', sessionId: target.sessionId, workingDirectory: target.cwd })
         return busy && !busy.idle ? `I'll switch to ${name} as soon as I finish the current step.` : `Switching to ${name}.`

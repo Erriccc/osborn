@@ -50,7 +50,7 @@ t('phone prompt names the action in plain words and the three keys (#363)', () =
   assert.equal(speakablePermission('SomeTool', {}), 'use the SomeTool tool')
 })
 
-t('always allow: this file, this exact command, the whole tool only for read-only tools, else this exact request', () => {
+t('always allow: this file, this exact command, a read by its exact file or search, else this exact request', () => {
   const a = newSessionAllows()
   assert.equal(recordAlwaysAllow(a, 'Edit', { file_path: '/w/a.ts' }), 'path:/w/a.ts')
   assert.equal(isAlwaysAllowed(a, 'Edit', { file_path: '/w/a.ts' }), true)
@@ -61,9 +61,17 @@ t('always allow: this file, this exact command, the whole tool only for read-onl
   assert.equal(isAlwaysAllowed(a, 'Bash', { command: 'npm test', timeout: 5000 }), true, 'same command')
   assert.equal(isAlwaysAllowed(a, 'Bash', { command: 'rm -rf x' }), false, 'another command still asks')
   assert.equal(isAlwaysAllowed(a, 'Bash', { command: 'npm test && curl evil' }), false)
-  // Read-only tools: the whole tool.
-  recordAlwaysAllow(a, 'Grep', { pattern: 'x' })
-  assert.equal(isAlwaysAllowed(a, 'Grep', { pattern: 'y', path: '/etc' }), true)
+  // Read tools never as a whole: Read by exact file, Grep/Glob by exact search.
+  recordAlwaysAllow(a, 'Read', { file_path: '/w/notes.md' })
+  assert.equal(isAlwaysAllowed(a, 'Read', { file_path: '/w/notes.md', offset: 10 }), true, 'same file')
+  assert.equal(isAlwaysAllowed(a, 'Read', { file_path: '/w/.env' }), false, 'another file still asks')
+  assert.equal(isAlwaysAllowed(a, 'Write', { file_path: '/w/notes.md' }), false, 'reading a file never covers writing it')
+  recordAlwaysAllow(a, 'Grep', { pattern: 'x', path: '/w/src' })
+  assert.equal(isAlwaysAllowed(a, 'Grep', { path: '/w/src', pattern: 'x' }), true, 'same search')
+  assert.equal(isAlwaysAllowed(a, 'Grep', { pattern: 'y', path: '/etc' }), false, 'another search still asks')
+  assert.equal(isAlwaysAllowed(a, 'Grep', { pattern: 'x', path: '/etc' }), false, 'same pattern, another path')
+  recordAlwaysAllow(a, 'LS', { path: '/w' })
+  assert.equal(isAlwaysAllowed(a, 'LS', { path: '/' }), false)
   // Everything else: the exact input (key order does not matter).
   recordAlwaysAllow(a, 'WebFetch', { url: 'https://x', prompt: 'p' })
   assert.equal(isAlwaysAllowed(a, 'WebFetch', { prompt: 'p', url: 'https://x' }), true)
@@ -164,8 +172,15 @@ t('ClaudeLLM.respondToPermission refuses an answer for another request id', () =
 t('alwaysScope labels what the Always button and keypad 3 cover', () => {
   assert.equal(alwaysScope('Write', { file_path: '/w/a' }).label, 'this file')
   assert.equal(alwaysScope('Bash', { command: 'ls' }).label, 'this exact command')
-  assert.equal(alwaysScope('Read', { file_path: '/w/a' }).label, 'every Read')
+  assert.equal(alwaysScope('Read', { file_path: '/w/a' }).label, 'reading this file')
+  assert.equal(alwaysScope('LS', { path: '/w' }).label, 'listing this folder')
+  assert.equal(alwaysScope('Grep', { pattern: 'x' }).label, 'this exact search')
+  assert.equal(alwaysScope('Glob', { pattern: '*.ts' }).label, 'this exact search')
   assert.equal(alwaysScope('Task', { prompt: 'x' }).label, 'this exact request')
+  for (const tool of ['Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'WebSearch']) {
+    assert.doesNotMatch(alwaysScope(tool, { pattern: 'x', file_path: '/w/a', path: '/w' }).label, /every/, `${tool} is never allowed as a whole`)
+  }
+  assert.match(phoneApprovalPrompt('Read', { file_path: '/w/a.md' }), /3 to always allow reading this file for this call\.$/)
 })
 
 // ── Approval mode on the agent (#364) ──

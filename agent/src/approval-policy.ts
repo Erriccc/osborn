@@ -8,7 +8,7 @@
  * - the plain-words description of a request (browser card and phone prompt),
  * - the session's always-allow list ("Always" in the browser, keypad 3) and what it covers.
  */
-import { classifyRisk, isReadOnlyTool, type RiskTier } from './risk-tier.js'
+import { classifyRisk, type RiskTier } from './risk-tier.js'
 
 /** An answer to a pending permission, from any surface. */
 export type PermissionAnswer = 'allow' | 'deny' | 'always_allow'
@@ -131,23 +131,35 @@ function stableJson(v: unknown): string {
 /**
  * What "always allow" covers for this request, and its plain-words label
  * (shown on the browser's Always button and read out on a call):
- * - Write/Edit/MultiEdit: this file;
+ * - Write/Edit/MultiEdit: writing this file;
+ * - Read/NotebookRead: reading this file; LS: listing this folder (a read
+ *   approval never covers a write, nor another file);
  * - Bash: this exact command;
- * - a read-only tool (risk-tier isReadOnlyTool): the whole tool;
+ * - Grep/Glob: this exact search (same pattern, path and options);
  * - anything else: this exact request (same tool, same input).
- * `key` is null when nothing can be recorded (a file tool with no file).
+ * No tool is ever allowed as a whole. `key` is null when nothing can be
+ * recorded (a file tool with no file).
  */
 export function alwaysScope(toolName: string, input: ToolInput): { key: string | null; label: string } {
   if (PATH_SCOPED_TOOLS.has(toolName)) {
     const file = str(input?.file_path)
     return { key: file ? `path:${file}` : null, label: 'this file' }
   }
+  if (toolName === 'Read' || toolName === 'NotebookRead') {
+    const file = str(input?.file_path) || str(input?.notebook_path)
+    return { key: file ? `read:${file}` : null, label: 'reading this file' }
+  }
+  if (toolName === 'LS') {
+    const dir = str(input?.path)
+    return { key: dir ? `ls:${dir}` : null, label: 'listing this folder' }
+  }
   if (toolName === 'Bash') {
     const cmd = str(input?.command)
     return { key: cmd ? `bash:${cmd}` : null, label: 'this exact command' }
   }
-  if (isReadOnlyTool(toolName)) return { key: `tool:${toolName}`, label: `every ${toolName}` }
-  return { key: `exact:${toolName}:${stableJson(input ?? {})}`, label: 'this exact request' }
+  const exact = `exact:${toolName}:${stableJson(input ?? {})}`
+  if (toolName === 'Grep' || toolName === 'Glob') return { key: exact, label: 'this exact search' }
+  return { key: exact, label: 'this exact request' }
 }
 
 /** What answerPending needs from an LLM holding a permission request (ClaudeLLM / PipelineDirectLLM). */

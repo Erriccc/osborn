@@ -9,6 +9,7 @@ import {
   normalizeUtterance,
   phoneMayChangeMode,
   pickSession,
+  sayModeBlocked,
   sayModeChanged,
   sayOutputs,
   saySessions,
@@ -70,23 +71,78 @@ const SESSIONS = [
   { sessionId: 'l', title: 'Login page redesign', cwd: '/w/web' },
   { sessionId: 'b', title: 'Fix the billing webhook', cwd: '/w/billing-service' },
   { sessionId: 'p', title: 'Landing page copy', cwd: '/w/site' },
+  { sessionId: 'd', title: 'Dark mode toggle', cwd: '/w/ui' },
+  { sessionId: 'a', title: 'Rate limits', cwd: '/w/api' },
 ]
 const withSessions = { permissionPending: false, sessions: SESSIONS }
+const target = (s: string, ctx: any = withSessions) => (matchVoiceAction(s, ctx) as any)?.target?.sessionId ?? null
 
-t('6. switch: only an explicit "switch to" / "switch session to" / "go back to", and only a session the name picks', () => {
-  assert.equal((matchVoiceAction('Switch to my billing project', withSessions) as any)?.target?.sessionId, 'b')
-  assert.equal((matchVoiceAction('switch session to the landing page', withSessions) as any)?.target?.sessionId, 'p')
-  assert.equal((matchVoiceAction('go back to the login page redesign', withSessions) as any)?.target?.sessionId, 'l')
-  // Everyday speech never switches.
-  for (const s of ['go to the next step', 'move to the login page', 'go to the login page', 'change to the next step', 'switch to the next step', 'go back to the next step']) {
+t('6. switch: only "switch to the X session/project/conversation" or "switch session to X", matched by title', () => {
+  assert.equal(target('Switch to my billing project'), 'b')
+  assert.equal(target('switch to the billing webhook session'), 'b')
+  assert.equal(target('switch session to the landing page'), 'p')
+  assert.equal(target('switch to the login page redesign conversation'), 'l')
+  // Everyday speech never switches, whatever sessions exist.
+  for (const s of [
+    'go back to the login page', 'go back to the login page redesign', 'go back to my api', 'switch to dark mode',
+    'switch to the dark mode', 'go to the next step', 'move to the login page', 'go to the login page',
+    'change to the next step', 'switch to the next step', 'switch to the login page',
+  ]) {
     assert.equal(matchVoiceAction(s, withSessions), null, s)
   }
+  // The folder name alone never picks a session.
+  assert.equal(target('switch to the api project'), null, '"api" is only the folder of "Rate limits"')
+  assert.equal(target('switch to the billing service project'), null, '"service" only in the folder: 1 of 2 title words')
   // No session picked → null, so the turn reaches the model (nothing spoken).
-  assert.equal(matchVoiceAction('switch to kubernetes', withSessions), null)
-  assert.equal(matchVoiceAction('switch to billing', idle), null, 'no session list → model')
+  assert.equal(matchVoiceAction('switch to the kubernetes project', withSessions), null)
+  assert.equal(matchVoiceAction('switch to the billing project', idle), null, 'no session list → model')
   assert.doesNotMatch(src, /couldn't find a session/, 'the runner never speaks a miss')
-  assert.match(src, /case 'switch': \{[\s\S]{0,200}const target = action\.target/, 'the runner switches to the target the matcher picked')
 })
+
+t('6. a matched switch only asks; a yes in the next turn switches, a no or anything else does not', () => {
+  const proposed = { permissionPending: false, switchProposed: true, sessions: SESSIONS }
+  for (const s of ['yes', 'Yes please', 'yeah', 'do it']) assert.deepEqual(matchVoiceAction(s, proposed), { kind: 'confirm_switch' }, s)
+  for (const s of ['no', 'cancel', 'stay here']) assert.deepEqual(matchVoiceAction(s, proposed), { kind: 'cancel_switch' }, s)
+  assert.equal(matchVoiceAction('yes', withSessions), null, 'a yes with nothing proposed is a normal turn')
+  assert.equal(matchVoiceAction('tell me about the webhook first', proposed), null, 'anything else goes to the model')
+  // A heard approval request takes the yes first.
+  assert.deepEqual(matchVoiceAction('yes', { ...proposed, permissionPending: true }), { kind: 'answer', answer: 'allow' })
+  // The runner: "switch" only proposes; only "confirm_switch" runs switch_session; any other turn drops the proposal.
+  const run = src.slice(src.indexOf("case 'switch': {"), src.indexOf("case 'outputs': {"))
+  assert.match(run, /case 'switch': \{[\s\S]*?phoneSwitchProposal = \{ target, expires: Date\.now\(\) \+ 60_000 \}\s+return `Switch to \$\{name\}\?`/)
+  assert.equal((run.match(/type: 'switch_session'/g) || []).length, 1)
+  assert.ok(run.indexOf("type: 'switch_session'") > run.indexOf("case 'confirm_switch'"), 'switch_session only after a yes')
+  assert.match(src, /if \(action\?\.kind !== 'confirm_switch' && action\?\.kind !== 'switch'\) phoneSwitchProposal = null/)
+})
+
+t('2. a mode command while a request is pending changes nothing and says how to answer', () => {
+  for (const ctx of [{ permissionPending: true }, { permissionPending: false, anyPermissionPending: true }]) {
+    assert.deepEqual(matchVoiceAction('allow all', ctx), { kind: 'mode_blocked', mode: 'allow-all' })
+    assert.deepEqual(matchVoiceAction('switch to auto review', ctx), { kind: 'mode_blocked', mode: 'auto-review' })
+    assert.notEqual((matchVoiceAction('allow everything', ctx) as any)?.kind, 'answer', '"allow everything" is never an answer')
+  }
+  assert.match(sayModeBlocked('run the command npm test', false), /request waiting, so I didn't change the approval mode\. Osborn wants to run the command npm test\. Say no to deny it, or approve it in the app\./)
+  assert.match(sayModeBlocked(null, true), /Press 1 to allow or 2 to deny\./)
+  const run = src.slice(src.indexOf("case 'mode_blocked': {"), src.indexOf("case 'mode_blocked': {") + 400)
+  assert.doesNotMatch(run, /set_approval_mode/)
+  assert.match(src, /anyPermissionPending: !!pendingPermissionHolder\(\)/)
+})
+
+t('pickSession: title words only; at least half (rounded up), and at least 2 for a 2+ word name', () => {
+  assert.equal(pickSession('billing', SESSIONS)?.sessionId, 'b', 'one word, one match')
+  assert.equal(pickSession('billing service', SESSIONS), null, '"service" is only in the folder name')
+  assert.equal(pickSession('api', SESSIONS), null, 'folder name alone')
+  assert.equal(pickSession('landing page', SESSIONS)?.sessionId, 'p')
+  assert.equal(pickSession('next step', SESSIONS), null, '1 of 2 words is not enough')
+  assert.equal(pickSession('login page', SESSIONS)?.sessionId, 'l')
+  assert.equal(pickSession('new login flow page', SESSIONS)?.sessionId, 'l', '2 of 4')
+  assert.equal(pickSession('new login flow for mobile', SESSIONS), null, '1 of 4')
+  assert.equal(pickSession('kubernetes', SESSIONS), null)
+  assert.equal(pickSession('my project', SESSIONS), null, 'filler only')
+  const tie = [{ sessionId: 'x', title: 'Billing export' }, { sessionId: 'y', title: 'Billing webhook' }]
+  assert.equal(pickSession('billing', tie)?.sessionId, 'x', 'tie → most recent')
+})
+
 
 t('5, 7, 8. sessions, outputs, keep working', () => {
   assert.deepEqual(matchVoiceAction('What were my recent sessions?', idle), { kind: 'sessions' })
@@ -116,19 +172,6 @@ t('a call may only answer deny, and only make the mode stricter, until keypad ap
   assert.equal(phoneMayChangeMode('ask', 'allow-all', true), true)
 })
 
-t('pickSession: at least half the words (rounded up), and at least 2 for a 2+ word name', () => {
-  assert.equal(pickSession('billing', SESSIONS)?.sessionId, 'b', 'one word, one match')
-  assert.equal(pickSession('billing service', SESSIONS)?.sessionId, 'b', 'project folder counts')
-  assert.equal(pickSession('landing page', SESSIONS)?.sessionId, 'p')
-  assert.equal(pickSession('next step', SESSIONS), null, '1 of 2 words is not enough')
-  assert.equal(pickSession('login page', SESSIONS)?.sessionId, 'l')
-  assert.equal(pickSession('new login flow page', SESSIONS)?.sessionId, 'l', '2 of 4')
-  assert.equal(pickSession('new login flow for mobile', SESSIONS), null, '1 of 4')
-  assert.equal(pickSession('kubernetes', SESSIONS), null)
-  assert.equal(pickSession('my project', SESSIONS), null, 'filler only')
-  const tie = [{ sessionId: 'x', title: 'Billing export' }, { sessionId: 'y', title: 'Billing webhook' }]
-  assert.equal(pickSession('billing', tie)?.sessionId, 'x', 'tie → most recent')
-})
 
 
 t('spoken replies', () => {
@@ -173,7 +216,8 @@ t('the agent cannot loosen its mode or answer an approval over HTTP: there is no
   assert.match(src, /function takePhoneVoiceAction\(text: string\): boolean \{\s+if \(!inPhoneRoom\(\)\) return false/)
 })
 t('index.ts: a spoken yes/no and the keypad answer only the request the caller heard', () => {
-  assert.match(src, /const heard = !!phonePromptedRequestId && pendingPermissionHolder\(\)\?\.getPendingPermission\?\.\(\)\?\.requestId === phonePromptedRequestId\s+const action = matchVoiceAction\(text, \{ permissionPending: heard, sessions: phoneSessions \}\)/)
+  assert.match(src, /const heard = !!phonePromptedRequestId && pendingPermissionHolder\(\)\?\.getPendingPermission\?\.\(\)\?\.requestId === phonePromptedRequestId/)
+  assert.match(src, /permissionPending: heard, anyPermissionPending: !!pendingPermissionHolder\(\), switchProposed, sessions: phoneSessions,/)
   assert.match(src, /if \(inPhoneRoom\(\)\) \{\s+phonePromptedRequestId = requestId/)
 })
 t('index.ts: voice actions go through runAppAction and its allow-list', () => {
