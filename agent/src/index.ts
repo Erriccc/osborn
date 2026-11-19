@@ -75,7 +75,7 @@ import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phonePermissionPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
-import { alwaysScope, answerPending, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
+import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
 import { matchVoiceAction, phoneMayChangeMode, pickSession, sayModeChanged, sayOutputs, saySessions, sayStatus, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
@@ -6554,9 +6554,15 @@ async function main() {
       } else if (data.type === 'permission_response') {
         // Settles only the request the click was for (requestId); the always-allow
         // scope comes from that pending request, not from anything the client sent.
+        // A client older than request ids sends none: answerPendingWithoutId (live
+        // session's sole pending request only, Always as allow-once).
         const answer = data.response
-        if ((answer === 'allow' || answer === 'deny' || answer === 'always_allow') && settlePendingPermission(answer, data.requestId)) {
-          console.log(`✅ Permission: ${answer}`)
+        const known = answer === 'allow' || answer === 'deny' || answer === 'always_allow'
+        const settled = known && (data.requestId === undefined
+          ? answerPendingWithoutId(currentLLM as any, warmLLM as any, answer)
+          : settlePendingPermission(answer, data.requestId))
+        if (settled) {
+          console.log(`✅ Permission: ${answer}${data.requestId === undefined ? ' (no request id: live request, once)' : ''}`)
         } else {
           console.log(`🚫 Permission ${answer} ignored: request ${String(data.requestId ?? 'unnamed')} is not pending`)
         }

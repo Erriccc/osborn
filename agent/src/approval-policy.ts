@@ -178,6 +178,23 @@ export function answerPending(
   return holder.respondToPermission(answer !== 'deny', undefined, requestId) !== false
 }
 
+/**
+ * An answer with no requestId, from a browser tab or mobile build older than
+ * request ids. Settles only the LIVE session's request, only when it is the one
+ * request pending anywhere (a parked brain with a pending request blocks it),
+ * and never records an always-allow: a no-id Always is allow-once. True when settled.
+ */
+export function answerPendingWithoutId(
+  live: PermissionHolder | null | undefined,
+  parked: PermissionHolder | null | undefined,
+  answer: PermissionAnswer,
+): boolean {
+  const pending = live?.getPendingPermission?.()
+  if (!live || !pending) return false
+  if (parked && parked !== live && parked.getPendingPermission?.()) return false
+  return live.respondToPermission(answer !== 'deny', undefined, pending.requestId) !== false
+}
+
 /** The session's always-allow list (keys from alwaysScope). Cleared with each new voice session. */
 export type SessionAllows = Set<string>
 

@@ -282,7 +282,7 @@ t('index.ts: keypad goes through handlePhoneKeypad with the shared settle functi
 })
 t('index.ts: browser permission_response settles through the same function (#363)', () => {
   const start = src.indexOf("data.type === 'permission_response'")
-  const body = src.slice(start, start + 600)
+  const body = src.slice(start, start + 1200)
   assert.match(body, /settlePendingPermission\(answer, data\.requestId\)/)
   assert.doesNotMatch(body, /currentLLM\.respondToPermission/)
   // always_allow's target comes from the pending request, not a client-sent filePath.

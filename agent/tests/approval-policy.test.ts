@@ -10,6 +10,7 @@ import { readApprovalMode, writeApprovalMode } from '../src/config.js'
 import {
   alwaysScope,
   answerPending,
+  answerPendingWithoutId,
   approvalModeAnnouncement,
   autoApproval,
   isApprovalMode,
@@ -106,6 +107,53 @@ t('answerPending settles only the request the answer names; a late answer never 
   assert.equal(answerPending(b, 'always_allow', 'req-B', allows), true)
   assert.equal(isAlwaysAllowed(allows, 'Bash', { command: 'npm test' }), true)
   assert.equal(isAlwaysAllowed(allows, 'Bash', { command: 'npm run build' }), false)
+})
+t('an answer with no id (an older tab or app) settles only the live session\'s sole pending request', () => {
+  const holder = (requestId: string | null) => {
+    let pending: any = requestId ? { toolName: 'Bash', input: { command: 'npm test' }, requestId } : null
+    const settled: boolean[] = []
+    return {
+      settled,
+      getPendingPermission: () => pending,
+      respondToPermission: (allow: boolean, _m?: string, id?: string) => {
+        if (!pending || (id !== undefined && id !== pending.requestId)) return false
+        settled.push(allow); pending = null; return true
+      },
+    }
+  }
+  // Live request, nothing parked: settled.
+  const live = holder('L1')
+  assert.equal(answerPendingWithoutId(live, holder(null), 'allow'), true)
+  assert.deepEqual(live.settled, [true])
+  // Live and parked both pending: not exactly one, nothing settled.
+  const live2 = holder('L2'); const parked2 = holder('P2')
+  assert.equal(answerPendingWithoutId(live2, parked2, 'allow'), false)
+  assert.equal(answerPendingWithoutId(live2, parked2, 'deny'), false)
+  assert.deepEqual(live2.settled, []); assert.deepEqual(parked2.settled, [])
+  // Only a parked brain pending: never settled by a no-id answer.
+  const parked3 = holder('P3')
+  assert.equal(answerPendingWithoutId(holder(null), parked3, 'deny'), false)
+  assert.equal(answerPendingWithoutId(null, parked3, 'allow'), false)
+  assert.deepEqual(parked3.settled, [])
+  // Deny works the same way.
+  const live4 = holder('L4')
+  assert.equal(answerPendingWithoutId(live4, null, 'deny'), true)
+  assert.deepEqual(live4.settled, [false])
+})
+t('a no-id Always is allow-once: nothing is recorded', () => {
+  const allows = newSessionAllows()
+  let pending: any = { toolName: 'Bash', input: { command: 'npm test' }, requestId: 'L' }
+  const live = {
+    getPendingPermission: () => pending,
+    respondToPermission: (_a: boolean, _m?: string, id?: string) => { if (!pending || id !== pending.requestId) return false; pending = null; return true },
+  }
+  assert.equal(answerPendingWithoutId(live, null, 'always_allow'), true)
+  assert.equal(allows.size, 0)
+  assert.equal(answerPendingWithoutId.length, 3, 'no always-allow list is even passed in')
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../src/index.ts'), 'utf-8')
+  const at = src.indexOf("data.type === 'permission_response'")
+  const body = src.slice(at, at + 1200)
+  assert.match(body, /data\.requestId === undefined\s+\? answerPendingWithoutId\(currentLLM as any, warmLLM as any, answer\)\s+: settlePendingPermission\(answer, data\.requestId\)/)
 })
 t('ClaudeLLM.respondToPermission refuses an answer for another request id', () => {
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../src/claude-llm.ts'), 'utf-8')
