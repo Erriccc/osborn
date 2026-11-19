@@ -13,6 +13,7 @@
 // - Per-run links: this run's tasks with clip / clip+audio / logs, plus a
 //   shareable link to this in-app view.
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type WheelEvent } from 'react'
+import { useMenuDismiss } from '@/lib/use-menu-dismiss'
 
 type EngineState = {
   configured: boolean
@@ -72,6 +73,10 @@ const STARTERS = [
   { label: 'example.com', url: 'https://example.com' },
   { label: 'Mic + audio test (WebRTC samples)', url: 'https://webrtc.github.io/samples/src/content/getusermedia/audio/' },
 ]
+// Header actions: one line each, so a narrow row wraps whole buttons.
+const HEADER_BTN = 'whitespace-nowrap rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-50'
+// A row in the header's More menu (the chat header's More rows, in this page's tokens).
+const MORE_ROW = 'w-full whitespace-nowrap px-3 py-2 text-left text-sm hover:bg-surface-2 disabled:opacity-50'
 
 async function jget<T>(action: string, qs = ''): Promise<T | null> {
   try {
@@ -107,6 +112,10 @@ export function BrowserPanel() {
   const [unresponsivePolls, setUnresponsivePolls] = useState(0)
   const [brokenSince, setBrokenSince] = useState<number | null>(null)
   const [micOpen, setMicOpen] = useState(false)
+  const [moreOpen, setMoreOpen] = useState(false)
+  const moreWrapRef = useRef<HTMLDivElement>(null)
+  const moreToggleRef = useRef<HTMLButtonElement>(null)
+  useMenuDismiss(moreOpen, () => setMoreOpen(false), [moreWrapRef], moreToggleRef)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const imgRef = useRef<HTMLImageElement | null>(null)
   const typedRef = useRef<{ text: string; timer: ReturnType<typeof setTimeout> | null }>({ text: '', timer: null })
@@ -383,38 +392,55 @@ export function BrowserPanel() {
     <div className="flex flex-col gap-3 text-neutral-200">
       {/* Header / engine state */}
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-lg">🎥</span>
-          <h2 className="text-base font-semibold text-neutral-100">Browser</h2>
-          <StateBadge engine={engine} watching={watching} status={status} tokenMisconfigured={tokenMisconfigured} agentUnreachable={agentUnreachable} />
+        <div className="flex min-w-0 max-w-full items-center gap-2">
+          <span className="shrink-0 text-lg">🎥</span>
+          <h2 className="shrink-0 text-base font-semibold text-neutral-100">Browser</h2>
+          <span className="shrink-0"><StateBadge engine={engine} watching={watching} status={status} tokenMisconfigured={tokenMisconfigured} agentUnreachable={agentUnreachable} /></span>
           {watching && (
-            <span title="Your tabs and sign-ins live in this browser profile, kept across restarts" className="max-w-[16rem] truncate rounded-full border border-neutral-700 px-2 py-0.5 text-[11px] text-neutral-300">
+            <span title="Your tabs and sign-ins live in this browser profile, kept across restarts" className="min-w-0 max-w-[16rem] truncate rounded-full border border-border px-2 py-0.5 text-[11px] text-neutral-300">
               Profile: {profile}
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        {/* Like the chat header: frequent actions stay in the row; below sm the
+            occasional ones (Copy viewer link, Shut down engine) move into More. */}
+        <div className="flex flex-wrap items-center gap-2">
           {watching && (
-            <button
-              onClick={() => setWatching(false)}
-              className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800"
-            >
+            <button onClick={() => setWatching(false)} className={HEADER_BTN}>
               Stop watching
             </button>
           )}
-          <button onClick={copyShare} className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800">
+          <button onClick={copyShare} className={`${watching ? 'hidden sm:block' : ''} ${HEADER_BTN}`}>
             Copy viewer link
           </button>
           {/* Needs an engine that understands /end {keep} (skill v42+); older ones would shut down. */}
           {watching && Number(status?.build?.skillVersion) >= 42 && (
-            <button onClick={closeMyTabs} disabled={!!busy} title="Closes your tabs and hands back any you took over; the engine keeps running for anyone else using it" className="rounded-lg border border-neutral-700 px-3 py-1.5 text-sm hover:bg-neutral-800 disabled:opacity-50">
+            <button onClick={closeMyTabs} disabled={!!busy} title="Closes your tabs and hands back any you took over; the engine keeps running for anyone else using it" className={HEADER_BTN}>
               Close my tabs
             </button>
           )}
           {watching && (
-            <button onClick={stopEngine} disabled={!!busy} title="Puts the engine to sleep. Refused while other people or agents still use it (use Close my tabs then)" className="rounded-lg border border-red-900/60 px-3 py-1.5 text-sm text-red-300 hover:bg-red-950/40 disabled:opacity-50">
+            <button onClick={stopEngine} disabled={!!busy} title="Puts the engine to sleep. Refused while other people or agents still use it (use Close my tabs then)" className={`hidden sm:block ${HEADER_BTN} text-red-300`}>
               Shut down engine
             </button>
+          )}
+          {watching && (
+            <div ref={moreWrapRef} className="relative sm:hidden">
+              <button ref={moreToggleRef} onClick={() => setMoreOpen((v) => !v)} aria-haspopup="menu" aria-expanded={moreOpen} aria-label="More actions" title="More actions"
+                className={`${HEADER_BTN} flex items-center px-2`}>
+                <svg className="h-5 w-4" fill="currentColor" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+              </button>
+              {moreOpen && (
+                <div role="menu" className="absolute right-0 top-full z-50 mt-1 w-48 overflow-hidden rounded-xl border border-border bg-surface py-1 shadow-2xl">
+                  <button role="menuitem" onClick={() => { setMoreOpen(false); copyShare() }} className={MORE_ROW}>
+                    Copy viewer link
+                  </button>
+                  <button role="menuitem" disabled={!!busy} onClick={() => { setMoreOpen(false); stopEngine() }} title="Puts the engine to sleep. Refused while other people or agents still use it (use Close my tabs then)" className={`${MORE_ROW} text-red-300`}>
+                    Shut down engine
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
       </div>
@@ -454,26 +480,39 @@ export function BrowserPanel() {
         </div>
       )}
 
-      {/* Tabs, like a browser's tab bar: click to show that tab. */}
-      {watching && (status?.tabs?.length ?? 0) > 0 && (
-        <div className="flex gap-1 overflow-x-auto">
-          {status!.tabs!.map((t) => {
-            const owner = status?.tabsByOwner?.find((o) => o.i === t.i)?.owner
-            const on = t.i === activeI
-            const shared = status?.cast?.i === t.i
-            // The engine gives a person only their own tabs' URLs: any other tab, tab 0 included, is private and cannot be switched to.
-            const name = t.url ? shortUrl(t.url) : owner === me ? 'New tab' : 'Private tab'
-            return (
-              <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on || owner !== me} title={`${t.url || name}${owner ? ` (driven by ${label(owner)})` : ''}${shared ? ' — shared on the public live view' : ''}`}
-                className={`flex min-w-0 max-w-[14rem] items-center gap-1 rounded-t-lg border px-2 py-1 text-xs ${on ? 'border-amber-500/70 bg-neutral-800 text-neutral-100' : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:bg-neutral-800'}`}>
-                <span className="truncate">{name}</span>
-                {owner && <span className="shrink-0 rounded bg-neutral-700 px-1 text-[10px] text-neutral-300">{label(owner)}</span>}
-                {shared && <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[10px] text-amber-300">shared</span>}
-              </button>
-            )
-          })}
-        </div>
-      )}
+      {/* Tabs, like a browser's tab bar: only your own tabs are chips; other
+          people's and agents' tabs are one count, with no ids or owners. */}
+      {watching && (() => {
+        const all = status?.tabs ?? []
+        const mine = all.filter((t) => !!me && status?.tabsByOwner?.find((o) => o.i === t.i)?.owner === me)
+        const others = all.length - mine.length
+        if (!all.length) return null
+        return (
+          <div className="flex items-center gap-2">
+            {mine.length > 0 && (
+              <div className="flex min-w-0 gap-1 overflow-x-auto">
+                {mine.map((t) => {
+                  const on = t.i === activeI
+                  const shared = status?.cast?.i === t.i
+                  const name = t.url ? shortUrl(t.url) : 'New tab'
+                  return (
+                    <button key={t.i} onClick={() => switchTab(t.i)} disabled={!!busy || on} title={`${t.url || name}${shared ? ' — shared on the public live view' : ''}`}
+                      className={`flex min-w-0 max-w-[14rem] items-center gap-1 rounded-t-lg border px-2 py-1 text-xs ${on ? 'border-amber-500/70 bg-surface-2 text-text-primary' : 'border-border-subtle bg-surface text-text-secondary hover:bg-surface-2'}`}>
+                      <span className="truncate">{name}</span>
+                      {shared && <span className="shrink-0 rounded bg-amber-500/20 px-1 text-[10px] text-amber-300">shared</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+            {others > 0 && (
+              <span className="shrink-0 whitespace-nowrap text-xs text-text-muted">
+                {others} other {others === 1 ? 'tab' : 'tabs'} in use
+              </span>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Address bar, where a browser has it. */}
       {watching && (
