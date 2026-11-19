@@ -77,6 +77,7 @@ const STARTERS = [
 const HEADER_BTN = 'whitespace-nowrap rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-surface-2 disabled:opacity-50'
 // A row in the header's More menu (the chat header's More rows, in this page's tokens).
 const MORE_ROW = 'w-full whitespace-nowrap px-3 py-2 text-left text-sm hover:bg-surface-2 disabled:opacity-50'
+const SHUT_DOWN_TITLE = 'Puts the engine to sleep. Refused while other people or agents still use it (use Close my tabs then)'
 
 async function jget<T>(action: string, qs = ''): Promise<T | null> {
   try {
@@ -420,7 +421,7 @@ export function BrowserPanel() {
             </button>
           )}
           {watching && (
-            <button onClick={stopEngine} disabled={!!busy} title="Puts the engine to sleep. Refused while other people or agents still use it (use Close my tabs then)" className={`hidden sm:block ${HEADER_BTN} text-red-300`}>
+            <button onClick={stopEngine} disabled={!!busy} title={SHUT_DOWN_TITLE} className={`hidden sm:block ${HEADER_BTN} text-red-300`}>
               Shut down engine
             </button>
           )}
@@ -435,7 +436,7 @@ export function BrowserPanel() {
                   <button role="menuitem" onClick={() => { setMoreOpen(false); copyShare() }} className={MORE_ROW}>
                     Copy viewer link
                   </button>
-                  <button role="menuitem" disabled={!!busy} onClick={() => { setMoreOpen(false); stopEngine() }} title="Puts the engine to sleep. Refused while other people or agents still use it (use Close my tabs then)" className={`${MORE_ROW} text-red-300`}>
+                  <button role="menuitem" disabled={!!busy} onClick={() => { setMoreOpen(false); stopEngine() }} title={SHUT_DOWN_TITLE} className={`${MORE_ROW} text-red-300`}>
                     Shut down engine
                   </button>
                 </div>
