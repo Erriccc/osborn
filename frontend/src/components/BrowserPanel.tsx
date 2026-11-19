@@ -26,7 +26,7 @@ type EngineState = {
   // "state unreadable" badge instead of a bare "unknown" (#81).
   unreachable?: boolean
   // Server-side only reports whether OSBORN_ENGINE_TOKEN is set — never the value.
-  // false ⇒ every drive/output action will 401; the live stream still works.
+  // false ⇒ every drive/output action, and the live stream of your tab, will 401.
   engineTokenConfigured?: boolean
   // This person's driver id on the engine (set server-side by the proxy).
   driver?: string
@@ -418,11 +418,10 @@ export function BrowserPanel() {
       {tokenMisconfigured && (
         <div className="rounded-lg border border-amber-600/60 bg-amber-950/40 px-3 py-2 text-xs leading-relaxed text-amber-200">
           <span className="font-semibold">The server isn’t configured with the engine token.</span>{' '}
-          Drive and output actions (Open URL, Say, logs, audio, clips, Stop) are being
-          rejected — ask an admin to set{' '}
+          Drive and output actions (Open URL, Say, logs, audio, clips, Stop) and the live
+          stream of your tab are being rejected — ask an admin to set{' '}
           <code className="rounded bg-black/40 px-1 font-mono text-amber-100">OSBORN_ENGINE_TOKEN</code>{' '}
-          on the Railway frontend to match the engine’s Fly secret. Watching the live
-          stream still works without it.
+          on the Railway frontend to match the engine’s Fly secret.
         </div>
       )}
 

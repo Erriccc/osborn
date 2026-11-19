@@ -93,7 +93,9 @@ skill for the full contract.
 
 When `startLiveStream()` is active (session-tour, or any spec that starts it),
 it prints `[live-stream] watch live at <URL>`. On the Fly tester machine this
-is the machine's public `https://<app>.fly.dev/` MJPEG viewer. ALWAYS return
+is the machine's public `https://<app>.fly.dev/` MJPEG viewer. In the
+long-running engine it shows only a tab you cast (`/tab {"op":"cast","i":n}`),
+so cast your tab first. ALWAYS return
 this URL to the user at the start of a run so they can watch the browser,
 the click ripples, and the request/feedback loop happening live — and talk to
 the agent while watching. The recorded replay is the after-the-fact proof;
@@ -101,7 +103,8 @@ the live URL is the during-the-run window.
 
 ### Casting the feed into a meeting — NO TUNNELS (policy, 2026-07-31)
 
-The meeting cast (`POST <agent>/canvas {"kind":"show","mode":"stream","url":<feed>}`
+The meeting cast (`POST <engine>/tab {"op":"cast","i":n}` first — the public
+feed shows only a cast tab — then `POST <agent>/canvas {"kind":"show","mode":"stream","url":<feed>}`
 → SSE → meeting-canvas `<img src="{url}/stream">` → Recall bot camera) needs the
 MJPEG feed on a PUBLIC url. Do NOT tunnel a local engine to get one:
 - ngrok free tier: continuous MJPEG burned the entire monthly bandwidth cap in

@@ -747,6 +747,7 @@ async function main() {
     return d.startsWith('person:') && d.length > 7 ? d : ''
   }
   const driverActive = new Map<string, Page>()  // driver → its current tab
+  let castBy: string | null = null  // who cast the tab the public live view shows
   // The driver's own tab: its current one, else the newest tab it owns.
   const driverTab = (driver: string): Page | undefined => {
     const t = driverActive.get(driver)
@@ -1139,8 +1140,24 @@ async function main() {
           drivers: [...driverActive.keys()], tabsByOwner: allPages().map((p,i)=>({i, owner: ownerOf(p)})),
           mission: journey ? { name: journey.name, owner: journey.owner ?? null, startedAt: journey.startedAt } : null,
           activeTab: { i: allPages().indexOf(active), url: active.url() },
+          cast: live?.castTab() ? { i: allPages().indexOf(live.castTab()!), by: castBy } : null,
           tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, ...deviceOf(allPages()[t.index]) })), marks: marks.slice(-12),
         })
+      }
+      if (req.method === 'GET' && path === '/stream') {
+        // Live MJPEG of ONE tab the caller owns — never the fronted tab, which may be
+        // someone else's signed-in page. ?tab=i picks one of yours; without it the
+        // stream follows your current tab ("Nothing is being shared" while you have none).
+        const driver = driverId(req)
+        if (!live) return json(res, { ok: false, code: 'stream_unavailable', error: 'the live stream is not running in this engine' }, 503)
+        const q = new URL(req.url || '', 'http://x').searchParams.get('tab')
+        if (q != null) {
+          const tab = allPages()[Number(q)]
+          if (!tab) return json(res, { ok: false, code: 'no_tab', error: `no tab ${q} — ${allPages().length} tab(s) open (0-based)` }, 404)
+          if (ownerOf(tab) !== driver) return json(res, { ok: false, code: 'not_your_tab', owner: ownerOf(tab), error: `tab ${q} is not yours ("${driver}") — you can watch only tabs you opened or took over` }, 409)
+          return live.serveFrames(() => (!tab.isClosed() && ownerOf(tab) === driver ? tab : null), req, res)
+        }
+        return live.serveFrames(() => { const t = driverTab(driver); return t && ownerOf(t) === driver ? t : null }, req, res)
       }
       if (req.method === 'GET' && path === '/runs') {
         // All runs on this volume, newest last — pair with /clip?run=.
@@ -1668,14 +1685,14 @@ async function main() {
         // own driver id: a body `owner` could claim to be someone else (#193).
         const driver = driverId(req)
         body.owner = driver
-        const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'takeover', 'handback', 'list']
+        const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'takeover', 'handback', 'cast', 'uncast', 'list']
         if (!TAB_OPS.includes(body.op)) return json(res, { ok: false, code: 'bad_request', error: `/tab op must be one of ${TAB_OPS.join(' | ')}` }, 400)
         if (body.op === 'open' && body.url) { const bad = badUrl(body.url); if (bad) return json(res, bad.body, bad.status) }
         if (body.op === 'open' && typeof body.viewport === 'string' && !isDeviceKind(body.viewport))
           return json(res, { ok: false, code: 'bad_request', error: `viewport must be ${Object.keys(DEVICE_PRESETS).map((k) => `"${k}"`).join(' | ')} or {"width":…,"height":…}` }, 400)
         const device: DeviceKind | undefined = body.op === 'open' && isDeviceKind(body.viewport) ? body.viewport : undefined
         // close with no i closes YOUR tab; it is resolved inside the lock, below.
-        if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !(body.op === 'close' && body.i == null) && !allPages()[body.i])
+        if (['switch', 'close', 'claim', 'release', 'takeover', 'handback', 'cast'].includes(body.op) && !(body.op === 'close' && body.i == null) && !allPages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${allPages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.
         if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(callerTab(driver)), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
@@ -1766,6 +1783,19 @@ async function main() {
           const o = ownerOf(target)
           if (o && o !== body.owner) return json(res, { ok: false, code: 'tab_owned', owner: o, error: `tab ${body.i} is owned by "${o}" — only its owner can release it; use {"op":"takeover"} to borrow it` }, 409)
           tabOwners.delete(target); takeovers.delete(target); mark(`tab release: ${body.i}`)
+          if (live?.castTab() === target) { live.setCast(null); castBy = null }  // a released tab is no longer shared
+        }
+        else if (body.op === 'cast') {
+          // Share one of YOUR tabs on the public live view and its /stream (a meeting's camera).
+          const target = allPages()[body.i]
+          if (ownerOf(target) !== body.owner) return json(res, { ok: false, code: 'not_your_tab', owner: ownerOf(target), error: `tab ${body.i} is not yours — you can cast only a tab you opened or took over` }, 409)
+          if (!live) return json(res, { ok: false, code: 'stream_unavailable', error: 'the live stream is not running in this engine' }, 503)
+          live.setCast(target); castBy = String(body.owner); mark(`tab cast: ${body.i} by ${body.owner}`)
+        }
+        else if (body.op === 'uncast') {
+          const shared = live?.castTab()
+          if (shared && castBy !== body.owner && ownerOf(shared) !== body.owner) return json(res, { ok: false, code: 'not_your_tab', error: `the shared tab was cast by "${castBy}" — only they or the tab's owner can stop it` }, 409)
+          live?.setCast(null); castBy = null; mark(`tab uncast by ${body.owner}`)
         }
         else if (body.op === 'takeover') {
           const target = allPages()[body.i]
@@ -1797,7 +1827,7 @@ async function main() {
         }
         await updateTabHud(); saveTabState()
         notify('tab', { op: body.op, activeTab: activeTab(), tabCount: allPages().length })
-        return json(res, { ok: true, activeTab: activeTab(), ...(redirectedTo ? { redirectedTo } : {}), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
+        return json(res, { ok: true, activeTab: activeTab(), ...(redirectedTo ? { redirectedTo } : {}), cast: live?.castTab() ? allPages().indexOf(live.castTab()!) : null, tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
         })
       }
       if (path === '/journey') {

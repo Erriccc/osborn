@@ -10,6 +10,7 @@
 | `GET /health` | no token needed: `{ok, tokenRequired, tokenConfigured}` (plus `code:"engine_token_missing"` when the control API is locked) |
 | `GET /status` | ground truth: `tokenRequired` / `tokenConfigured`, roomReady, pageUrl, pageState, idlePaused, freeMemoryMb (MB left; null off Linux), brain ready/dead, activeTab, tabs+owners, lastFrameAgeMs, journey, **agentUrl / agentUnreachable** (#49: null when the auto-joined chat's agent is reachable, else `"agent unreachable: <host>"` — the in-app Browser panel reads this via its /status proxy), **previousRun / restartRecovered** (#120: set when this process ADOPTED a journey from a process that died mid-journey — `restartRecovered:true` means "engine restarted, journey carried over", and `/clip?run=<previousRun>` reaches the pre-restart media) |
 | `GET /tasks` | this run's task index (same as manifest.json) |
+| `GET /stream?tab=i` | MJPEG of one of YOUR tabs (`409 not_your_tab` for another's); without `tab` it follows your current tab, "Nothing is being shared" while you have none. The public viewer on :8080 shows only the cast tab — see streaming.md |
 | `GET /clip?n=N` / `GET /artifact?n=N` | download task N's mp4 / screenshot |
 | `GET /clip?n=N&audio=1` | task N's clip WITH the page's aligned audio muxed in (mp4 video+audio). Current run only; decodes+aligns via the recording's own start, not rel0/rel1. Header `X-Clip-Audio: yes` when an audio track was muxed in (it can still be silent), `none` when no page audio could be added (video only): the tab recorded nothing during the clip, or the task's tab has since closed or moved to another URL |
 | `GET /audio` | your tab's captured audio as mp3 (`<audio>`/`<video>` elements and WebAudio output — absent from the video-only clips/stream). 404 with `ears` until the tab has recorded something; it does not arm them (`/act`, `/say` or `/hear` does). WebAudio output of the top page only, not iframes |
@@ -21,7 +22,7 @@
 | `POST /hear {lastMs}` | transcript of recent agent audio |
 | `POST /eval {expression}` | run JS in the page (the website console, programmatic); recorded as a journey step |
 | `POST /shot` | on-demand screenshot of your tab; recorded as a task, so it returns `task` and public `evidence` links to paste into an issue |
-| `POST /tab {op: open\|navigate\|switch\|close\|claim\|release, url?, i?, viewport?, reuse?}` (owner = your `x-driver-id`) | tab ops. `open` REUSES a same-site tab unless `reuse:false`; `viewport:"mobile"` = emulated iPhone 13 and `"tablet"` = iPad (gen 7) (own context: touch, mobile UA, device pixels, same sign-ins; closed with its last tab), `{width,height}` = desktop window resized; owners guard against other directors (409) |
+| `POST /tab {op: open\|navigate\|switch\|close\|claim\|release\|cast\|uncast, url?, i?, viewport?, reuse?}` (owner = your `x-driver-id`) | tab ops. `cast` shares one of your tabs on the public live view (a meeting's camera), `uncast` stops it; replies carry `cast` (the cast tab's index or null). `open` REUSES a same-site tab unless `reuse:false`; `viewport:"mobile"` = emulated iPhone 13 and `"tablet"` = iPad (gen 7) (own context: touch, mobile UA, device pixels, same sign-ins; closed with its last tab), `{width,height}` = desktop window resized; owners guard against other directors (409) |
 | `POST /journey {op: start\|end\|list, name?, goal?, save?, cleanup?}` | journey framing — see below |
 | (all replies) | JSON replies, `/events` and webhooks are redacted (`••••`); `/eval` values and `/shot` `jpegB64` are raw — read raw URLs with `/eval location.href` |
 | `POST /brain` | re-init a detached Stagehand in place |
@@ -85,7 +86,7 @@ Every failure reply is `{ok:false, code, error, ...}`.
 | 400 | `bad_request` | a missing or invalid field |
 | 409 | `no_own_tab` | `/tab close` or `navigate` with no `i`, and you have no tab of your own |
 | 409 | `tab_owned` | the tab belongs to another driver (`/act`, `/say`, `/eval`, `/shot`, `/recover`, `/tab navigate\|release`) |
-| 409 | `not_your_tab` | `/input` on a tab you neither opened nor took over |
+| 409 | `not_your_tab` | `/input`, `/stream?tab=i` or `/tab cast` on a tab you neither opened nor took over; `/tab uncast` of someone else's cast |
 | 409 | `paused_by_supervisor` | your tab is taken over; retry after `retryAfterSec` |
 | 413 | `too_large` | an `/act` instruction over 4,000 characters |
 | 500 | `no_screenshot` | `/shot` could not capture your tab; still recorded as `task` |

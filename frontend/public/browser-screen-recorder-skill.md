@@ -48,8 +48,9 @@ delivered to the user. No silent runs.
   `/tab {"op":"open","url":…,"viewport":"mobile"}` — an emulated iPhone 13
   (touch, mobile user agent, 3× pixels, `(hover:none) and (pointer:coarse)`
   match), signed in like your desktop tabs. `"tablet"` = iPad (gen 7).
-- **Meeting needs a live browser on camera?** → STREAM: Fly engine's public
-  MJPEG into canvas `stream` mode. NO tunnels. → references/streaming.md
+- **Meeting needs a live browser on camera?** → STREAM: cast your tab
+  (`/tab {"op":"cast","i":n}`), then put the Fly engine's public MJPEG into
+  canvas `stream` mode. NO tunnels. → references/streaming.md
 - **Exploring/researching any site?** → RESEARCH: `OSBORN_ENTRY=none` +
   `OSBORN_APP_URL=<site>`; save what you learn as journeys.
 - **Testing a PR / deploy / journey that takes more than 3–4 actions?** →
@@ -202,6 +203,8 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v55
+- **The live view is private.** The public viewer (`https://<app>.fly.dev/`) and its `/stream` no longer follow whichever tab is fronted: they show only a tab a driver cast, else a "Nothing is being shared" frame. `/tab {"op":"cast","i":n}` shares one of YOUR tabs there (`409 not_your_tab` for anyone else's); `/tab {"op":"uncast"}` stops it (the caster or the tab's owner). Closing or releasing the tab stops it too. `/status.cast` and every `/tab` reply say which tab is cast. **Casting into a meeting: cast your tab first**, then point the canvas at the engine as before.
+- **Watch your own tab:** `GET /stream` on the control API (token + `x-driver-id`) is MJPEG of your current tab, following it as you switch; `?tab=i` picks another tab you own (`409 not_your_tab` otherwise). With no tab of your own it shows "Nothing is being shared". The in-app /browser panel uses this, so each person sees only their own tab (and needs the engine token on the web app).
 - A public engine with no `OSBORN_ENGINE_TOKEN` now locks its control API: every route answers `503 engine_token_missing` (only `GET /health` and signed `/media` links still work). `/status` and `/health` report `tokenRequired` and `tokenConfigured`. A local run with no Fly app or public URL stays open, and says so at boot.
 - `/shot` refuses a tab another driver owns (`409 tab_owned`, like `/eval`). A failed shot is still a task: the `500 no_screenshot` reply carries its `task` number and log link.
 - A screenshot that times out never falls back to another tab's frame: you get `no_screenshot` (or `artifact:null`) instead of a picture of the wrong tab.

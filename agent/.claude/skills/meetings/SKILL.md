@@ -64,7 +64,9 @@ curl -sS -X POST http://localhost:8741/canvas -H 'Content-Type: application/json
   -d '{"kind":"show","mode":"notes","title":"...","items":["...","..."]}'
 ```
 `mode` = `idle` | `notes` (title+items) | `link` (url) | `web` (iframe url) | `text` (title+text)
-| `stream` (url — renders `<img src="{url}/stream">`, a live MJPEG browser feed).
+| `stream` (url — renders `<img src="{url}/stream">`, a live MJPEG browser feed;
+the engine shows only a tab its driver cast with `/tab {"op":"cast","i":n}`, else
+"Nothing is being shared" — cast first).
 
 **`stream` mode — NO TUNNELS policy:** the feed URL must be PUBLIC. Never
 tunnel a local browser engine to get one (ngrok's free tier burned its entire

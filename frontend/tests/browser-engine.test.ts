@@ -1,10 +1,8 @@
 // Run: cd frontend && npx --yes tsx tests/browser-engine.test.ts
 // Spec (issue #51): the engine proxy only targets allowlisted endpoints (so the
-// panel can't reach dangerous ones like `eval`), builds control/stream URLs
-// correctly, and appends the stream key without leaking it into control URLs.
+// panel can't reach dangerous ones like `eval`) and builds control/stream URLs
+// correctly: the stream is the engine's per-tab control route, never the public view.
 process.env.BROWSER_ENGINE_CONTROL_URL = 'https://eng.example:8781'
-process.env.BROWSER_ENGINE_STREAM_URL = 'https://eng.example'
-process.env.OSBORN_STREAM_TOKEN = 'streamsecret'
 
 import {
   buildControlTarget,
@@ -45,11 +43,11 @@ t('allowlists exclude the dangerous endpoints', () => {
   }
 })
 
-t('stream URL appends the key; control URLs never carry it', () => {
-  eq(buildStreamTarget(''), 'https://eng.example/stream?key=streamsecret', 'stream w/ key')
-  ok(buildStreamTarget('?t=5').includes('t=5'), 'stream preserves caller qs')
-  ok(buildStreamTarget('?t=5').includes('key=streamsecret'), 'stream still has key')
-  ok(!String(buildControlTarget('GET', 'status')).includes('streamsecret'), 'control URL has no stream key')
+t('stream URL is the per-tab control route and keeps only a numeric tab', () => {
+  eq(buildStreamTarget(''), 'https://eng.example:8781/stream', 'own current tab by default')
+  eq(buildStreamTarget('?t=5'), 'https://eng.example:8781/stream', 'cache-buster dropped')
+  eq(buildStreamTarget('?tab=2&t=5'), 'https://eng.example:8781/stream?tab=2', 'tab kept')
+  eq(buildStreamTarget('?tab=x'), 'https://eng.example:8781/stream', 'non-numeric tab dropped')
 })
 
 t('engineTokenConfigured reflects whether the engine token is set (#63)', () => {

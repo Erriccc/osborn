@@ -15,11 +15,11 @@ the in-app product surface over it.
 - **`components/BrowserPanel.tsx`** — live MJPEG stream, engine status, controls,
   and this run's task links. Talks only to the proxy.
 - **`app/api/browser/[action]/route.ts`** — the server proxy. Auth-gated; injects
-  the engine/stream tokens so the client never holds them or the raw Fly URL.
+  the engine token and the person's driver id so the client never holds them or the raw Fly URL.
 
 ## What the panel shows / does
 
-- **Live view** — the engine's MJPEG stream, proxied. Starting it **wakes** the Fly
+- **Live view** — the person's own engine tab as MJPEG, proxied. Starting it **wakes** the Fly
   machine (~40s to first pixels); the panel shows an explicit "waking…/retry" state
   so a stuck run is legible instead of a bare "Connecting…".
 - **State** — awake / asleep / connecting / live. Asleep-vs-awake is read from the
@@ -34,7 +34,7 @@ the in-app product surface over it.
 
 | Action | → engine | Notes |
 |---|---|---|
-| `stream` | `:443 /stream` | MJPEG, piped live; wakes the engine |
+| `stream` | `:8781 /stream` (with `x-driver-id`) | MJPEG of the person's own current tab (or `?tab=i`, one they own), piped live; wakes the engine. Never another person's or agent's tab: with no tab of their own the person sees "Nothing is being shared" |
 | `engine-state` | Fly Machines API | awake/asleep **without** waking |
 | `status` `tasks` `logs` `clip` `artifact` `audio` | `:8781` (GET) | buffered |
 | `events` | `:8781 /events` | SSE, piped live |
@@ -48,10 +48,8 @@ The engine host is derived from `FLY_HARNESS_APP` (default `osborn-voice-e2e-n`)
 `https://<app>.fly.dev`. To make the proxy reach a token-protected engine, set:
 
 - **`OSBORN_ENGINE_TOKEN`** — the engine's control-API token (`x-engine-token`).
-- **`OSBORN_STREAM_TOKEN`** — the engine's `/stream` key, if the engine sets one.
 - `FLY_API_TOKEN` — already used elsewhere; enables the no-wake awake/asleep probe.
-- Optional overrides: `BROWSER_ENGINE_HOST`, `BROWSER_ENGINE_STREAM_URL`,
-  `BROWSER_ENGINE_CONTROL_URL`.
+- Optional overrides: `BROWSER_ENGINE_HOST`, `BROWSER_ENGINE_CONTROL_URL`.
 
 Without the tokens the panel still renders and the controls return the engine's own
 auth errors — it degrades, it doesn't break.

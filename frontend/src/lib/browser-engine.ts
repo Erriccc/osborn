@@ -1,10 +1,11 @@
 // Server-only config + helpers for proxying the browser-screen-recorder engine
-// (issue #51). The engine is a Fly app (default `osborn-voice-e2e-n`) exposing:
-//   - a public MJPEG live view at  https://<app>.fly.dev/stream   (port 443)
-//   - a token-protected control API at https://<app>.fly.dev:8781 (/status, /act, …)
+// (issue #51). The engine is a Fly app (default `osborn-voice-e2e-n`) exposing a
+// token-protected control API at https://<app>.fly.dev:8781 (/status, /act, …,
+// and /stream: the MJPEG of the caller's own tab). Its public live view shows only
+// a tab a driver has cast, so the panel never uses it.
 //
-// The frontend proxies both so the panel never touches the raw Fly URL and the
-// engine/stream tokens stay server-side. NEVER import this from a client component.
+// The frontend proxies the control API so the panel never touches the raw Fly URL
+// and the engine token stays server-side. NEVER import this from a client component.
 
 const DEFAULT_APP = 'osborn-voice-e2e-n'
 
@@ -16,11 +17,6 @@ function engineHost(): string {
   // Explicit override wins; otherwise derive the Fly hostname from the app name.
   const override = (process.env.BROWSER_ENGINE_HOST || '').trim()
   return override || `${engineApp()}.fly.dev`
-}
-
-// The MJPEG viewer + /stream live on the app's 443 http_service (internal 8080).
-export function streamBase(): string {
-  return (process.env.BROWSER_ENGINE_STREAM_URL || `https://${engineHost()}`).replace(/\/+$/, '')
 }
 
 // The control API is a separate Fly service on :8781 (tls+http).
@@ -37,14 +33,6 @@ export function engineToken(): string {
 // token is legible in the panel instead of surfacing as a cryptic per-action 401.
 export function engineTokenConfigured(): boolean {
   return engineToken().length > 0
-}
-
-// NOT dead code: consumed transitively by buildStreamTarget() (appended as the
-// `?key=` on the MJPEG stream URL). The stream path authenticates via this stream
-// key, not the x-engine-token header — which is why the live view keeps working
-// even when the engine (control-API) token is missing or mismatched.
-export function streamToken(): string {
-  return (process.env.OSBORN_STREAM_TOKEN || '').trim()
 }
 
 // Only these engine endpoints may be reached through the proxy. `eval`, `brain`,
@@ -67,16 +55,14 @@ export function buildControlTarget(
   return `${controlBase()}/${action}${qs}`
 }
 
-// Pure: the MJPEG stream URL, with the stream key appended when configured.
-// Exported for tests. (This URL is used server-side only; the token is not sent
-// to the browser — the client fetches our /api/browser/stream proxy instead.)
+// Pure: the engine's per-tab MJPEG URL. The engine shows the caller (sent as
+// `x-driver-id` with the engine token) only a tab it owns: `tab` picks one of
+// them, and without it the stream follows the caller's current tab. Every other
+// query parameter is dropped. Exported for tests.
 export function buildStreamTarget(search = ''): string {
-  const base = `${streamBase()}/stream`
-  const params = new URLSearchParams(search.replace(/^\?/, ''))
-  const key = streamToken()
-  if (key) params.set('key', key)
-  const qs = params.toString()
-  return qs ? `${base}?${qs}` : base
+  const tab = new URLSearchParams(search.replace(/^\?/, '')).get('tab')
+  const base = `${controlBase()}/stream`
+  return tab != null && /^\d+$/.test(tab) ? `${base}?tab=${tab}` : base
 }
 
 export type EngineMachineState = {
