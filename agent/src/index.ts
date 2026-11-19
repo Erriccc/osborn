@@ -74,7 +74,7 @@ import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
-import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phonePermissionPolicy, phoneToolPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phonePermissionPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, recordAlwaysAllow, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
 import { matchVoiceAction, phoneMayChangeMode, pickSession, sayModeChanged, sayOutputs, saySessions, sayStatus, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
@@ -5284,13 +5284,17 @@ async function main() {
     })
   }
 
-  // Settles whatever permission is pending (live session first, then a parked
-  // warm brain). The one answer path for the browser card, the watch bridge
-  // and the phone keypad. 'always_allow' also adds the request to the
-  // session's always-allow list. False when nothing is pending (already
-  // answered elsewhere).
+  /** The LLM holding a pending permission (live session first, then a parked warm brain). */
+  function pendingPermissionHolder(): any {
+    return currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
+  }
+
+  // Settles whatever permission is pending (pendingPermissionHolder). The one
+  // answer path for the browser card, the watch bridge and the phone keypad.
+  // 'always_allow' also adds the request to the session's always-allow list.
+  // False when nothing is pending (already answered elsewhere).
   function settlePendingPermission(answer: PermissionAnswer): boolean {
-    const target: any = currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
+    const target = pendingPermissionHolder()
     if (!target) return false
     const pending = target.getPendingPermission?.()
     if (answer === 'always_allow' && pending) {
@@ -6370,7 +6374,7 @@ async function main() {
         }
       }
       // A call has no approvals picker on screen: say which mode is on (#364).
-      if (isPhoneCaller) await greetViaVoice(approvalModeAnnouncement(approvalMode, phoneToolPolicy(true) === 'allow'))
+      if (isPhoneCaller) await greetViaVoice(approvalModeAnnouncement(approvalMode, PHONE_TOOLS_ENABLED))
     } catch (err) {
       console.error('❌ Failed to start session:', err)
     }
@@ -7586,10 +7590,6 @@ async function main() {
     return replies
   }
   actionHook = runAppAction
-
-  /** The LLM holding a pending permission (live session first, then a parked warm brain). */
-  const pendingPermissionHolder = (): any =>
-    currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
 
   // Phone voice actions (#367): on a call, a short command ("stop that", "what
   // are you doing?", "switch to my billing project", a yes/no to a pending
