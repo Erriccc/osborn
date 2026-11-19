@@ -64,23 +64,60 @@ const MAX_RECORD_VIEW_CHARS = 20_000
  * the cwd slug, then a scan of every project's osb dir (same layout as
  * session-store.ts getStorePath / recall-cli listStores).
  */
+/** <projectDir>/osb/<sessionId>/session.db when it exists and is not empty. */
+function storeIn(projectDir: string, sessionId: string): string | null {
+  const p = join(projectDir, 'osb', sessionId, 'session.db')
+  return existsSync(p) && statSync(p).size > 0 ? p : null
+}
+
 export function resolveSessionDb(sessionId: string, projectDir?: string | null, cwd?: string): string | null {
   if (!sessionId || !SID_RE.test(sessionId)) return null
-  const candidates: string[] = []
-  if (projectDir) candidates.push(join(projectDir, 'osb', sessionId, 'session.db'))
-  if (cwd) candidates.push(join(slugDir(cwd), 'osb', sessionId, 'session.db'))
-  for (const p of candidates) if (existsSync(p) && statSync(p).size > 0) return p
+  for (const pd of [projectDir, cwd ? slugDir(cwd) : null]) {
+    const p = pd ? storeIn(pd, sessionId) : null
+    if (p) return p
+  }
   const root = join(claudeDir(), 'projects')
   try {
     for (const ent of readdirSync(root, { withFileTypes: true })) {
       if (!ent.isDirectory()) continue
-      const p = join(root, ent.name, 'osb', sessionId, 'session.db')
-      if (existsSync(p) && statSync(p).size > 0) return p
+      const p = storeIn(join(root, ent.name), sessionId)
+      if (p) return p
     }
   } catch {
     /* no projects dir */
   }
   return null
+}
+
+export interface SessionStore {
+  sessionId: string
+  db: string
+  projectDir: string
+}
+
+/** Every session store on this machine (the Library catch-up sweep). */
+export function listSessionDbs(): SessionStore[] {
+  const out: SessionStore[] = []
+  const root = join(claudeDir(), 'projects')
+  try {
+    for (const p of readdirSync(root, { withFileTypes: true })) {
+      if (!p.isDirectory()) continue
+      const projectDir = join(root, p.name)
+      let ents: import('node:fs').Dirent[] = []
+      try {
+        ents = readdirSync(join(projectDir, 'osb'), { withFileTypes: true })
+      } catch {
+        continue
+      }
+      for (const s of ents) {
+        const db = s.isDirectory() ? storeIn(projectDir, s.name) : null
+        if (db) out.push({ sessionId: s.name, db, projectDir })
+      }
+    }
+  } catch {
+    /* no projects dir */
+  }
+  return out
 }
 
 export function includeSubagents(): boolean {

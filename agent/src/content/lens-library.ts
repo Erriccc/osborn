@@ -27,7 +27,7 @@ import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { loadClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { runPeriodMap } from './period-run.js'
-import { DEFAULT_MIN_SPAN_MS, pageFileName, period, pickLibraryPeriod, segmentPeriods, type LibraryPeriod, type RowStamp, type Segmentation } from './lens-library-select.js'
+import { DEFAULT_MIN_SPAN_MS, pageFileName, period, pickLibraryPeriod, segmentPeriods, type LibraryPeriod, type Segmentation } from './lens-library-select.js'
 import { rebuildIndex } from './lens-library-index.js'
 import { contentHashFor, ingestPage, needsIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
 
@@ -144,7 +144,7 @@ export function libraryDirFor(dbPath: string, sessionId: string): string {
 const posInt = (n: unknown): n is number => Number.isInteger(n) && (n as number) > 0
 
 /** A manifest entry the segmentation can trust: finite row range and index, a page file, its own key. */
-export function isValidEntry(key: string, e: any): e is ManifestEntry {
+function isValidEntry(key: string, e: any): e is ManifestEntry {
   return !!e && typeof e === 'object' && ['ok', 'error', 'dry'].includes(e.status) && posInt(e.startRowId) && posInt(e.endRowId) &&
     e.endRowId >= e.startRowId && posInt(e.index) && typeof e.file === 'string' && !!e.file && key === String(e.startRowId)
 }
@@ -192,8 +192,8 @@ const envNum = (k: string): number | undefined => {
  * seams plus the end of every written page, so without a compaction the tail moves on past a
  * written page instead of keeping its start row forever.
  */
-export function librarySegments(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs(), rows: RowStamp[] = rowStamps(db)): Segmentation {
-  const s = segmentLibrary(db, manifest, minSpanMs, rows)
+export function librarySegments(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs()): Segmentation {
+  const s = segmentLibrary(db, manifest, minSpanMs)
   const closed = [...s.frozen, ...s.gapPeriods, ...s.rest.closed].sort((a, b) => a.startRowId - b.startRowId)
   return { closed, tail: s.rest.tail }
 }
@@ -205,7 +205,8 @@ export function librarySegments(db: string, manifest: Manifest, minSpanMs = libr
  * too, numbered on from the page before them, so that period is never orphaned (#267). A gap's
  * last stretch is closed by the next written page: a period if it spans the min span, else short.
  */
-function segmentLibrary(db: string, manifest: Manifest, minSpanMs: number, rows: RowStamp[]) {
+function segmentLibrary(db: string, manifest: Manifest, minSpanMs: number) {
+  const rows = loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
   const seams = readCompactionBoundaries(db)
   const written = Object.values(manifest.periods).filter(e => e.status === 'ok').sort((a, b) => a.startRowId - b.startRowId)
   const frozen = written.map(e => period(e.index, e.startRowId, e.endRowId, typeof e.closedBy === 'number' ? e.closedBy : null,
@@ -234,15 +235,13 @@ function segmentLibrary(db: string, manifest: Manifest, minSpanMs: number, rows:
   return { frozen, gapPeriods, gapShort, rest: { closed: after.closed.map(renumber), tail: after.tail ? renumber(after.tail) : null } }
 }
 
-const rowStamps = (db: string): RowStamp[] => loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
-
 export function libraryMinSpanMs(): number {
   const envH = envNum('OSBORN_LIBRARY_MIN_PERIOD_H')
   return envH ? envH * 3_600_000 : DEFAULT_MIN_SPAN_MS
 }
 
 /** A period whose reply was unusable this many times in a row is no longer retried by the sweep (manual run only). */
-export const MAX_PERIOD_FAILURES = 3
+const MAX_PERIOD_FAILURES = 3
 
 /** The model call itself failed (HTTP error, timeout, network): an outage, not a bad period. */
 export const isTransportError = (errors: string[]): boolean => errors.some(e => e.startsWith('model call failed'))
@@ -262,7 +261,7 @@ export interface LibraryBacklog {
  * name is already another page's.
  */
 export function libraryBacklog(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs()): LibraryBacklog {
-  const s = segmentLibrary(db, manifest, minSpanMs, rowStamps(db))
+  const s = segmentLibrary(db, manifest, minSpanMs)
   const periods = [...s.gapPeriods, ...s.rest.closed]
   const short = [...s.gapShort]
   const tail = s.rest.tail

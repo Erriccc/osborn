@@ -2678,7 +2678,7 @@ async function main() {
       } catch (err) {
         console.error(`❌ killWarm(${reason}) abort failed:`, err instanceof Error ? err.message : err)
       } finally {
-        launchLibraryOnSessionEnd(warmSessionId, (warmLLM as any)?.workingDirectory || workingDir, `warm_${reason}`, liveSessionIds())
+        launchLibraryOnSessionEnd(warmSessionId, (warmLLM as any)?.workingDirectory || workingDir, `warm_${reason}`)
       }
     }
     if (warmLLM) console.log(`🧊 [KEEP-WARM] freed warm slot (${reason})`)
@@ -2876,7 +2876,7 @@ async function main() {
     } catch (err) {
       console.error(`❌ killCurrentLLM(${reason}) failed:`, err instanceof Error ? err.message : err)
     } finally {
-      launchLibraryOnSessionEnd(warmParkKey(currentLLM as any), (currentLLM as any)?.workingDirectory || workingDir, reason, liveSessionIds())
+      launchLibraryOnSessionEnd(warmParkKey(currentLLM as any), (currentLLM as any)?.workingDirectory || workingDir, reason)
     }
   }
 

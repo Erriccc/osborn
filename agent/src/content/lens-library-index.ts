@@ -12,7 +12,7 @@ import { join } from 'node:path'
 export const INDEX_FILE = 'INDEX.md'
 export const PAGE_RE = /^(\d{4}-\d{2}-\d{2}|undated)-period-(\d+)\.md$/
 /** One daily digest of short chats (lens-library-digest.ts), named after its local day. */
-export const DIGEST_RE = /^(\d{4}-\d{2}-\d{2})-digest\.md$/
+const DIGEST_RE = /^(\d{4}-\d{2}-\d{2})-digest\.md$/
 
 export interface DigestSummary {
   file: string
@@ -111,7 +111,7 @@ export function renderIndex(sessionLabel: string, pages: PageSummary[], digests:
 }
 
 /** INDEX.md of the digests dir: one row per local day. Pure. */
-export function renderDigestIndex(digests: DigestSummary[]): string {
+function renderDigestIndex(digests: DigestSummary[]): string {
   const ds = [...digests].sort((a, b) => b.day.localeCompare(a.day))
   const L: string[] = ['# Content library — daily digests', '']
   L.push(

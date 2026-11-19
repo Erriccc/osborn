@@ -96,7 +96,7 @@ export function contentHashFor(p: Pick<IngestPage, 'sessionId' | 'startRowId' | 
   return createHash('sha256').update(`${p.sessionId}\n${p.startRowId}\n${p.markdown}`).digest('hex')
 }
 
-const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s)
+export const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s)
 const SESSION_ID_RE = /^[a-zA-Z0-9._-]{1,128}$/
 
 /** Map a page to the content_ingest payload. Never includes status/published_at/owner. */

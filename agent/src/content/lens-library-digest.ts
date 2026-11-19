@@ -18,36 +18,33 @@
  */
 
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { hostname } from 'node:os'
-import { join } from 'node:path'
-import { loadConversationRows } from './lens-db.js'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { loadConversationRows, type SessionStore } from './lens-db.js'
 import { Budget, chat, getModelInfo } from './lens-model.js'
 import { loadClientRedactor, type ClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { parseJsonLoose } from './content-llm.js'
-import { rebuildIndex } from './lens-library-index.js'
-import { postContentIngest, type IngestOptions, type IngestState } from './lens-ingest.js'
+import { parseDigest, rebuildIndex } from './lens-library-index.js'
+import { clip, needsIngest, postContentIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
+import { writeAtomic } from './content-manifest.js'
 import { libraryHomeDir } from './lens-paths.js'
 import { isTransportError } from './lens-library.js'
 import type { LibraryPeriod } from './lens-library-select.js'
 
-export const DIGEST_MANIFEST_FILE = '.digest-manifest.json'
+const DIGEST_MANIFEST_FILE = '.digest-manifest.json'
 /** Hard cap for one day's call. */
-export const DIGEST_CAP_USD = 0.25
+const DIGEST_CAP_USD = 0.25
 /** A day that failed this many times in a row is retried only when it gains a chat. */
-export const MAX_DIGEST_FAILURES = 3
+const MAX_DIGEST_FAILURES = 3
 const MAX_CHATS_PER_DAY = 60
 const CHAT_HEAD = 2_500
 const CHAT_TAIL = 1_500
 const MAX_OUT = 6_000
 
-export interface ShortChat {
-  sessionId: string
-  db: string
-  projectDir: string
-  period: LibraryPeriod
-}
+export type ShortChat = SessionStore & { period: LibraryPeriod }
 
 export interface DigestEntry {
   day: string
@@ -61,9 +58,8 @@ export interface DigestEntry {
   costUsd: number
   errors: string[]
   updatedAt: string
+  /** Its contentHash is the page body's sha256, so an updated page is sent again. */
   ingest?: IngestState
-  /** sha256 of the page body last sent, so an updated page is sent again. */
-  ingestedHash?: string
 }
 export interface DigestManifest {
   version: 1
@@ -89,9 +85,9 @@ const localTime = (ts: string) => {
   return Number.isFinite(d.getTime()) ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : '?'
 }
 
-export const chatKey = (c: Pick<ShortChat, 'sessionId' | 'period'>): string => `${c.sessionId}:${c.period.startRowId}-${c.period.endRowId}`
+const chatKey = (c: Pick<ShortChat, 'sessionId' | 'period'>): string => `${c.sessionId}:${c.period.startRowId}-${c.period.endRowId}`
 export const digestDir = (home = libraryHomeDir()): string => join(home, 'digests')
-export const digestFileName = (day: string): string => `${day}-digest.md`
+const digestFileName = (day: string): string => `${day}-digest.md`
 
 export function readDigestManifest(dir: string): DigestManifest {
   try {
@@ -101,12 +97,6 @@ export function readDigestManifest(dir: string): DigestManifest {
     /* missing / unreadable → empty */
   }
   return { version: 1, days: {} }
-}
-
-function writeAtomic(path: string, text: string): void {
-  const tmp = `${path}.${process.pid}.tmp`
-  writeFileSync(tmp, text, 'utf-8')
-  renameSync(tmp, path)
 }
 
 export function writeDigestManifest(dir: string, m: DigestManifest): void {
@@ -155,23 +145,19 @@ interface DigestItem {
 }
 
 const oneLine = (s: string) => s.replace(/\s+/g, ' ').trim()
-const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1).trimEnd() + '…' : s)
 
-export function digestPrompt(day: string, items: DigestItem[]): string {
-  return [
-    `DAILY DIGEST. Below are ${items.length} short chat(s) from ${day} between a person (user) and their AI assistant, ` +
-      'each inside <chat n="…">. Read all of them; your task follows after them.',
-    '<chats>',
-    ...items.map(i => `<chat n="${i.n}">\n${i.text}\n</chat>`),
-    '</chats>',
-    'TASK: for EACH chat above give a short title (3-8 words) and a summary of one or two lines: what the person wanted and ' +
-      'what came of it. Never invent facts. Client details are masked as tags like [client], [founder], [amount]: keep the tags, ' +
-      'never guess real names. Never include secrets, keys, tokens, emails or private personal details.',
-    'Output ONLY: {"chats": [{"n": 1, "title": "...", "summary": "..."}]}',
-  ].join('\n\n')
+/** prompts/library-digest.md (src/prompts in dev, dist/prompts when built). */
+const DIGEST_PROMPT_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'prompts', 'library-digest.md')
+
+function digestPrompt(day: string, items: DigestItem[]): string {
+  return readFileSync(DIGEST_PROMPT_PATH, 'utf-8')
+    .trimEnd()
+    .replaceAll('{{count}}', String(items.length))
+    .replaceAll('{{day}}', day)
+    .replace('{{chats}}', () => items.map(i => `<chat n="${i.n}">\n${i.text}\n</chat>`).join('\n\n'))
 }
 
-export function renderDigestMd(day: string, items: DigestItem[], o: { costUsd: number; dry?: boolean }): string {
+function renderDigestMd(day: string, items: DigestItem[], o: { costUsd: number; dry?: boolean }): string {
   const L: string[] = [`<!-- osborn-digest: day=${day} chats=${items.length}${o.dry ? ' dry' : ''} -->`, `# Daily digest — ${day}`, '']
   L.push('Short chats from this day (local time). Each is under the period minimum, so none has a period page of its own.', '')
   L.push(`- Chats: ${items.length}`, o.dry ? '- Calls: none (dry run)' : `- Calls: 1, $${o.costUsd.toFixed(4)} (cap $${DIGEST_CAP_USD.toFixed(2)})`, '', '## Chats', '')
@@ -184,7 +170,7 @@ export function renderDigestMd(day: string, items: DigestItem[], o: { costUsd: n
 }
 
 /** Stable per machine + day, so a rewritten digest updates its draft in place. */
-export function digestContentHash(day: string): string {
+function digestContentHash(day: string): string {
   return createHash('sha256').update(`osborn-library-digest\n${hostname()}\n${day}`).digest('hex')
 }
 
@@ -193,7 +179,7 @@ const bodyHash = (md: string) => createHash('sha256').update(md).digest('hex')
 /** Send one digest page through the shared content_ingest seam. Never throws; updates `e`. */
 async function ingestDigest(e: DigestEntry, markdown: string, o: IngestOptions): Promise<void> {
   const scrub = o.scrub ?? ((s: string) => s)
-  const titles = [...markdown.matchAll(/^### (.+)$/gm)].map(m => m[1].trim())
+  const { titles } = parseDigest(e.file, markdown)
   const payload = {
     type: 'text_post',
     title: clip(scrub(`Daily digest ${e.day}: ${e.chats.length} short chat${e.chats.length === 1 ? '' : 's'}`), 200),
@@ -204,24 +190,21 @@ async function ingestDigest(e: DigestEntry, markdown: string, o: IngestOptions):
     source_kind: 'library_digest',
     content_hash: digestContentHash(e.day),
   }
-  e.ingest = await postContentIngest(payload, payload.content_hash, `library: ingest digest ${e.day}`, o)
-  e.ingestedHash = bodyHash(markdown)
+  // The cloud row is keyed on the stable day hash; the state records the body hash (needsIngest).
+  e.ingest = await postContentIngest(payload, bodyHash(markdown), `library: ingest digest ${e.day}`, o)
 }
-
-const ingestDone = (e: DigestEntry, md: string) =>
-  e.ingestedHash === bodyHash(md) && (e.ingest?.status === 'ok' || e.ingest?.status === 'oversize')
 
 /** Retry pass for written digests whose ingest never landed (no model call). Returns true if the manifest changed. */
 export async function ingestPendingDigests(dir: string, m: DigestManifest, o: IngestOptions = {}): Promise<boolean> {
+  if (!resolveIngestConfig().ok) return false
   let changed = false
   for (const e of Object.values(m.days)) {
     if (e.status !== 'ok') continue
     try {
       const md = readFileSync(join(dir, e.file), 'utf-8')
-      if (ingestDone(e, md)) continue
-      const before = JSON.stringify(e.ingest)
+      if (!needsIngest(e.ingest, bodyHash(md))) continue
       await ingestDigest(e, md, o)
-      if (JSON.stringify(e.ingest) !== before) changed = true
+      changed = true
     } catch {
       /* fail-open: next run */
     }
@@ -276,9 +259,10 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
       if (!key) throw new Error('OPENROUTER_API_KEY not set')
       const info = await getModelInfo(key)
       if (!info) throw new Error('model info unavailable (cannot enforce the cost cap)')
+      const prompt = digestPrompt(o.day, items)
       const budget = new Budget(info, { maxCalls: 1, maxCostUsd: DIGEST_CAP_USD })
       try {
-        const r = await chat(budget, digestPrompt(o.day, items), key, MAX_OUT)
+        const r = await chat(budget, prompt, key, MAX_OUT)
         if (!r) res.errors.push('refused by the cost cap')
         else {
           const parsed = parseJsonLoose(r.content)
@@ -304,7 +288,7 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
     rebuildIndex(dir, 'daily digests', scrub)
     const entry: DigestEntry = {
       day: o.day, file, chats: keys, status: o.dry ? 'dry' : 'ok', costUsd: res.costUsd, errors: res.errors,
-      updatedAt: new Date().toISOString(), ingest: prev?.ingest, ingestedHash: prev?.ingestedHash,
+      updatedAt: new Date().toISOString(), ingest: prev?.ingest,
     }
     if (!o.dry) await ingestDigest(entry, markdown, { scrub, log })
     m.days[o.day] = entry

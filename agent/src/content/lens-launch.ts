@@ -69,6 +69,14 @@ export function resolveWorkerCommand(): { args: string[]; worker: string } | nul
 
 let warnedSpawn = false
 
+/** The worker command, or why no worker can run (switched off, no OpenRouter key, no worker file). */
+function workerOrSkip(): { args: string[]; worker: string } | Extract<LensLaunchResult, { status: 'disabled' | 'no-key' | 'no-worker' }> {
+  if (!isContentLensEnabled()) return { status: 'disabled' }
+  // OpenRouter is the only model path; without a key the worker can do nothing.
+  if (!(process.env.OPENROUTER_API_KEY || '').trim()) return { status: 'no-key' }
+  return resolveWorkerCommand() ?? { status: 'no-worker' }
+}
+
 /**
  * Spawn the detached worker on `argFile`. Its stderr goes to <logDir>/content-lens.log, so a
  * crash before the worker's own logging (bad import, OOM) is not lost.
@@ -111,11 +119,8 @@ export function launchCompactionLens(payload: LensLaunchPayload): LensLaunchResu
   let projectDir: string | null = null
   let lockHeld = false
   try {
-    if (!isContentLensEnabled()) return { status: 'disabled' }
-    // OpenRouter is the only model path; without a key the worker can do nothing.
-    if (!(process.env.OPENROUTER_API_KEY || '').trim()) return { status: 'no-key' }
-    const cmd = resolveWorkerCommand()
-    if (!cmd) return { status: 'no-worker' }
+    const cmd = workerOrSkip()
+    if ('status' in cmd) return cmd
 
     // The session's own transcript decides the project (session-end launches pass none): a cwd
     // that slugs to another project would lock the wrong one and let two workers race (#272).
@@ -171,7 +176,6 @@ let lastRun: LastRun | null = null
 // The last launch that actually spawned a worker: a later locked / no-key attempt does not erase it (#270).
 let lastSpawned: LastRun | null = null
 export const lastLibraryRun = () => lastRun
-export const lastSpawnedLibraryRun = () => lastSpawned
 
 /** Sessions still running on this machine (set by the agent); retries and sweeps never touch them. */
 let liveSessions: () => string[] = () => []
@@ -182,8 +186,6 @@ export function setLibraryLiveSessions(fn: () => string[]): void {
 /** A session end that found its project locked is retried after the lock can have expired (#268). */
 export const sessionEndRetry = { delayMs: LOCK_TTL_MS + 60_000, max: 3 }
 const retries = new Map<string, ReturnType<typeof setTimeout>>()
-/** 8-char ids of sessions waiting for a session-end retry. */
-export const pendingLibraryRetries = (): string[] => [...retries.keys()].map(s => s.slice(0, 8))
 
 /**
  * `live` = sessions still running on this machine (never swept). The worker writes this
@@ -224,10 +226,8 @@ export function launchLibrarySweep(live: string[], trigger: string): LensLaunchR
   const home = libraryHomeDir()
   let lockHeld = false
   try {
-    if (!isContentLensEnabled()) return { status: 'disabled' }
-    if (!(process.env.OPENROUTER_API_KEY || '').trim()) return { status: 'no-key' }
-    const cmd = resolveWorkerCommand()
-    if (!cmd) return { status: 'no-worker' }
+    const cmd = workerOrSkip()
+    if ('status' in cmd) return cmd
     mkdirSync(home, { recursive: true })
     if (!acquireLock(home)) return { status: 'locked', projectDir: home }
     lockHeld = true
@@ -254,7 +254,8 @@ export function librarySweepHealth(): Record<string, unknown> {
   const s = readSweepStatus()
   return {
     lastSpawned,
-    pendingRetries: pendingLibraryRetries(),
+    // 8-char ids of sessions waiting for a session-end retry.
+    pendingRetries: [...retries.keys()].map(id => id.slice(0, 8)),
     lastStep: s?.lastStep ?? null,
     backlog: s?.backlog ?? null,
     lastSweep: s?.at

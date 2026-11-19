@@ -10,7 +10,7 @@ process.env.CLAUDE_CONFIG_DIR = join(tmp, 'claude')
 delete process.env.OPENROUTER_API_KEY
 delete process.env.OSBORN_CONTENT_LENS
 delete process.env.OSBORN_SYNC_TOKEN
-const { launchLibraryOnSessionEnd, lastLibraryRun, lastSpawnedLibraryRun, launchCompactionLens, sessionEndRetry, pendingLibraryRetries, librarySweepHealth } =
+const { launchLibraryOnSessionEnd, lastLibraryRun, launchCompactionLens, sessionEndRetry, librarySweepHealth } =
   await import('../src/content/lens-launch.js')
 const { acquireLock, releaseLock, libraryHomeDir, readSweepStatus, LOCK_FILE } = await import('../src/content/lens-paths.js')
 
@@ -63,12 +63,13 @@ assert.ok(acquireLock(libraryHomeDir())) // keep the fallback sweep from spawnin
 try {
   const locked = launchLibraryOnSessionEnd(sid, wrongCwd, 'session_switch', [])!
   assert.equal(locked.status, 'locked')
-  assert.deepEqual(pendingLibraryRetries(), [sid.slice(0, 8)])
-  assert.equal(lastSpawnedLibraryRun()?.status, 'spawned', 'not overwritten by the locked attempt')
+  const health = () => librarySweepHealth() as any
+  assert.deepEqual(health().pendingRetries, [sid.slice(0, 8)])
+  assert.equal(health().lastSpawned?.status, 'spawned', 'not overwritten by the locked attempt')
   await new Promise(res => setTimeout(res, 300))
   assert.equal(lastLibraryRun()?.attempt, 2, 'retried up to the max')
-  assert.deepEqual(pendingLibraryRetries(), [], 'and then stops')
-  const h = librarySweepHealth() as any
+  assert.deepEqual(health().pendingRetries, [], 'and then stops')
+  const h = health()
   assert.equal(h.lastSpawned.status, 'spawned')
   assert.equal(h.lastStep.status, 'no-db')
 } finally {

@@ -278,16 +278,13 @@ async function main(): Promise<number> {
     if (job.sweep) {
       const home = libraryHomeDir()
       mkdirSync(home, { recursive: true })
+      // This session's steps are done: free its project for the next compaction run; the sweep
+      // takes each project's lock only while it writes a page there.
+      if (lockDir) releaseLock(lockDir)
+      lockDir = null
       if (job.sweepLockHeld || acquireLock(home)) {
         sweepHome = home
-        const s = await runLibrarySweep({
-          exclude: job.sweep.exclude,
-          trigger: job.sweep.trigger,
-          dry: job.sweep.dry,
-          maxPages: job.sweep.max,
-          heldProjectDir: lockDir,
-          keepAlive: () => lockDir && touchLock(lockDir),
-        })
+        const s = await runLibrarySweep({ exclude: job.sweep.exclude, trigger: job.sweep.trigger, dry: job.sweep.dry, maxPages: job.sweep.max })
         logLine(logDir, `session ${sid}: sweep status=${s.status} pages=${s.pagesWritten} digests=${s.digestsWritten} calls=${s.modelCalls} cost=$${s.costUsd.toFixed(4)} errors=${s.errors.length}`)
         if (job.sweep.print) process.stdout.write(`${JSON.stringify(s)}\n`)
       } else {
