@@ -89,8 +89,8 @@ export function serializeTranscript(messages: ChatMessage[]): CachedMessage[] {
     // compaction markers and steward cards. A local system notice has no counterpart there, so
     // caching it would paint a row nothing can reconcile.
     if (m.role === 'system' && !m.compaction && !m.steward && !m.stewardGate) continue
-    // Research log rows live in the Logs drawer and are never replayed.
-    if (m.category === 'log') continue
+    // Research log rows (the Logs drawer) and the spoken greeting are never replayed.
+    if (m.category === 'log' || m.greeting) continue
     const content = typeof m.content === 'string' ? m.content : ''
     // A normal bubble needs text; a compaction marker is kept even when empty.
     if (!content && !m.compaction) continue
@@ -162,29 +162,32 @@ export function cacheTranscript(
 }
 
 const turnText = (m: ChatMessage) =>
-  (typeof m.content === 'string' ? m.content : '').slice(0, MAX_CONTENT).trim()
+  (typeof m.content === 'string' ? m.content : '').slice(0, MAX_CONTENT).replace(/\s+/g, ' ').trim()
 const isTurn = (m: ChatMessage) => m.role === 'user' || m.role === 'assistant'
-// How far the browser clock may lead the stored timestamp of the same user turn.
-const CLOCK_SKEW_MS = 60_000
 
 /**
  * Put the authoritative replay in place of the optimistic paint (#153). The
- * replay can lag the session by a turn or more, so the cached turns from the
- * first user turn the replay does not hold onward are kept after it. A user
- * turn is held when the replay has the same text, stored no earlier than the
- * skew allows. Rows the replay never stores (the spoken greeting) count only
- * after such a user turn, so they cannot pile up across reloads. Everything
- * else the paint showed is dropped. Live rows (not from the cache) follow.
+ * replay can lag the session by a turn or more, so the paint's user turns are
+ * aligned on the replay's by text and order (never by clock: the browser's may
+ * be off): the cached user turn ending the longest run that matches the end of
+ * the replay's user turns is the last one the replay holds, and the cached turns
+ * after it are kept, after the replay. A tie goes to the earliest run, so an
+ * identical text said again later counts as new. With no alignment every cached
+ * row is dropped, as before. Live rows (not from the cache) follow.
  * Pass `current` without its cache rows when the replay is for another session.
  */
 export function reconcileReplay(replay: ChatMessage[], current: ChatMessage[]): ChatMessage[] {
   const live = current.filter(m => !m.fromCache)
-  const users = replay.filter(m => m.role === 'user')
-  const newest = Math.max(0, ...replay.filter(isTurn).map(timeOf).filter(t => !Number.isNaN(t)))
-  const held = (m: ChatMessage) =>
-    users.some(r => turnText(r) === turnText(m) && timeOf(r) >= timeOf(m) - CLOCK_SKEW_MS)
+  const said = replay.filter(m => m.role === 'user').map(turnText)
   const cached = current.filter(m => m.fromCache && isTurn(m))
-  const start = newest > 0 ? cached.findIndex(m => m.role === 'user' && timeOf(m) > newest && !held(m)) : -1
+  const users = cached.flatMap((m, i) => (m.role === 'user' ? [{ i, text: turnText(m) }] : []))
+  let best = 0, at = -1
+  users.forEach((_, j) => {
+    let run = 0
+    while (run <= j && run < said.length && users[j - run].text === said[said.length - 1 - run]) run++
+    if (run > best) { best = run; at = j }
+  })
+  const start = at < 0 ? -1 : (users[at + 1]?.i ?? -1)
   const ahead = start < 0 ? [] : cached.slice(start)
     .map(m => ({ ...m, id: `prior-ahead-${m.id}`, fromCache: false }))
   return [...replay, ...ahead, ...live]

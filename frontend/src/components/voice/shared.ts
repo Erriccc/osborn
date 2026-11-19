@@ -231,6 +231,8 @@ export interface ChatMessage {
   // (#136): rendered like any bubble, but dropped and replaced the moment the
   // authoritative /session-messages (or prior_messages) replay lands.
   fromCache?: boolean
+  // The agent's spoken resume greeting: never stored, so never cached.
+  greeting?: boolean
 }
 
 export interface SpeakingChunk {

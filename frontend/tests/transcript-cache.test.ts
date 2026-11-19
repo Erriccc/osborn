@@ -192,10 +192,41 @@ t('#153: reloading with no speech shows one greeting, not one per reload', () =>
   ]
   let screen: ChatMessage[] = []
   for (let n = 1; n <= 4; n++) {
-    const greeting = msg({ id: `greet-${n}`, role: 'assistant', content: 'Welcome back!', timestamp: at(`2026-11-11T23:3${n}:00Z`) })
+    const greeting = msg({ id: `greet-${n}`, role: 'assistant', content: 'Welcome back!', timestamp: at(`2026-11-11T23:3${n}:00Z`), greeting: true })
     screen = reload(s, replay, [greeting])
   }
   eq(screen.filter(m => m.content === 'Welcome back!').length, 1, 'one greeting after 4 reloads')
+})
+
+t('#153: realtime turns the replay never holds keep one greeting across reloads', () => {
+  // The fast brain answered on its own, so this exchange never reaches the stored transcript.
+  const s = fakeStorage()
+  const replay = [
+    msg({ id: 'prior-0-sess', content: 'question', timestamp: at('2026-11-11T23:20:00Z') }),
+    msg({ id: 'prior-1-sess', role: 'assistant', content: 'answer', timestamp: at('2026-11-11T23:20:05Z') }),
+  ]
+  cacheTranscript('u1', 'sess', [
+    ...replay,
+    msg({ id: 'rt-u', content: 'what time is it', timestamp: at('2026-11-11T23:25:00Z') }),
+    msg({ id: 'rt-a', role: 'assistant', content: 'It is 11:25.', timestamp: at('2026-11-11T23:25:02Z') }),
+  ], s)
+  let screen: ChatMessage[] = []
+  for (let n = 1; n <= 4; n++) {
+    screen = reload(s, replay, [msg({ id: `greet-${n}`, role: 'assistant', content: 'Welcome back!', timestamp: at(`2026-11-11T23:3${n}:00Z`), greeting: true })])
+  }
+  eq(screen.map(m => m.content), ['question', 'answer', 'what time is it', 'It is 11:25.', 'Welcome back!'], 'the realtime exchange once, one greeting')
+})
+
+t('#153: a browser clock 2 minutes ahead does not duplicate a caught-up exchange', () => {
+  const replay = [
+    msg({ id: 'prior-0-s', content: 'deploy it', timestamp: at('2026-11-11T23:20:00Z') }),
+    msg({ id: 'prior-1-s', role: 'assistant', content: 'Deployed.', timestamp: at('2026-11-11T23:20:30Z') }),
+  ]
+  const current = [
+    msg({ id: 'prior-0-c', content: 'deploy it', timestamp: at('2026-11-11T23:22:00Z'), fromCache: true }),
+    msg({ id: 'prior-1-c', role: 'assistant', content: 'Deployed.', timestamp: at('2026-11-11T23:22:31Z'), fromCache: true }),
+  ]
+  eq(reconcileReplay(replay, current).map(m => m.content), ['deploy it', 'Deployed.'], 'shown once')
 })
 
 t('#153: a new short reply is kept even when an older one contains its words', () => {
@@ -213,8 +244,12 @@ t('#153: a new short reply is kept even when an older one contains its words', (
   eq(reconcileReplay(replay, again).map(m => m.content), ['yes', 'Shipping now.', 'yes'], 'an identical later "yes" is not taken for the old one')
 })
 
-t('research log rows are never cached', () => {
-  eq(serializeTranscript([msg({ id: 'l1', role: 'assistant', content: 'researcher: reading files', category: 'log' }), msg({ id: 'c1', content: 'hi', category: 'chat' })]).map(i => i.id), ['c1'], 'log row dropped')
+t('research log rows and the spoken greeting are never cached', () => {
+  eq(serializeTranscript([
+    msg({ id: 'l1', role: 'assistant', content: 'researcher: reading files', category: 'log' }),
+    msg({ id: 'g1', role: 'assistant', content: 'Welcome back!', greeting: true }),
+    msg({ id: 'c1', content: 'hi', category: 'chat' }),
+  ]).map(i => i.id), ['c1'], 'log and greeting rows dropped')
 })
 
 t('content and tail are bounded by what the replay can return', () => {

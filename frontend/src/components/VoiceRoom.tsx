@@ -1851,7 +1851,7 @@ function VoiceRoomInner({
   // iOS and the mic stays dead for the rest of the turn.
   const ttsActiveUntilRef = useRef(0)
 
-  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => void>()
+  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string; greeting?: boolean }) => void>()
   // Typed messages awaiting their user_transcript echo (bug d9bb78b2).
   const pendingTypedRef = useRef<PendingTyped[]>([])
   /** Set once the agent returns a clientMsgId this session (MINOR: chat-echo). */
@@ -1863,7 +1863,7 @@ function VoiceRoomInner({
   const assistantMessageIdsRef = useRef<Set<string>>(new Set())
   const messagesRef = useRef<ChatMessage[]>([])
   messagesRef.current = messages
-  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => {
+  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string; greeting?: boolean }) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
     // Safety check - skip empty/whitespace-only messages
@@ -1912,6 +1912,7 @@ function VoiceRoomInner({
       messageId: extra?.messageId,
       chunkIndex: extra?.chunkIndex,
       clientMsgId: extra?.clientMsgId,
+      ...(extra?.greeting ? { greeting: true } : {}),
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
     if (role === 'assistant') dispatchResumeChip({ type: 'assistant' })
@@ -2059,7 +2060,7 @@ function VoiceRoomInner({
         })
         if (data.text && data.text.trim()) {
           console.log('🤖 Adding assistant message:', data.text.substring(0, 50), `[source: ${data.source || 'unknown'}]`)
-          addMessageRef.current?.('assistant', data.text, undefined, undefined, undefined, data.messageId ? { messageId: data.messageId } : undefined)
+          addMessageRef.current?.('assistant', data.text, undefined, undefined, undefined, { messageId: data.messageId || undefined, greeting: data.greeting === true })
         } else {
           console.warn('⚠️ assistant_response had empty or invalid text:', data)
         }

@@ -143,6 +143,9 @@ function buildToolLogEvent(
 }
 
 // The reply each chat store request waits for (VoiceRoom askAgent).
+// Spoken through session.say when a session resumes; matched in sendAgentTranscript.
+const RESUME_GREETING = 'Welcome back! Ready to continue our previous conversation.'
+
 const STORE_REPLY_TYPES: Record<string, string> = {
   skill_get: 'skill_content', skill_add: 'skill_add_result', skill_fork: 'skill_fork_result',
   skill_remove: 'skill_remove_result', get_agent_prompt: 'agent_prompt',
@@ -5846,7 +5849,10 @@ async function main() {
         if (normalized === lastSentAgentTranscript) return
 
         console.log(`💬 Agent (${source}, ${text.length} chars): "${text}"`)
-        sendToFrontend({ type: 'assistant_response', text })
+        // The resume greeting is spoken, never stored: flagged so the chat cache skips it.
+        sendToFrontend(normalized === RESUME_GREETING
+          ? { type: 'assistant_response', text, greeting: true }
+          : { type: 'assistant_response', text })
         lastSentAgentTranscript = normalized
       }
 
@@ -6440,7 +6446,7 @@ async function main() {
           // screen connected (measured). Now the first words play at session-
           // ready (~2s); the prep runs in the background and never blocks voice.
           try {
-            await (session as any).say("Welcome back! Ready to continue our previous conversation.")
+            await (session as any).say(RESUME_GREETING)
           } catch (err) {
             console.log('⚠️ Pre-selected session greeting failed:', err)
           }
@@ -7538,7 +7544,7 @@ async function main() {
           // Greet immediately, then point agent to session index (no raw JSONL loading)
           if (currentSession && summary) {
             try {
-              await (currentSession as any).say("Welcome back! Ready to continue our previous conversation.")
+              await (currentSession as any).say(RESUME_GREETING)
             } catch (err) {
               console.log('⚠️ Session gate greeting failed:', err)
             }
