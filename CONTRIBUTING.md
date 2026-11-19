@@ -57,7 +57,9 @@ This repo has no monorepo test runner — checks are per-app and lightweight:
   Add a test in the same style (`node:assert`, a tiny `t()` harness) when you change
   behavior — see `frontend/tests/bug-report.test.ts` for the pattern.
 - CI runs `frontend-lint` (tsc + the frontend suite + the shipped-skill secret
-  scanner) on every PR, and the iOS workflows run build
+  scanner) on every PR, `agent-tests` runs the whole agent suite
+  (`cd agent && node ../frontend/scripts/run-tests.mjs . skill-secrets`) on PRs
+  touching `agent/**` or the migrations, and the iOS workflows run build
   + Maestro UI smoke flows on changes to `mobile/**` or `frontend/native/**`.
 
 ## PR conventions

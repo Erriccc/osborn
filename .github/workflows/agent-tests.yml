@@ -3,8 +3,11 @@ name: agent-tests
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['agent/**', 'frontend/supabase/migrations/**', 'frontend/scripts/run-tests.mjs', '.github/workflows/agent-tests.yml']
   pull_request:
-    paths: ['agent/**', 'frontend/scripts/run-tests.mjs', '.github/workflows/agent-tests.yml']
+    paths: ['agent/**', 'frontend/supabase/migrations/**', 'frontend/scripts/run-tests.mjs', '.github/workflows/agent-tests.yml']
 
 concurrency:
   group: agent-tests-${{ github.ref }}
