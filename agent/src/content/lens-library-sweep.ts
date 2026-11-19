@@ -241,6 +241,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
     for (const it of items) {
       if (calls >= maxPages || Date.now() > deadline) {
         st.capHit = true
+        if (Date.now() > deadline) err({ kind: 'time', message: 'time budget reached; the rest waits for the next run' })
         break
       }
       if (infraFails >= 2) {
