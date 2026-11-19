@@ -414,7 +414,7 @@ export function sweepCoolingDown(cooldownMs = SWEEP_COOLDOWN_MS, home = libraryH
 
 // ── Live sessions, as the agent sees them now (read by a running sweep before each page) ──
 
-export const LIVE_FILE = 'live-sessions.json'
+const LIVE_FILE = 'live-sessions.json'
 let lastLive = ''
 
 /** Record the live session ids for running sweeps. Rewritten only when the list changes (or to refresh its age). Never throws. */

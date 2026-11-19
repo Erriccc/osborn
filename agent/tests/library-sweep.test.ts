@@ -400,6 +400,13 @@ await t('a day whose chats are all injected context costs nothing and publishes 
   assert.equal(s.backlog?.digestDays, 0, 'the day is settled, not pending')
   await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
   assert.equal(digestCalls, before.d, 'and it is not reprocessed')
+  // A day that failed before (an earlier build sent its empty chats to the model) settles as empty too.
+  const m = readDigestManifest(dDir)
+  m.days['2026-03-07'] = { ...m.days['2026-03-07'], status: 'error', failures: 1, chats: [] }
+  writeDigestManifest(dDir, m)
+  await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
+  assert.equal(readDigestManifest(dDir).days['2026-03-07']?.status, 'empty')
+  assert.equal(digestCalls, before.d)
 })
 await t('a day rewrite never drops a chat from a session not read this run; a live session\'s cached chats count', async () => {
   // s2 (2 Mar) is live but settled in the cache: its chat is kept when a new chat joins its day.

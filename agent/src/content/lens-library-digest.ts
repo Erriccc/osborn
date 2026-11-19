@@ -262,7 +262,8 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
       // Nothing to summarise: no call, no page, no ingest. An earlier page of that day goes (removeDigestDay).
       if (prev?.status === 'ok') await removeDigestDay(dir, o.day, { scrub, log })
       const m2 = readDigestManifest(dir)
-      m2.days[o.day] = m2.days[o.day]
+      // A cloud draft emptied in place stays 'ok'; any other entry (an earlier error) settles as 'empty'.
+      m2.days[o.day] = m2.days[o.day]?.status === 'ok'
         ? { ...m2.days[o.day], chats: keys }
         : { day: o.day, file: digestFileName(o.day), chats: keys, status: 'empty', costUsd: 0, errors: [], updatedAt: new Date().toISOString() }
       writeDigestManifest(dir, m2)
