@@ -160,7 +160,7 @@ await t('index.ts: a caller who must type the code is not adopted (nothing is bu
 await t('index.ts: only an "ok" from the frontend adopts the caller, in the same room', () => {
   const start = src.indexOf('const submitPhoneCode')
   const body = src.slice(start, start + 1800)
-  assert.match(body, /if \(phoneCodeCaller !== caller \|\| activeRoomName !== room\) return\s+const action = phoneCodeAction\(result\)\s+if \(action === 'adopt'\) \{[\s\S]*?phoneCodeVerifiedRoom = room\s+phoneCodeCaller = null\s+participantConnectedHandler\?\.\(caller\)/)
+  assert.match(body, /if \(phoneCodeCaller !== caller \|\| activeRoomName !== room\) return\s+phoneCodeChecking = false\s+const action = phoneCodeAction\(result\)\s+if \(action === 'adopt'\) \{[\s\S]*?phoneCodeVerifiedRoom = room\s+phoneCodeCaller = null\s+participantConnectedHandler\?\.\(caller\)/)
   // A locked/expired answer hangs up after the goodbye line; wrong/error submit held digits.
   assert.match(body, /action === 'hang-up'\) \{[\s\S]*?setTimeout\(\(\) => endPhoneCodeCall\(caller, result\), PHONE_CODE_HANGUP_GRACE_MS\)/)
   assert.match(body, /const held = heldCode\(phoneCodeBuffer\)[\s\S]*?if \(held\.submit\) submitPhoneCode\(held\.submit\)/)
@@ -176,6 +176,12 @@ await t('index.ts: the code step opens a timer that ends the call; adoption and 
   assert.match(src.slice(clear, clear + 300), /clearTimeout\(phoneCodeTimer\)/)
   const end = src.indexOf('const endPhoneCodeCall')
   assert.match(src.slice(end, end + 600), /if \(phoneCodeCaller !== caller \|\| !room\) return[\s\S]*?removePhoneCaller\(room, caller\.identity\)[\s\S]*?destroyRoomSession\(/, 'only while still waiting; leaves the room if the caller cannot be removed')
+})
+await t('index.ts: a check that outlives its call neither leaves the next call held nor clears its flag (#397)', () => {
+  const clear = src.indexOf('const clearPhoneCode')
+  assert.match(src.slice(clear, clear + 300), /phoneCodeChecking = false/, 'a new call starts unheld')
+  const sub = src.indexOf('const submitPhoneCode')
+  assert.match(src.slice(sub, sub + 900), /if \(phoneCodeCaller !== caller \|\| activeRoomName !== room\) return\s+phoneCodeChecking = false/, 'the flag is released only for the call it belongs to')
 })
 await t('index.ts: during the code step nobody else is adopted, and nobody leaving tears anything down', () => {
   assert.match(src, /if \(isPhoneLinePlayer\(participant\) \|\| \(phoneCodeCaller && participant\.identity !== phoneCodeCaller\.identity\)\) \{/)
