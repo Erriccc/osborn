@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 54
+Version: 55
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -200,6 +200,14 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/streaming.md` — live view, meeting casting, NO-TUNNELS policy, stream token
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v55
+- A public engine with no `OSBORN_ENGINE_TOKEN` now locks its control API: every route answers `503 engine_token_missing` (only `GET /health` and signed `/media` links still work). `/status` and `/health` report `tokenRequired` and `tokenConfigured`. A local run with no Fly app or public URL stays open, and says so at boot.
+- `/shot` refuses a tab another driver owns (`409 tab_owned`, like `/eval`). A failed shot is still a task: the `500 no_screenshot` reply carries its `task` number and log link.
+- A screenshot that times out never falls back to another tab's frame: you get `no_screenshot` (or `artifact:null`) instead of a picture of the wrong tab.
+- `/tab close` with no `i` closes your own tab, whichever index it has (tab 0 is handled exactly like `{"i":0}`); with no tab of your own it is `409 no_own_tab`. `/tab navigate` with no `i` and no tab of your own is `409 no_own_tab` too, instead of moving the shared tab. After a close, `/tab list` reports your real tab, never a closed one at `i:-1`.
+- A navigation that lands on another page of the same host (http→https, a trailing slash, `/login` → `/dashboard`) is a success with `redirectedTo`, not `502 nav_failed`. `netError` keeps codes with digits (`net::ERR_HTTP2_PROTOCOL_ERROR`). When `/tab open` reuses a same-site tab and the load fails, the error comes back with `reusedTab` (the tab now showing it) instead of a fresh tab opening silently.
+- `clipUrl`, `audioClipUrl`, `artifactUrl`, `resultUrl` and webhook links are absolute whenever the engine knows its public URL, like `evidence`. Signed `/media` links answer `HEAD`.
 
 ## What's new in v54
 - `/act` can fill a field but does not reliably press keys: "type X and press Enter" leaves X in the box unsent. Press the key yourself: `POST /input {"type":"key","key":"Enter"}` (Playwright key names: `Enter`, `Tab`, `Escape`, `ArrowDown`, `Control+A`). `/input` also takes `{"type":"type","text":…}` (real keystrokes into the focused field), `{"type":"click","x":0.5,"y":0.5}` (fractions of the frame) and `{"type":"scroll","dy":600}`, on your own tab.

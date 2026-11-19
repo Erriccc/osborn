@@ -386,7 +386,13 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     resume,
     lastFrameAt: () => lastFrameTime,
     viewerCount: () => clients.size,
-    latestFrame: (p?: Page) => { const r = p ? tabRecs.get(p)?.ring : undefined; const b = r?.length ? r[r.length - 1].buf : latest; return b ? b.toString('base64') : null },
+    // With a page: that tab's own newest frame, else the live stream's frame only while
+    // the screencast is attached to that very tab — never another tab's frame (#256).
+    latestFrame: (p?: Page) => {
+      const r = p ? tabRecs.get(p)?.ring : undefined
+      const b = r?.length ? r[r.length - 1].buf : !p || (!DISPLAY && target === p) ? latest : null
+      return b ? b.toString('base64') : null
+    },
     setNotice: (text: string | null) => { notice = text },
     retarget: async (p: Page) => {
       // Display mode captures the whole window — tab focus IS the retarget.

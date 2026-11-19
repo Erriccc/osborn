@@ -494,22 +494,29 @@ async function main() {
   const json = (res: any, body: any, code = 200, raw = false) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(raw ? JSON.stringify(body) : redactJson(body)) }
   // goto with a clean error: 400 for a bad URL, 502 for a failed load (no ANSI codes),
   // and no error when the tab reached the page anyway (an interrupted-but-landed load).
+  // Success carries redirectedTo when the tab settled on another URL of the same host
+  // (http→https, a trailing slash, /login → /dashboard): a redirect is not a failure (#316).
   const badUrl = (raw: unknown): { status: number; body: any } | null => {
     let u: URL
     try { u = new URL(String(raw)) } catch { return { status: 400, body: { ok: false, code: 'bad_url', error: `not a URL: ${String(raw).slice(0, 200)}` } } }
     return /^https?:$/.test(u.protocol) ? null : { status: 400, body: { ok: false, code: 'bad_url', error: 'only http(s) URLs can be opened' } }
   }
-  const gotoChecked = async (page: Page, raw: unknown): Promise<{ status: number; body: any } | null> => {
+  type NavFail = { status: number; body: any }
+  const gotoChecked = async (page: Page, raw: unknown): Promise<NavFail | { redirectedTo: string | null }> => {
     const bad = badUrl(raw); if (bad) return bad
     const u = new URL(String(raw))
     const noHash = (h: string) => h.split('#')[0]
+    const hostOf = (h: string) => { try { const x = new URL(h); return /^https?:$/.test(x.protocol) ? x.hostname : null } catch { return null } }
+    const landed = () => { const now = page.url(); return { redirectedTo: noHash(now) === noHash(u.href) ? null : now } }
     const before = noHash(page.url())
-    try { await page.goto(u.href, { timeout: 45000 }); return null } catch (e) {
+    try { await page.goto(u.href, { timeout: 45000 }); return landed() } catch (e) {
       const msg = (e as Error).message.replace(/\u001b\[[0-9;]*m/g, '').split('\n')[0]
-      // An interrupted load that still reached the target (and was not already showing it) is a success.
+      // An interrupted load that still reached the target, or a page of the same host it
+      // redirected to (and was not already showing), is a success once navigation settles.
+      await page.waitForLoadState('domcontentloaded', { timeout: 5000 }).catch(() => {})
       const now = noHash(page.url())
-      if (now === noHash(u.href) && before !== now) return null
-      return { status: 502, body: { ok: false, code: 'nav_failed', netError: (msg.match(/net::[A-Z_]+/) || [null])[0], error: msg.slice(0, 300) } }
+      if (before !== now && (now === noHash(u.href) || hostOf(now) === u.hostname)) return landed()
+      return { status: 502, body: { ok: false, code: 'nav_failed', netError: (msg.match(/net::[A-Z0-9_]+/) || [null])[0], error: msg.slice(0, 300) } }
     }
   }
   const readBody = (req: any): Promise<any> => new Promise((r) => { let b = ''; req.on('data', (c: any) => b += c); req.on('end', () => { try { r(JSON.parse(b || '{}')) } catch { r({ __badJson: true }) } }) })
@@ -845,7 +852,7 @@ async function main() {
     // journey that points at the work already done (saveJourneyState no-ops
     // when no journey is open).
     saveJourneyState('active')
-    notifyRef('task', { task: { n, label, text, heard, tab: rec.tab }, clipUrl: clip || clipPending ? `/clip?n=${n}` : null, artifactUrl: artifact ? `/artifact?n=${n}` : null })
+    notifyRef('task', { task: { n, label, text, heard, tab: rec.tab }, clipUrl: clip || clipPending ? `${PUBLIC_BASE}/clip?n=${n}` : null, artifactUrl: artifact ? `${PUBLIC_BASE}/artifact?n=${n}` : null })
     return rec
   }
 
@@ -853,6 +860,12 @@ async function main() {
   // Self-host auth: when OSBORN_ENGINE_TOKEN is set (always on public
   // deployments — Fly exposes the control port), every request must carry it.
   const TOKEN = process.env.OSBORN_ENGINE_TOKEN
+  // The engine's public base (Fly app or OSBORN_ENGINE_PUBLIC_URL); '' on a local run.
+  const PUBLIC_BASE = (process.env.OSBORN_ENGINE_PUBLIC_URL || (process.env.FLY_APP_NAME ? `https://${process.env.FLY_APP_NAME}.fly.dev/control` : '')).replace(/\/+$/, '')
+  // Fail closed (#320): a public deployment with no token refuses every control
+  // route (503 engine_token_missing) instead of serving them to anyone. Local
+  // runs (no public base) stay open, as before.
+  const TOKEN_MISSING = !TOKEN && !!PUBLIC_BASE
   // PUBLIC EVIDENCE LINKS — proof an agent can actually paste into an issue.
   // /clip and /artifact need the engine token, so a link to them is a 401 for
   // every reader (and for GitHub's image proxy): testers "had" evidence but
@@ -1056,10 +1069,13 @@ async function main() {
       // a remote agent can fetch them as-is instead of guessing what a
       // relative "/clip?n=1" is relative to. Direct :8781 callers get the
       // same relative paths as before.
-      const mediaBase = String(req.headers['x-control-base'] || '')
-      // Public evidence links are absolute even for direct :8781 callers, so they render when pasted into an issue.
-      const evidenceBase = (mediaBase || process.env.OSBORN_ENGINE_PUBLIC_URL || (process.env.FLY_APP_NAME ? `https://${process.env.FLY_APP_NAME}.fly.dev/control` : '')).replace(/\/+$/, '')
-      if (req.method === 'GET' && path.startsWith('/media/')) {
+      // Every link in a response (evidence, clipUrl, artifactUrl, resultUrl) uses one base,
+      // absolute even for direct :8781 callers whenever the engine knows its public URL (#251).
+      const mediaBase = (String(req.headers['x-control-base'] || '') || PUBLIC_BASE).replace(/\/+$/, '')
+      // Liveness and the token posture only — never the token, never engine state.
+      if (req.method === 'GET' && path === '/health') return json(res, { ok: true, tokenRequired: !!TOKEN || TOKEN_MISSING, tokenConfigured: !!TOKEN, ...(TOKEN_MISSING ? { code: 'engine_token_missing' } : {}) })
+      // HEAD is answered like GET with no body, so link checkers see a good link (#251).
+      if ((req.method === 'GET' || req.method === 'HEAD') && path.startsWith('/media/')) {
         // Signed public evidence — checked BEFORE the token gate on purpose.
         const m = path.match(/^\/media\/([A-Za-z0-9T:-]+)\/(\d+)\.(jpg|mp4|txt)$/)
         const sig = new URL(req.url || '', 'http://x').searchParams.get('s') || ''
@@ -1069,6 +1085,7 @@ async function main() {
         if (!t) return json(res, { error: `run ${m[1]} task ${m[2]} is no longer stored (runs are pruned to the newest ${KEEP_RUNS})` }, 404)
         if (m[3] === 'txt') {
           res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' })
+          if (req.method === 'HEAD') return res.end()
           return res.end(redactDiagnostics(`run ${m[1]} · task ${t.n} · ${t.label}\n${new Date(t.startMs).toISOString()} → ${new Date(t.endMs).toISOString()}\ntab: ${t.tab?.url ?? ''} (owner: ${t.tab?.owner ?? 'none'})\ninstruction/text: ${t.text ?? ''}\n${t.heard ? `heard: ${t.heard}\n` : ''}\n${t.devtools ?? '(no devtools summary recorded)'}\n`))
         }
         const file = m[3] === 'mp4' ? t.clip : t.artifact
@@ -1076,9 +1093,11 @@ async function main() {
         if (!file || !existsSync(file)) return json(res, { error: `no ${m[3]} stored for run ${m[1]} task ${m[2]}`, ...(m[3] === 'mp4' && t.clipError ? { clipError: t.clipError } : {}) }, 404)
         if (m[3] === 'mp4' && m[1] === RUN_STAMP) fetchedClips.add(t.n)  // reviewing via the public link counts
         res.writeHead(200, { 'Content-Type': m[3] === 'mp4' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size, 'Cache-Control': 'public, max-age=86400' })
+        if (req.method === 'HEAD') return res.end()
         createReadStream(file).on('error', () => res.destroy()).pipe(res)
         return
       }
+      if (TOKEN_MISSING) return json(res, { ok: false, code: 'engine_token_missing', error: 'this engine is publicly reachable but OSBORN_ENGINE_TOKEN is not set, so its control API is locked — set the token on the deployment (e.g. fly secrets set OSBORN_ENGINE_TOKEN=…)' }, 503)
       if (TOKEN && req.headers['x-engine-token'] !== TOKEN) return json(res, { error: 'unauthorized — x-engine-token required' }, 401)
       // Any authenticated director command counts as activity for idle-stop.
       // /status is excluded (pollers/health checks must not keep it awake).
@@ -1102,7 +1121,7 @@ async function main() {
         } catch { /* page dead */ }
         const lastFrame = live?.lastFrameAt() ?? null
         return json(res, {
-          build: ENGINE_BUILD, run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
+          build: ENGINE_BUILD, tokenRequired: !!TOKEN, tokenConfigured: !!TOKEN, run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
           // #49: the in-app Browser panel (PR #51 proxy) and any watcher can see
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
@@ -1210,7 +1229,7 @@ async function main() {
         if (!list) return json(res, { ok: false, code: 'no_run', error: `run ${run} is not stored — GET /runs lists runs` }, 404)
         const wanted = q.get('n') ? list.filter((t: any) => t.n === Number(q.get('n'))) : list
         if (!wanted.length) return json(res, { ok: false, code: 'no_task', error: `no task ${q.get('n')} in run ${run}` }, 404)
-        return json(res, { ok: true, run, evidence: wanted.map((t: any) => ({ label: t.label, text: t.text ?? null, tab: t.tab ?? null, ...evidenceFor(evidenceBase, run, t.n, { clip: !!(t.clip || t.clipPending), shot: !!t.artifact }) })) })
+        return json(res, { ok: true, run, evidence: wanted.map((t: any) => ({ label: t.label, text: t.text ?? null, tab: t.tab ?? null, ...evidenceFor(mediaBase, run, t.n, { clip: !!(t.clip || t.clipPending), shot: !!t.artifact }) })) })
       }
       if (req.method === 'GET' && path === '/tasks') {
         // This run's task index — same data as manifest.json on disk.
@@ -1421,7 +1440,9 @@ async function main() {
           }
           if (fallback && before) forgetCached(before.url, String(body.instruction))
           if (warning) mark(`act[${driver}] NO VISIBLE EFFECT: ${String(body.instruction).slice(0, 50)}`)
-          const prevTask = [...tasks].reverse().find((t) => t.label !== 'shot')  // a /shot in between must not hide an unreviewed clip
+          // The highest-numbered non-shot task: a /shot in between must not hide an
+          // unreviewed clip, and a task that stamped out of order must not be skipped (#262).
+          const prevTask = tasks.reduce<(typeof tasks)[number] | undefined>((best, t) => t.label !== 'shot' && (!best || t.n > best.n) ? t : best, undefined)
           const nag = (prevTask?.clip || (prevTask as any)?.clipPending) && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
           actionCount++; noteVisit(page)
           const n = ++reqN
@@ -1438,7 +1459,7 @@ async function main() {
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
         if (clipError) { (window as any).clipError = clipError; writeManifest() }
         addStep('act', String(body.instruction))
-        return json(res, { ok: !r?.noop, ...(r?.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
+        return json(res, { ok: !r?.noop, ...(r?.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
       }
       if (path === '/say') {
         const driver = driverId(req)
@@ -1591,7 +1612,7 @@ async function main() {
           // heard and played audio slowed down: say so rather than hide it.
           const audioClock = earsAfter.audioClock ?? null
           const clockWarning = audioClock != null && audioClock < 0.9 ? `audio in this tab ran at ${audioClock}x real time (CPU throttling): the recording is time-compressed against the video, and the page may have heard and played audio slowed down` : null
-          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: [sayWarning, clockWarning].filter(Boolean).join('; ') || null, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: [sayWarning, clockWarning].filter(Boolean).join('; ') || null, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
       if (path === '/hear') {
@@ -1608,11 +1629,14 @@ async function main() {
         const driver = driverId(req)
         return await withLock(async () => {
           await focusDriverTab(driver)
+          const owned = guardOwnership(driver)
+          if (owned) return json(res, owned, 409)
+          live?.trackPage?.(active)  // the tab's own frames back a later shot whose screenshot times out
           const n = ++reqN, t0 = Date.now()
           const shot = await reqShot(n, 'shot', active)
-          if (!shot) return json(res, { ok: false, code: 'no_screenshot', error: 'the page could not be captured', driver }, 500)
-          stampTask(n, 'shot', t0, null, shot, undefined, undefined, active)
-          return json(res, { ok: true, ...(body.inline === true || new URL(req.url || '', 'http://x').searchParams.get('inline') === '1' ? { jpegB64: readFileSync(shot).toString('base64') } : {}), task: n, evidence: evidenceFor(evidenceBase, RUN_STAMP, n, { shot: true }), driver }, 200, true)
+          stampTask(n, 'shot', t0, null, shot, undefined, undefined, active)  // a failed shot is still a task (#261)
+          if (!shot) return json(res, { ok: false, code: 'no_screenshot', error: 'the page could not be captured', task: n, evidence: evidenceFor(mediaBase, RUN_STAMP, n, {}), driver }, 500)
+          return json(res, { ok: true, ...(body.inline === true || new URL(req.url || '', 'http://x').searchParams.get('inline') === '1' ? { jpegB64: readFileSync(shot).toString('base64') } : {}), task: n, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { shot: true }), driver }, 200, true)
         })
       }
       if (path === '/eval') {
@@ -1646,17 +1670,18 @@ async function main() {
         body.owner = driver
         const TAB_OPS = ['open', 'navigate', 'switch', 'close', 'claim', 'release', 'takeover', 'handback', 'list']
         if (!TAB_OPS.includes(body.op)) return json(res, { ok: false, code: 'bad_request', error: `/tab op must be one of ${TAB_OPS.join(' | ')}` }, 400)
-        // close with no i closes YOUR tab (the quick-start's last step).
-        if (body.op === 'close' && body.i == null) { const mine = driverActive.get(driver); const idx = mine ? allPages().indexOf(mine) : -1; if (idx > 0) body.i = idx }
         if (body.op === 'open' && body.url) { const bad = badUrl(body.url); if (bad) return json(res, bad.body, bad.status) }
         if (body.op === 'open' && typeof body.viewport === 'string' && !isDeviceKind(body.viewport))
           return json(res, { ok: false, code: 'bad_request', error: `viewport must be ${Object.keys(DEVICE_PRESETS).map((k) => `"${k}"`).join(' | ')} or {"width":…,"height":…}` }, 400)
         const device: DeviceKind | undefined = body.op === 'open' && isDeviceKind(body.viewport) ? body.viewport : undefined
-        if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !allPages()[body.i])
+        // close with no i closes YOUR tab; it is resolved inside the lock, below.
+        if (['switch', 'close', 'claim', 'release', 'takeover', 'handback'].includes(body.op) && !(body.op === 'close' && body.i == null) && !allPages()[body.i])
           return json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i} — ${allPages().length} tab(s) open (0-based); /tab {"op":"list"} shows them` }, 404)
         // Read-only: no need to queue behind a running action.
         if (body.op === 'list') return json(res, { ok: true, activeTab: activeTab(callerTab(driver)), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
         // Serialized with /act and /say so a tab change never lands mid-action.
+        const noOwnTab = (what: string) => json(res, { ok: false, code: 'no_own_tab', error: `you have no tab of your own to ${what} — open one with /tab {"op":"open","url":…}, or pass "i" (/tab {"op":"list"} shows the tabs)` }, 409)
+        let redirectedTo: string | null = null
         return await withLock(async () => {
         // After ANY change of active tab the screencast is retargeted so the
         // live stream + clips show the tab work actually happens on.
@@ -1670,14 +1695,20 @@ async function main() {
               const host = new URL(body.url).hostname
               const pages = allPages()
               const cand = pages.find((p, idx) => { try { return idx > 0 && pageProfile.get(p) === profileOf(req) && pageDevice.get(p) === device && new URL(p.url()).hostname === host && (!ownerOf(p) || ownerOf(p) === body.owner) } catch { return false } })
-              if (cand && !(await gotoChecked(cand, body.url))) { active = cand; reused = true }
+              if (cand) {
+                const nav = await gotoChecked(cand, body.url)
+                // The reused tab tried the URL and failed: say so, and which tab now shows the error (#316).
+                if ('status' in nav) return json(res, { ...nav.body, reusedTab: allPages().indexOf(cand) }, nav.status)
+                active = cand; reused = true; redirectedTo = nav.redirectedTo
+              }
             } catch { /* fall through to a fresh tab */ }
           }
           if (!reused) {
             const prev = active
             active = await openTab(await contextFor(profileOf(req), device)); watchPage(active)
-            const nav = body.url ? await gotoChecked(active, body.url) : null
-            if (nav) { await active.close().catch(() => {}); active = prev; return json(res, nav.body, nav.status) }
+            const nav = body.url ? await gotoChecked(active, body.url) : { redirectedTo: null }
+            if ('status' in nav) { await active.close().catch(() => {}); active = prev; return json(res, nav.body, nav.status) }
+            redirectedTo = nav.redirectedTo
           }
           if (body.viewport?.width) await active.setViewportSize({ width: body.viewport.width, height: body.viewport.height })
           if (body.owner) tabOwners.set(active, { owner: String(body.owner), claimedAt: Date.now() })
@@ -1687,13 +1718,15 @@ async function main() {
         }
         else if (body.op === 'navigate') {
           // Point an EXISTING tab at a new URL (the reuse primitive).
-          // Default: the caller's own tab, never whichever tab another driver fronted last.
-          const target = body.i != null ? allPages()[body.i] : callerTab(driver)
-          if (!target) return json(res, { error: `no tab ${body.i}` }, 404)
+          // Default: the caller's own tab — never the global active tab, which another driver
+          // may have fronted last, even when nobody owns it (#316).
+          const target = body.i != null ? allPages()[body.i] : driverTab(driver)
+          if (!target) return body.i != null ? json(res, { ok: false, code: 'no_tab', error: `no tab ${body.i}` }, 404) : noOwnTab('navigate')
           const o = ownerOf(target)
-          if (o && body.owner !== o) return json(res, { error: `tab is claimed by "${o}"` }, 409)
+          if (o && body.owner !== o) return json(res, { ok: false, code: 'tab_owned', owner: o, error: `tab is claimed by "${o}"` }, 409)
           const nav = await gotoChecked(target, body.url)
-          if (nav) return json(res, nav.body, nav.status)
+          if ('status' in nav) return json(res, nav.body, nav.status)
+          redirectedTo = nav.redirectedTo
           active = target; touchTab(active)
           await live?.retarget(active).catch(() => {}); mark(`tab navigate: ${body.url}`)
         }
@@ -1703,11 +1736,20 @@ async function main() {
           await focusTab(driver, allPages()[body.i]); touchTab(active); mark(`tab switch: ${body.i}`)
         }
         else if (body.op === 'close') {
+          // No i: YOUR tab, resolved here under the lock so another driver's close cannot
+          // shift the index; tab 0 is treated exactly as an explicit {"i":0} would be (#316).
+          if (body.i == null) { const mine = driverTab(driver); if (!mine) return noOwnTab('close'); body.i = allPages().indexOf(mine) }
           const target = allPages()[body.i]
           const o = target ? ownerOf(target) : null
           if (o && body.owner !== o) return json(res, { error: `tab ${body.i} is claimed by "${o}" — pass matching owner to close` }, 409)
           if (target) { tabOwners.delete(target); takeovers.delete(target) }
-          active = await closeTab(tabs, body.i); await live?.retarget(active).catch(() => {}); mark(`tab close: ${body.i}`)
+          active = await closeTab(tabs, body.i)
+          // No driver keeps a closed tab as its current one (#315); the caller lands on its
+          // next own tab when it has one, so /tab list and this reply agree.
+          for (const [d, t] of driverActive) if (t === target) driverActive.delete(d)
+          const next = driverTab(driver)
+          if (next) await focusTab(driver, next); else await live?.retarget(active).catch(() => {})
+          mark(`tab close: ${body.i}`)
         }
         else if (body.op === 'claim') {
           const target = allPages()[body.i]
@@ -1755,7 +1797,7 @@ async function main() {
         }
         await updateTabHud(); saveTabState()
         notify('tab', { op: body.op, activeTab: activeTab(), tabCount: allPages().length })
-        return json(res, { ok: true, activeTab: activeTab(), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
+        return json(res, { ok: true, activeTab: activeTab(), ...(redirectedTo ? { redirectedTo } : {}), tabs: listTabs(tabs).map((t) => ({ i: t.index, url: t.url, owner: ownerOf(allPages()[t.index]), ...deviceOf(allPages()[t.index]) })) })
         })
       }
       if (path === '/journey') {
@@ -1893,7 +1935,11 @@ async function main() {
       json(res, { error: 'unknown', paths: ['/evidence?run=RUN&n=N', '/media/RUN/N.jpg|mp4|txt?s=SIG', '/result?id=JOB', '/status', '/tasks', '/clip?n=N', '/clip?n=N&audio=1', '/artifact?n=N', '/audio', '/logs', '/runs', '/events', '/act', '/say', '/hear', '/shot', '/eval', '/tab', '/journey', '/brain', '/recover', '/end'] }, 404)
     } catch (e) { json(res, { error: (e as Error).message, brain: brainAlive ? 'ready' : 'dead' }, 500) }
   })
-  server.listen(CONTROL_PORT, () => console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`))
+  server.listen(CONTROL_PORT, () => {
+    console.log(`[engine] control API on http://127.0.0.1:${CONTROL_PORT}  (live: ${live?.url})${TOKEN ? '  [token-protected]' : ''}`)
+    if (TOKEN_MISSING) console.error(`[engine] CONTROL API LOCKED — OSBORN_ENGINE_TOKEN is not set on a public deployment (${PUBLIC_BASE}); every control route answers 503 engine_token_missing until it is set`)
+    else if (!TOKEN) console.warn('[engine] UNPROTECTED — OSBORN_ENGINE_TOKEN is not set; the control API is open to anyone who can reach this port (fine for a local run)')
+  })
 
   // BOOT-TIME AGENT REACHABILITY PROBE (#49). The auto-joined chat only works
   // if the configured agent machine actually answers. A stale/empty
