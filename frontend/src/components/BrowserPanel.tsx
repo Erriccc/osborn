@@ -317,9 +317,8 @@ export function BrowserPanel() {
     if (!sc.timer) sc.timer = setTimeout(flushScroll, 200)
   }
   const stopEngine = async () => {
-    const drivers = (status?.tabsByOwner ?? []).map((o) => o.owner).filter((o, k, all): o is string => !!o && o !== me && all.indexOf(o) === k)
-    if (!confirm(`Shut down the browser engine? It ends every run on it, for everyone${drivers.length ? ` (now driving: ${drivers.map(label).join(', ')})` : ''}, and the machine sleeps.`)) return
-    if (await post('end', { shutdown: true }, 'shut down')) setWatching(false)  // confirmed: stop it for everyone
+    if (!confirm('Shut down the browser engine? The machine sleeps. It is refused while other people or agents still use it.')) return
+    if (await post('end', { shutdown: true }, 'shut down')) setWatching(false)
   }
   // Scoped end with keep: closes my tabs and hands back takeovers; never stops the engine.
   const closeMyTabs = async () => {
