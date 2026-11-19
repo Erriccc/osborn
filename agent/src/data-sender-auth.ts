@@ -34,6 +34,7 @@
  * become the controller. With no owner configured (single-tenant / local
  * mode) the newest joiner becomes the controller, as before.
  */
+import type { PermissionAnswer } from './approval-policy.js'
 
 /**
  * Known gated types. Informational and for tests: the gate itself is "not
@@ -152,10 +153,14 @@ export function isPhoneRoomName(name: unknown): name is string {
     && /^[A-Za-z0-9_+\-]+$/.test(name)
 }
 
-/** Keypad answer to a pending approval on a phone call: 1 allows, 2 denies, anything else is ignored. */
-export function keypadAnswer(digit: string | undefined | null): boolean | null {
-  if (digit === '1') return true
-  if (digit === '2') return false
+/**
+ * Keypad answer to a pending approval on a phone call (#363): 1 allows, 2
+ * denies, 3 always allows (the browser's "Always"); anything else is ignored.
+ */
+export function keypadAnswer(digit: string | undefined | null): PermissionAnswer | null {
+  if (digit === '1') return 'allow'
+  if (digit === '2') return 'deny'
+  if (digit === '3') return 'always_allow'
   return null
 }
 
@@ -217,19 +222,20 @@ export function planConnectRoom(s: {
 
 /**
  * Handles one keypad press (index.ts DtmfReceived). Only the SIP caller in an
- * authorised phone room counts; with approvals off a 1 settles nothing (a 2
- * still denies). Returns what was done.
+ * authorised phone room counts; with approvals off a 1 or 3 settles nothing
+ * (a 2 still denies). The answer goes to the same settle path the browser
+ * and watch use; the model never decides it. Returns what was done.
  */
 export function handlePhoneKeypad(
   press: { sip: boolean; inPhoneRoom: boolean; digit: string | undefined | null },
-  settle: (allow: boolean) => boolean,
+  settle: (answer: PermissionAnswer) => boolean,
   approvalsEnabled = PHONE_KEYPAD_APPROVALS_ENABLED,
-): 'ignored' | 'approved' | 'denied' | 'no pending permission' {
+): 'ignored' | 'approved' | 'always allowed' | 'denied' | 'no pending permission' {
   if (!press.sip || !press.inPhoneRoom) return 'ignored'
-  const allow = keypadAnswer(press.digit)
-  if (allow === null || (allow && !approvalsEnabled)) return 'ignored'
-  if (!settle(allow)) return 'no pending permission'
-  return allow ? 'approved' : 'denied'
+  const answer = keypadAnswer(press.digit)
+  if (answer === null || (answer !== 'deny' && !approvalsEnabled)) return 'ignored'
+  if (!settle(answer)) return 'no pending permission'
+  return answer === 'allow' ? 'approved' : answer === 'always_allow' ? 'always allowed' : 'denied'
 }
 
 /** Most bytes POST /connect-room reads; its body is only `{ roomName }`. */

@@ -258,10 +258,11 @@ t('isPhoneRoomName: only call- rooms with a safe charset', () => {
   assert.equal(isPhoneRoomName(undefined), false)
   assert.equal(isPhoneRoomName(42), false)
 })
-t('keypadAnswer: 1 allows, 2 denies, everything else ignored', () => {
-  assert.equal(keypadAnswer('1'), true)
-  assert.equal(keypadAnswer('2'), false)
-  for (const d of ['0', '3', '9', '*', '#', '', undefined, null]) assert.equal(keypadAnswer(d as any), null, String(d))
+t('keypadAnswer: 1 allows, 2 denies, 3 always allows, everything else ignored (#363)', () => {
+  assert.equal(keypadAnswer('1'), 'allow')
+  assert.equal(keypadAnswer('2'), 'deny')
+  assert.equal(keypadAnswer('3'), 'always_allow')
+  for (const d of ['0', '4', '9', '*', '#', '', '11', undefined, null]) assert.equal(keypadAnswer(d as any), null, String(d))
 })
 t('index.ts: /connect-room roomName is behind the sync-token check and validated', () => {
   const start = src.indexOf("url.pathname === '/connect-room'")
@@ -276,18 +277,27 @@ t('index.ts: keypad goes through handlePhoneKeypad with the shared settle functi
   const start = src.indexOf('RoomEvent.DtmfReceived')
   const body = src.slice(start, start + 600)
   assert.match(body, /handlePhoneKeypad\(\{ sip: participant\?\.kind === ParticipantKind\.SIP, inPhoneRoom: inPhoneRoom\(\), digit \}, settlePendingPermission\)/)
-  assert.doesNotMatch(body, /settlePendingPermission\(true\)/)
-  assert.equal((src.match(/target\.respondToPermission\(allow\)/g) || []).length, 1, 'one settle implementation')
+  assert.doesNotMatch(body, /settlePendingPermission\('allow'\)/)
+  assert.equal((src.match(/target\.respondToPermission\(answer !== 'deny'\)/g) || []).length, 1, 'one settle implementation')
+})
+t('index.ts: browser permission_response settles through the same function (#363)', () => {
+  const start = src.indexOf("data.type === 'permission_response'")
+  const body = src.slice(start, start + 600)
+  assert.match(body, /settlePendingPermission\(answer\)/)
+  assert.doesNotMatch(body, /currentLLM\.respondToPermission/)
+  // always_allow's target comes from the pending request, not a client-sent filePath.
+  assert.doesNotMatch(body, /data\.filePath/)
 })
 // Interim (#361): caller ID can be spoofed, so a phone call approves nothing.
 t('keypad approvals are off by default', () => {
   assert.equal(PHONE_KEYPAD_APPROVALS_ENABLED, false)
 })
-t('SIP caller presses 1 while a permission is pending: nothing is approved', () => {
+t('SIP caller presses 1 or 3 while a permission is pending: nothing is approved (flag off)', () => {
   let pending = true
-  const settled: boolean[] = []
-  const settle = (allow: boolean) => { if (!pending) return false; settled.push(allow); pending = false; return true }
+  const settled: string[] = []
+  const settle = (a: string) => { if (!pending) return false; settled.push(a); pending = false; return true }
   assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '1' }, settle), 'ignored')
+  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '3' }, settle), 'ignored')
   assert.deepEqual(settled, [])
   assert.equal(pending, true)
   // 2 still denies; other keys and non-callers do nothing.
@@ -295,13 +305,18 @@ t('SIP caller presses 1 while a permission is pending: nothing is approved', () 
     assert.equal(handlePhoneKeypad(press, settle), 'ignored')
   }
   assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '2' }, settle), 'denied')
-  assert.deepEqual(settled, [false])
+  assert.deepEqual(settled, ['deny'])
   assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '2' }, settle), 'no pending permission')
 })
-t('with keypad approvals switched on, 1 approves (the slice-2 path is still wired)', () => {
-  const settled: boolean[] = []
-  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '1' }, (a) => { settled.push(a); return true }, true), 'approved')
-  assert.deepEqual(settled, [true])
+t('with keypad approvals switched on: 1 approves, 3 always allows, 2 denies (#363)', () => {
+  const settled: string[] = []
+  const settle = (a: string) => { settled.push(a); return true }
+  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '1' }, settle, true), 'approved')
+  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '3' }, settle, true), 'always allowed')
+  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '2' }, settle, true), 'denied')
+  assert.deepEqual(settled, ['allow', 'always_allow', 'deny'])
+  // Nothing pending: every key is a no-op.
+  assert.equal(handlePhoneKeypad({ sip: true, inPhoneRoom: true, digit: '1' }, () => false, true), 'no pending permission')
 })
 t('phonePermissionPolicy: every permission during a phone call is denied while approvals are off', () => {
   assert.equal(phonePermissionPolicy(true), 'deny')
@@ -312,7 +327,7 @@ t('index.ts: permission requests in a phone room are denied before the always-al
   const start = src.indexOf("directLLM.events.on('permission_request'")
   const deny = src.indexOf("if (phonePermissionPolicy(inPhoneRoom()) === 'deny')", start)
   const respond = src.indexOf('directLLM.respondToPermission(false', deny)
-  const allowList = src.indexOf('sessionAlwaysAllowPaths.has(filePath)', start)
+  const allowList = src.indexOf('isAlwaysAllowed(sessionAllows, toolName, input)', start)
   const prompt = src.indexOf("type: 'permission_request'", start)
   assert.ok(start > 0 && deny > start && respond > deny && respond < allowList && allowList < prompt, 'deny must come first')
 })

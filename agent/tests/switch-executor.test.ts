@@ -168,7 +168,7 @@ await t('S4 performSessionSwitch: resets in the scoped order (4.17)', () => {
     'currentLLM.resetForSessionSwitch()',
     'setWorkingDirectory?.(cwd)',
     'currentLLM.setResumeSessionId(target)',
-    'sessionAlwaysAllowPaths = new Set',
+    'sessionAllows = newSessionAllows()',
     'ensureSessionWorkspace(cwd, target)',
     'keepNonConversationItems(',
     'stopReadyRetries?.()',

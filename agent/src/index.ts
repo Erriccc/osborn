@@ -75,6 +75,7 @@ import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phonePermissionPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { describePermission, isAlwaysAllowed, newSessionAllows, phoneApprovalPrompt, recordAlwaysAllow, type PermissionAnswer } from './approval-policy.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -3051,8 +3052,8 @@ async function main() {
 
   let localParticipant: LocalParticipant | null = null
   let agentState = 'initializing'
-  // Session-level always-allow list: paths the user has approved for this session without prompting
-  let sessionAlwaysAllowPaths = new Set<string>()
+  // Session-level always-allow list ("Always" in the browser, keypad 3 on a call): approved without prompting
+  let sessionAllows = newSessionAllows()
   let userState = 'listening'  // Track user speech state for queue safety
   let currentVoiceMode: VoiceMode = voiceMode  // Track active voice mode for data handlers
   // Authenticated Supabase userId from participant metadata. Used to scope
@@ -4224,7 +4225,7 @@ async function main() {
       if (hostActive) { hostSessionId = target; hostWorkingDir = cwd }
 
       // 7. Per-session permission grants don't carry over.
-      sessionAlwaysAllowPaths = new Set<string>()
+      sessionAllows = newSessionAllows()
 
       // 8. Workspace + caches.
       ensureSessionWorkspace(cwd, target)
@@ -4519,7 +4520,7 @@ async function main() {
     // permission is currently pending. Re-registered per session — harmless,
     // the latest closure wins and they all resolve through currentLLM.
     setWatchResultHandler((allow, toolName) => {
-      if (settlePendingPermission(allow)) {
+      if (settlePendingPermission(allow ? 'allow' : 'deny')) {
         console.log(`⌚️ Watch bridge settled ${toolName}: ${allow ? 'approve' : 'deny'}`)
       } else {
         // Already answered via the web UI — a late ack/expiry is a no-op.
@@ -4537,7 +4538,7 @@ async function main() {
     if (resumeSessionId) hostSessionId = resumeSessionId
 
     // Reset the session always-allow list for each new direct session
-    sessionAlwaysAllowPaths = new Set<string>()
+    sessionAllows = newSessionAllows()
 
     // For resumed sessions, eagerly create workspace (we know the real ID)
     if (resumeSessionId) {
@@ -4671,26 +4672,18 @@ async function main() {
       }
 
       // Check session always-allow list before showing dialog
-      if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
-        const filePath = String(input?.file_path || '')
-        if (filePath && sessionAlwaysAllowPaths.has(filePath)) {
-          console.log(`✅ Session always-allow: ${filePath}`)
-          directLLM.respondToPermission(true)
-          return
-        }
+      if (isAlwaysAllowed(sessionAllows, toolName, input)) {
+        console.log(`✅ Session always-allow: ${toolName} ${input?.file_path || ''}`)
+        directLLM.respondToPermission(true)
+        return
       }
 
-      // Build descriptive message based on tool type
-      let description = `I need permission to use ${toolName}.`
-      if (toolName === 'Bash' && input.command) {
-        const cmd = String(input.command).substring(0, 60)
-        description = `I want to run the command: ${cmd}${String(input.command).length > 60 ? '...' : ''}`
-      } else if (toolName === 'Write' && input.file_path) {
-        description = `I want to create or overwrite the file: ${input.file_path}`
-      } else if (toolName === 'Edit' && input.file_path) {
-        description = `I want to edit the file: ${input.file_path}`
-      } else if (toolName === 'WebFetch' && input.url) {
-        description = `I want to fetch content from: ${input.url}`
+      const description = describePermission(toolName, input)
+
+      // Phone call (keypad approvals on): read the request out; the keypad
+      // answers it through settlePendingPermission, never the model (#363).
+      if (inPhoneRoom()) {
+        void Promise.resolve((currentSession as any)?.say?.(phoneApprovalPrompt(toolName, input))).catch(() => {})
       }
 
       // Generate diff for Write/Edit/MultiEdit tools
@@ -5258,12 +5251,19 @@ async function main() {
   }
 
   // Settles whatever permission is pending (live session first, then a parked
-  // warm brain). Shared by the watch bridge and the phone keypad. False when
-  // nothing is pending (already answered elsewhere).
-  function settlePendingPermission(allow: boolean): boolean {
+  // warm brain). The one answer path for the browser card, the watch bridge
+  // and the phone keypad. 'always_allow' also adds the request to the
+  // session's always-allow list. False when nothing is pending (already
+  // answered elsewhere).
+  function settlePendingPermission(answer: PermissionAnswer): boolean {
     const target: any = currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
     if (!target) return false
-    target.respondToPermission(allow)
+    const pending = target.getPendingPermission?.()
+    if (answer === 'always_allow' && pending) {
+      const added = recordAlwaysAllow(sessionAllows, pending.toolName, pending.input)
+      if (added) console.log(`🔒 Always-allow added for session: ${added}`)
+    }
+    target.respondToPermission(answer !== 'deny')
     return true
   }
 
@@ -6509,16 +6509,10 @@ async function main() {
           }
         }
       } else if (data.type === 'permission_response') {
-        // Handle permission response for direct mode
-        if (currentLLM && currentLLM.hasPendingPermission?.()) {
-          const allow = data.response === 'allow' || data.response === 'always_allow'
-          // Track always_allow paths for this session so future requests auto-approve
-          if (data.response === 'always_allow' && data.filePath) {
-            sessionAlwaysAllowPaths.add(String(data.filePath))
-            console.log(`🔒 Always-allow added for session: ${data.filePath}`)
-          }
-          currentLLM.respondToPermission(allow)
-          console.log(`✅ Permission: ${data.response}`)
+        // The always-allow target comes from the pending request itself, not the sent filePath.
+        const answer = data.response
+        if ((answer === 'allow' || answer === 'deny' || answer === 'always_allow') && settlePendingPermission(answer)) {
+          console.log(`✅ Permission: ${answer}`)
         }
       } else if (data.type === 'favorite_changed') {
         // L2b (UI#21): a favorite is a UI action, not something the user said.
