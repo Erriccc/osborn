@@ -27,6 +27,7 @@ import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { loadClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { runPeriodMap } from './period-run.js'
+import { isTransportError } from './lens-model.js'
 import { DEFAULT_MIN_SPAN_MS, pageFileName, period, pickLibraryPeriod, segmentPeriods, type LibraryPeriod, type Segmentation } from './lens-library-select.js'
 import { rebuildIndex } from './lens-library-index.js'
 import { contentHashFor, ingestPage, needsIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
@@ -242,9 +243,6 @@ export function libraryMinSpanMs(): number {
 
 /** A period whose reply was unusable this many times in a row is no longer retried by the sweep (manual run only). */
 const MAX_PERIOD_FAILURES = 3
-
-/** The model call itself failed (HTTP error, timeout, network): an outage, not a bad period. */
-export const isTransportError = (errors: string[]): boolean => errors.some(e => e.startsWith('model call failed'))
 
 export interface LibraryBacklog {
   /** Every unwritten period that spans >= the min span, oldest first. */

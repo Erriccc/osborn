@@ -23,7 +23,7 @@ import { hostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadConversationRows, type SessionStore } from './lens-db.js'
-import { Budget, chat, getModelInfo } from './lens-model.js'
+import { Budget, chat, getModelInfo, isTransportError, modelCallFailed } from './lens-model.js'
 import { loadClientRedactor, type ClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { parseJsonLoose } from './content-llm.js'
@@ -31,7 +31,6 @@ import { machineTimeZone, parseDigest, rebuildIndex } from './lens-library-index
 import { clip, needsIngest, postContentIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
 import { writeAtomic } from './content-manifest.js'
 import { libraryHomeDir } from './lens-paths.js'
-import { isTransportError } from './lens-library.js'
 import type { LibraryPeriod } from './lens-library-select.js'
 
 const DIGEST_MANIFEST_FILE = '.digest-manifest.json'
@@ -288,7 +287,7 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
           if (!items.some(i => i.summary)) res.errors.push('no parseable digest reply')
         }
       } catch (e: any) {
-        res.errors.push(`model call failed: ${e?.message ?? e}`)
+        res.errors.push(modelCallFailed(e))
       }
       res.costUsd = +budget.spentUsd.toFixed(4)
       if (!items.some(i => i.summary)) return fail('model-error')

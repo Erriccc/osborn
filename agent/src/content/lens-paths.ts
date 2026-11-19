@@ -171,15 +171,19 @@ export function refuseOutPath(outPath: string | undefined, projectDir?: string |
   return null
 }
 
+/** Owner-only file written via tmp + rename. */
+function writePrivateAtomic(p: string, text: string): void {
+  const tmp = `${p}.${process.pid}.tmp`
+  writeFileSync(tmp, text, { mode: 0o600 })
+  renameSync(tmp, p)
+}
+
 /** Monotonic: never moves the mark backwards. Atomic write via rename. */
 export function writeHwm(projectDir: string, sessionId: string, lastRowId: number, lastTs?: string): void {
   const all = readHwmFile(projectDir)
   if ((all[sessionId]?.lastRowId ?? 0) >= lastRowId) return
   all[sessionId] = { lastRowId, lastTs, updatedAt: new Date().toISOString() }
-  const p = join(projectDir, HWM_FILE)
-  const tmp = `${p}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify(all, null, 2), { mode: 0o600 })
-  renameSync(tmp, p)
+  writePrivateAtomic(join(projectDir, HWM_FILE), JSON.stringify(all, null, 2))
 }
 
 // ── Machine-wide Library sweep: lock, log and status (one dir per machine) ──
@@ -250,10 +254,7 @@ export function writeSweepStatus(patch: Partial<SweepStatus>, home = libraryHome
       /* first write */
     }
     const next = { ...prev, ...patch, errors: (patch.errors ?? prev.errors ?? []).slice(0, 20) }
-    const p = join(home, SWEEP_STATUS_FILE)
-    const tmp = `${p}.${process.pid}.tmp`
-    writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
-    renameSync(tmp, p)
+    writePrivateAtomic(join(home, SWEEP_STATUS_FILE), JSON.stringify(next, null, 2) + '\n')
   } catch {
     /* status is best-effort */
   }

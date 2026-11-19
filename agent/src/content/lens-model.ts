@@ -166,6 +166,12 @@ export interface ChatResult {
   costUsd: number
 }
 
+const CALL_FAILED = 'model call failed'
+/** How a thrown chat() (HTTP, timeout, network) is recorded in a run's errors; isTransportError reads it back. */
+export const modelCallFailed = (e: any): string => `${CALL_FAILED}: ${e?.message ?? e}`
+/** The model call itself failed: an outage, not a bad reply. */
+export const isTransportError = (errors: string[]): boolean => errors.some(e => e.startsWith(CALL_FAILED))
+
 /** One chat call. Returns null when the budget refuses; throws on HTTP/timeout errors. */
 export async function chat(budget: Budget, user: string, apiKey: string, maxOut = 16_000): Promise<ChatResult | null> {
   const estPrompt = Math.ceil((SYSTEM.length + user.length) / 4)
