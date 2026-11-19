@@ -20,3 +20,25 @@ export async function pollSandbox(): Promise<SandboxPoll | null> {
     return null
   }
 }
+
+/** The page state a poll result writes (the dashboard's and settings' setters). */
+export type SandboxPollSetters = {
+  setSandboxAvailable: (v: boolean) => void
+  setSandboxId: (v: string) => void
+  setSandboxStatus: (v: string | null) => void
+  setAgentUrl: (v: string) => void
+  setAgentOnline: (v: boolean) => void
+}
+
+export function applySandboxPoll(d: SandboxPoll, set: SandboxPollSetters): void {
+  set.setSandboxAvailable(d.available)
+  if (d.sandbox) {
+    set.setSandboxId(d.sandbox.id)
+    set.setSandboxStatus(d.sandbox.status)
+    if (d.sandbox.previewUrl) set.setAgentUrl(d.sandbox.previewUrl)
+    set.setAgentOnline(d.sandbox.status === 'running')
+  } else {
+    set.setSandboxStatus(null)
+    set.setAgentOnline(false)
+  }
+}

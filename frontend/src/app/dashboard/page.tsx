@@ -24,7 +24,7 @@ import { shareSession, listSharedWithMe, importSharedSession, type SharedSession
 import { prettySessionPreview, sessionActivityTime, sortSessionsByActivity, sessionDisplayTitle, formatTime } from '@/lib/sessions'
 import { prepareSessions } from '@/lib/session-list'
 import { agentReadUrl, awaitingCloudUrl, isLocalAgentUrl } from '@/lib/agent-read'
-import { pollSandbox } from '@/lib/sandbox-poll'
+import { applySandboxPoll, pollSandbox } from '@/lib/sandbox-poll'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import type { User } from '@supabase/supabase-js'
@@ -459,11 +459,7 @@ export default function Dashboard() {
     if (typeof window === 'undefined') return false
     if (!agentUrl) return false
     if (window.location.protocol === 'https:' && agentUrl.startsWith('http://')) return false
-    // In cloud mode the agent lives on a remote sprite, not on the localhost
-    // fallback URL that `agentUrl` holds when the user hasn't configured one.
-    // Pinging localhost:8741 in cloud mode just spams ERR_CONNECTION_REFUSED
-    // every 15s. The cloud sandbox's health is tracked via sandboxStatus
-    // (polled from /api/sandbox) — not by hitting the agent URL directly.
+    // Cloud health comes from the /api/sandbox poll, never the localhost placeholder.
     if (awaitingCloudUrl(agentUrl, connectionMode)) return false
     return true
   }, [agentUrl, connectionMode])
@@ -556,17 +552,7 @@ export default function Dashboard() {
       if (connectionMode === 'cloud') {
         // Cloud: poll sandbox API. A poll that tells nothing keeps the last state.
         const d = await pollSandbox()
-        if (cancelled || !d) return
-        setSandboxAvailable(d.available)
-        if (d.sandbox) {
-          setSandboxId(d.sandbox.id)
-          setSandboxStatus(d.sandbox.status)
-          if (d.sandbox.previewUrl) setAgentUrl(d.sandbox.previewUrl)
-          setAgentOnline(d.sandbox.status === 'running')
-        } else {
-          setSandboxStatus(null)
-          setAgentOnline(false)
-        }
+        if (!cancelled && d) applySandboxPoll(d, { setSandboxAvailable, setSandboxId, setSandboxStatus, setAgentUrl, setAgentOnline })
         return
       }
 
@@ -636,14 +622,15 @@ export default function Dashboard() {
         }
         if (d.sandbox) {
           setSandboxId(d.sandbox.id)
-          setSandboxStatus(d.sandbox.status)
+          // A cached reply carries the DB's last status, not the machine's: the poll sets it.
+          if (!d.cached) setSandboxStatus(d.sandbox.status)
           // WARM-ON-LOAD (0.9.266): if the machine is idle-stopped, start warming
           // it the instant the dashboard loads — so by the time the user picks a
           // session, the ~24s cold boot is already overlapping their browsing.
           // Fire-and-forget; Fly's /start is idempotent so the chat-page connect
           // can't double-start, and the agent's 15-min idle self-exit reclaims it
           // if no session is opened.
-          if (d.sandbox.id && d.sandbox.status && d.sandbox.status !== 'running') {
+          if (!d.cached && d.sandbox.id && d.sandbox.status && d.sandbox.status !== 'running') {
             fetch('/api/sandbox', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },

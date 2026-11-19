@@ -24,7 +24,9 @@ export async function connectUserAgent(
   /** Called once when the agent is not already up (machine asleep or service unhealthy). */
   onWaking?: () => void,
 ): Promise<ConnectAgentResult> {
-  const sb = await findUserSandbox(userId, sandboxId)
+  // A failed lookup (findUserSandbox throws; null is a confirmed 404) is not "no sandbox".
+  const sb = await findUserSandbox(userId, sandboxId).catch(() => undefined)
+  if (sb === undefined) return { ok: false, reason: 'unreachable' }
   if (!sb?.previewUrl) return { ok: false, reason: 'no-sandbox' }
 
   // Wake the machine if it isn't running (boot time is inherent — the agent

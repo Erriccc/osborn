@@ -14,7 +14,7 @@ import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
 import { useSkillStore, httpSkills } from '@/lib/skill-store'
 import { agentRequest, agentError, awaitingCloudUrl, isLocalAgentUrl, listError, UNREACHABLE } from '@/lib/agent-read'
-import { pollSandbox } from '@/lib/sandbox-poll'
+import { applySandboxPoll, pollSandbox } from '@/lib/sandbox-poll'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import { useThemePref } from '@/lib/use-theme'
@@ -55,6 +55,8 @@ const NAV_GROUPS: { group: string; items: { id: SectionId; label: string }[] }[]
     ],
   },
 ]
+
+const START_MACHINE = 'Start your machine to see its skills and agents.'
 
 export default function SettingsPage() {
   useDocumentTitle('Settings')
@@ -165,6 +167,10 @@ export default function SettingsPage() {
     if (m) setConnectionMode(m)
   }, [])
 
+  // Cloud mode before the machine's URL arrives (none yet, or no machine): nothing to ask,
+  // so the lists say why instead of loading forever; they load once the URL lands.
+  const awaitingMachine = awaitingCloudUrl(agentUrl, connectionMode)
+
   // The built-in list; the latest request wins (the URL can change while one is in flight).
   const agentsLoad = useRef(0)
   const loadAgents = useCallback(() => {
@@ -173,31 +179,33 @@ export default function SettingsPage() {
       if (run !== agentsLoad.current) return
       setDashAgents(agents); setDashRoles(roles); setAgentsError(error); setAgentsLoading(false)
     }
+    if (awaitingMachine) { done([], null, START_MACHINE); return }
     setAgentsLoading(true)
     storeRequest('agents').then(({ ok, status, d }) => {
       if (ok && Array.isArray(d?.agents)) done(d.agents, rolesData(d), null)
       else done([], null, listError(ok, status, d, 'agent list'))
     }).catch(() => done([], null, UNREACHABLE))
-  }, [storeRequest])
+  }, [storeRequest, awaitingMachine])
 
   // The machine's skills, the same way; the previous machine's list is cleared while loading.
   const skillsLoad = useRef(0)
   const loadSkills = useCallback(() => {
     const run = ++skillsLoad.current
+    if (awaitingMachine) { skillStore.setSkills([]); setSkillsError(START_MACHINE); setSkillsLoading(false); return }
     setSkillsLoading(true); skillStore.setSkills([])
     skillHttp.list().then((r) => {
       if (run !== skillsLoad.current) return
       skillStore.setSkills(r.skills ?? []); setSkillsError(r.error ?? null); setSkillsLoading(false)
     })
-  }, [skillHttp]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [skillHttp, awaitingMachine]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch skills + named agents + secrets from the agent's HTTP API on load.
   useEffect(() => {
-    if (!agentUrl || awaitingCloudUrl(agentUrl, connectionMode)) return
+    if (!agentUrl && !awaitingMachine) return
     loadSkills()
     loadAgents()
-    refreshSecrets()
-  }, [agentUrl, connectionMode, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!awaitingMachine) refreshSecrets()
+  }, [agentUrl, awaitingMachine, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Machine location (agent /health region).
   useEffect(() => {
@@ -241,17 +249,7 @@ export default function SettingsPage() {
       if (connectionMode === 'cloud') {
         // A poll that tells nothing (lib/sandbox-poll) keeps the last state.
         const d = await pollSandbox()
-        if (cancelled || !d) return
-        setSandboxAvailable(d.available)
-        if (d.sandbox) {
-          setSandboxId(d.sandbox.id)
-          setSandboxStatus(d.sandbox.status)
-          if (d.sandbox.previewUrl) setAgentUrl(d.sandbox.previewUrl)
-          setAgentOnline(d.sandbox.status === 'running')
-        } else {
-          setSandboxStatus(null)
-          setAgentOnline(false)
-        }
+        if (!cancelled && d) applySandboxPoll(d, { setSandboxAvailable, setSandboxId, setSandboxStatus, setAgentUrl, setAgentOnline })
         return
       }
       if (!canFetchAgent()) { setAgentOnline(false); return }
@@ -275,7 +273,8 @@ export default function SettingsPage() {
         setSandboxAvailable(d.available || false)
         if (d.sandbox) {
           setSandboxId(d.sandbox.id)
-          setSandboxStatus(d.sandbox.status)
+          // A cached reply carries the DB's last status, not the machine's: the poll sets it.
+          if (!d.cached) setSandboxStatus(d.sandbox.status)
           if (d.sandbox.previewUrl) {
             setConnectionMode('cloud')
             setAgentUrl(d.sandbox.previewUrl)

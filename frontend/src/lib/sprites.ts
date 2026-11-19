@@ -1092,8 +1092,10 @@ export async function findUserSandbox(
     const msg = (err as Error).message
     // 404 means no sandbox exists yet — this is normal, not an error
     if (msg.includes('404')) return null
+    // Any other failure is "unknown", not "gone": rethrow (as machines.ts does) so
+    // callers keep the DB record and the cached state instead of clearing them.
     console.error(`[sprites] findUserSandbox failed: ${msg}`)
-    return null
+    throw err
   }
 }
 
