@@ -31,6 +31,10 @@ const reset = () => {
   st.ingresses = [] as any[]
   st.roomExists = true
   st.onVerify = null as null | (() => void)
+  st.verifyError = null
+  st.verifyThrows = false
+  st.noSession = false
+  st.signOutError = null
 }
 reset()
 
@@ -59,6 +63,7 @@ function table(name: string) {
     eq: (k: string, v: any) => { q.filters.push((r: any) => r[k] === v); return b },
     is: (k: string, v: any) => { q.filters.push((r: any) => (r[k] ?? null) === v); return b },
     lt: (k: string, v: any) => { q.filters.push((r: any) => r[k] < v); return b },
+    gte: (k: string, v: any) => { q.filters.push((r: any) => r[k] >= v); return b },
     limit: (n: number) => { q.limit = n; return b },
     maybeSingle: async () => { const r = run(); return { data: r.data?.[0] ?? null, error: r.error } },
     then: (res: any, rej: any) => Promise.resolve(run()).then(res, rej),
@@ -71,7 +76,7 @@ const admin: any = {
   auth: {
     admin: {
       getUserById: async (id: string) => ({ data: { user: id === USER && st.email ? { id, email: st.email } : null }, error: null }),
-      signOut: async (jwt: string) => { st.signedOut.push(jwt); return { error: null } },
+      signOut: async (jwt: string) => { st.signedOut.push(jwt); return { error: st.signOutError } },
     },
   },
 }
@@ -81,9 +86,12 @@ const anon = () => ({
     verifyOtp: async (args: any) => {
       st.verifies.push(args.token)
       st.onVerify?.()
+      if (st.verifyThrows) throw new Error('fetch failed')
+      if (st.noSession) return { data: { session: null }, error: null }
+      if (st.verifyError) return { data: { session: null }, error: st.verifyError }
       return args.token === st.code && args.email === st.email
         ? { data: { session: { access_token: `jwt-${st.verifies.length}` } }, error: null }
-        : { data: { session: null }, error: { message: 'Token has expired or is invalid' } }
+        : { data: { session: null }, error: { status: 403, code: 'otp_expired', message: 'Token has expired or is invalid' } }
     },
   },
 })
@@ -245,12 +253,93 @@ async function main() {
     } finally { admin.from = realFrom }
   })
 
-  // ── POST /api/phone/code ──
   const req = (body: any, auth: string | null = `Bearer ${TOKEN}`) => new Request('https://x/api/phone/code', {
     method: 'POST',
     headers: auth ? { authorization: auth, 'content-type': 'application/json' } : { 'content-type': 'application/json' },
     body: typeof body === 'string' ? body : JSON.stringify(body),
   })
+  // ── Redialling cannot reset the tries: a daily cap across calls ──
+  const today = (o: any = {}) => row({ created_at: new Date(Date.now() - 3600_000).toISOString(), ...o })
+  await t('dailyMisses counts the last 24 h of rows only', () => {
+    const now = Date.now()
+    eq(code.CALL_CODE_DAILY_MISS_CAP, 6, 'cap')
+    eq(code.dailyMisses([
+      { misses: 3, created_at: new Date(now - 3600_000).toISOString() },
+      { misses: 2, created_at: new Date(now - 23 * 3600_000).toISOString() },
+      { misses: 3, created_at: new Date(now - 25 * 3600_000).toISOString() },
+      { misses: 1 },
+    ], now), 5, 'old and undated rows left out')
+  })
+  await t('startCallCode: 6 wrong codes today -> daily-limit, no email, no new window', async () => {
+    reset()
+    st.db.phone_call_codes.push(today({ room_name: 'call-a', misses: 3, attempts: 3 }), today({ room_name: 'call-b', misses: 3, attempts: 3 }))
+    eq(await code.startCallCode(admin, USER, ROOM), 'daily-limit', 'refused')
+    eq(st.sent.length, 0, 'no email')
+    eq(st.db.phone_call_codes.length, 2, 'no window opened')
+    reset()
+    st.db.phone_call_codes.push(today({ room_name: 'call-a', misses: 3, attempts: 3 }), today({ room_name: 'call-b', misses: 2, attempts: 2 }))
+    eq(await code.startCallCode(admin, USER, ROOM), 'sent', 'five misses: still allowed')
+    reset()
+    st.db.phone_call_codes.push(today({ room_name: 'call-a', user_id: OTHER, misses: 6, attempts: 6 }))
+    eq(await code.startCallCode(admin, USER, ROOM), 'sent', 'another account\'s misses do not count')
+  })
+  await t('checkCallCode: the daily cap is reached mid-call -> locked, not checked, the call is locked too', async () => {
+    reset()
+    st.db.phone_call_codes.push(today({ room_name: 'call-a', misses: 3, attempts: 3 }), today({ misses: 2, attempts: 2, expires_at: new Date(Date.now() + 60_000).toISOString() }), today({ room_name: 'call-b', misses: 1, attempts: 1 }))
+    eq(await code.checkCallCode(admin, USER, ROOM, '482913'), 'locked', 'locked')
+    eq(st.verifies.length, 0, 'not checked')
+    eq(code.callCodeStatus(st.db.phone_call_codes[1], Date.now(), 'misses'), 'locked', 'routeCall sees it locked')
+  })
+
+  // ── Only a wrong code is a miss ──
+  await t('checkCallCode: Supabase trouble is an error, not a miss, and the try is given back', async () => {
+    const cases: [string, () => void][] = [
+      ['rate limit', () => { st.verifyError = { status: 429, code: 'over_request_rate_limit', message: 'rate limit' } }],
+      ['5xx', () => { st.verifyError = { status: 500, message: 'Internal Server Error' } }],
+      ['network', () => { st.verifyThrows = true }],
+      ['no account email', () => { st.email = null }],
+      ['neither a session nor an error', () => { st.noSession = true }],
+    ]
+    for (const [name, setup] of cases) {
+      reset(); st.db.phone_call_codes.push(row({ expires_at: new Date(Date.now() + 60_000).toISOString(), attempts: 1, misses: 1 }))
+      setup()
+      eq(await code.checkCallCode(admin, USER, ROOM, '482913'), 'error', name)
+      const r = st.db.phone_call_codes[0]
+      eq([r.attempts, r.misses, r.verified_at], [1, 1, null], `${name}: try given back, no miss`)
+    }
+  })
+  await t('checkCallCode: no Supabase client is an error too', async () => {
+    reset(); st.db.phone_call_codes.push(row({ expires_at: new Date(Date.now() + 60_000).toISOString() }))
+    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    delete process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+    try { eq(await code.checkCallCode(admin, USER, ROOM, '482913'), 'error', 'no client') } finally { process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = key }
+    eq(st.db.phone_call_codes[0].attempts, 0, 'try given back')
+  })
+  await t('isWrongCodeError: only the invalid-or-expired answer', () => {
+    eq(code.isWrongCodeError({ status: 403, code: 'otp_expired', message: 'Token has expired or is invalid' }), true, 'otp_expired')
+    eq(code.isWrongCodeError({ status: 403, message: 'Token has expired or is invalid' }), true, 'no code field')
+    eq(code.isWrongCodeError({ status: 429, code: 'over_request_rate_limit', message: 'rate limit' }), false, '429')
+    eq(code.isWrongCodeError({ status: 500, message: 'invalid upstream' }), false, '500')
+    eq(code.isWrongCodeError(null), false, 'none')
+  })
+  await t('route: a code that could not be checked is a 503 error', async () => {
+    reset(); st.db.phone_call_codes.push(row({ expires_at: new Date(Date.now() + 60_000).toISOString() }))
+    st.verifyError = { status: 502, message: 'Bad Gateway' }
+    const r = await route.POST(req({ roomName: ROOM, code: '482913' }))
+    eq([r.status, r.body], [503, { result: 'error' }], 'error')
+  })
+  await t('checkCallCode: a failed revoke of the check\'s sign-in is logged, without the token', async () => {
+    reset(); st.db.phone_call_codes.push(row({ expires_at: new Date(Date.now() + 60_000).toISOString() }))
+    st.signOutError = { message: 'session not found' }
+    const warns: string[] = []
+    const orig = console.warn
+    console.warn = (...a: any[]) => { warns.push(a.join(' ')) }
+    try { eq(await code.checkCallCode(admin, USER, ROOM, '482913'), 'ok', 'still a match') } finally { console.warn = orig }
+    ok(warns.some((w) => /could not revoke/.test(w) && /session not found/.test(w)), `logged: ${warns}`)
+    ok(!warns.some((w) => /jwt-/.test(w)), 'no token in the log')
+  })
+
+  // ── POST /api/phone/code ──
   await t('route: the machine\'s sync token names the account; the try is checked', async () => {
     reset(); st.db.phone_call_codes.push(row({ expires_at: new Date(Date.now() + 60_000).toISOString() }))
     const r = await route.POST(req({ roomName: ROOM, code: '482913' }))
@@ -339,6 +428,14 @@ async function main() {
     eq(st.sent.length, 0, 'no second email')
     eq(lines(), [], 'no line')
     eq(st.deleted, [], 'not hung up')
+  })
+  await t('routeCall with callCode: over the daily cap -> the daily-limit goodbye, no email', async () => {
+    reset(); st.callCode = true
+    st.db.phone_call_codes.push(today({ room_name: 'call-a', misses: 3, attempts: 3 }), today({ room_name: 'call-b', misses: 3, attempts: 3 }))
+    eq(await calls.routeCall(call), 'rejected', 'rejected')
+    eq(st.sent.length, 0, 'no email')
+    eq(lines(), [code.CODE_DAILY_LIMIT_LINE], 'line')
+    eq(st.deleted, [ROOM], 'hung up')
   })
   await t('routeCall with callCode: the email fails -> a goodbye and hang-up, never connected', async () => {
     reset(); st.callCode = true; st.sendError = { message: 'over_email_send_rate_limit' }

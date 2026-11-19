@@ -14,6 +14,7 @@
 // signed-in users may drive it.
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
+import { sleep } from '@/lib/sleep'
 import {
   GET_ALLOW,
   POST_ALLOW,
@@ -63,7 +64,6 @@ function warnIfEngineTokenMissing(action: string): void {
   }
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 // Cold-start-aware failure for a control request that never reached the engine.
 // Instead of a bare opaque 502 (#102/#104), inspect the Fly machine state and

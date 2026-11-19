@@ -8,12 +8,18 @@
  * and 3 tries, shared by every frontend instance. The agent collects the
  * keypad digits and asks POST /api/phone/code; routeCall (phone-calls.ts)
  * watches the row to speak the retry and goodbye lines.
+ *
+ * Risk (founder decision): the emailed code is also a valid web login code until used.
+ * Avoiding that needs our own hashed code and a non-login email path, which the repo lacks.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createSupabaseAnon } from '@/lib/supabase-anon'
 
 export const CALL_CODE_TTL_MS = 5 * 60_000
 export const CALL_CODE_MAX_TRIES = 3
+/** Wrong codes an account may type per day across all its calls (a redial would otherwise reset the 3 tries). */
+export const CALL_CODE_DAILY_MISS_CAP = 6
+const DAY_MS = 24 * 3600_000
 const CODE_FORMAT = /^[0-9]{6}$/
 
 export const CODE_PROMPT_LINE = "I've emailed you a code. Type it on your keypad."
@@ -21,10 +27,12 @@ export const CODE_RETRY_LINE = "That code didn't match. Please try again."
 export const CODE_LOCKED_LINE = "That code didn't match, so I'm ending the call to keep your account safe. Goodbye."
 export const CODE_EXPIRED_LINE = 'The code has expired. Please call again. Goodbye.'
 export const CODE_SEND_FAILED_LINE = "I couldn't email you a code just now. Please call again in a minute. Goodbye."
+export const CODE_DAILY_LIMIT_LINE = "There have been too many wrong codes today, so I can't take this call. Please use the app. Goodbye."
 
 export interface CallCodeRow {
   room_name: string
   user_id: string
+  created_at?: string
   expires_at: string
   /** Tries counted, each before its check runs. */
   attempts: number
@@ -34,8 +42,8 @@ export interface CallCodeRow {
 }
 
 export type CallCodeStatus = 'open' | 'verified' | 'locked' | 'expired'
-/** The agent's view of one try: matched, wrong (tries left), or over. */
-export type CallCodeResult = 'ok' | 'wrong' | 'locked' | 'expired'
+/** The agent's view of one try: matched, wrong (tries left), over, or not checked (`error`: try again). */
+export type CallCodeResult = 'ok' | 'wrong' | 'locked' | 'expired' | 'error'
 
 /**
  * Where a call's code stands, counting `tries`: 'attempts' to decide whether
@@ -52,6 +60,23 @@ export function callCodeStatus(
   if (row[tries] >= CALL_CODE_MAX_TRIES) return 'locked'
   if (!(Date.parse(row.expires_at) > now)) return 'expired'
   return 'open'
+}
+
+/** Wrong codes in the account's rows created within the last 24 h. */
+export function dailyMisses(rows: Pick<CallCodeRow, 'misses' | 'created_at'>[], now: number): number {
+  return rows
+    .filter((r) => Date.parse(r.created_at ?? '') > now - DAY_MS)
+    .reduce((n, r) => n + (r.misses || 0), 0)
+}
+
+/**
+ * Only Supabase's "invalid or expired token" answer is a wrong code. A rate
+ * limit, network error or 5xx says nothing about the code.
+ */
+export function isWrongCodeError(error: { code?: unknown; status?: unknown; message?: unknown } | null | undefined): boolean {
+  if (!error) return false
+  if (error.code === 'otp_expired') return true
+  return error.status === 403 && /expired|invalid/i.test(String(error.message ?? ''))
 }
 
 /** The answer to a try that was counted (`attempts` includes it). */
@@ -78,6 +103,16 @@ export function callCodeNext(seenMisses: number, row: CallCodeRow | null, now: n
   return row!.misses > seenMisses ? 'retry' : 'wait'
 }
 
+/** The account's wrong codes today, or null when they cannot be read. */
+async function readDailyMisses(admin: SupabaseClient, userId: string, now: number): Promise<{ misses: number; rooms: string[] } | null> {
+  const { data, error } = await admin.from('phone_call_codes')
+    .select('room_name, misses, created_at')
+    .eq('user_id', userId)
+    .gte('created_at', new Date(now - DAY_MS).toISOString())
+  if (error || !Array.isArray(data)) return null
+  return { misses: dailyMisses(data as CallCodeRow[], now), rooms: data.map((r: { room_name: string }) => r.room_name) }
+}
+
 async function accountEmail(admin: SupabaseClient, userId: string): Promise<string | null> {
   const { data, error } = await admin.auth.admin.getUserById(userId)
   const email = data?.user?.email
@@ -90,7 +125,12 @@ export async function startCallCode(
   userId: string,
   roomName: string,
   now = Date.now(),
-): Promise<'sent' | 'already-open' | 'no-email' | 'send-failed'> {
+): Promise<'sent' | 'already-open' | 'daily-limit' | 'no-email' | 'send-failed'> {
+  const today = await readDailyMisses(admin, userId, now)
+  if (!today) return 'send-failed'
+  // A repeated webhook for the same call: the first routing owns its code.
+  if (today.rooms.includes(roomName)) return 'already-open'
+  if (today.misses >= CALL_CODE_DAILY_MISS_CAP) return 'daily-limit'
   const email = await accountEmail(admin, userId)
   if (!email) return 'no-email'
   const anon = createSupabaseAnon()
@@ -140,6 +180,13 @@ export async function checkCallCode(
   if (row && row.user_id !== userId) return 'expired'
   const refused = refusedTry(callCodeStatus(row, now))
   if (refused) return refused
+  const today = await readDailyMisses(admin, userId, now)
+  if (!today) return 'error'
+  if (today.misses >= CALL_CODE_DAILY_MISS_CAP) {
+    // Locks this call too, so routeCall speaks the goodbye.
+    await admin.from('phone_call_codes').update({ attempts: CALL_CODE_MAX_TRIES, misses: CALL_CODE_MAX_TRIES }).eq('room_name', roomName)
+    return 'locked'
+  }
   const attempts = row!.attempts + 1
   const { data: claimed } = await admin.from('phone_call_codes')
     .update({ attempts })
@@ -149,16 +196,34 @@ export async function checkCallCode(
     .select('room_name')
   if (!claimed?.length) return 'wrong'
 
+  // Gives the claimed try back when the code could not be checked.
+  const notChecked = async (why: string): Promise<CallCodeResult> => {
+    console.warn(`[phone] code for ${roomName} not checked: ${why}`)
+    await admin.from('phone_call_codes').update({ attempts: row!.attempts }).eq('room_name', roomName).eq('attempts', attempts)
+    return 'error'
+  }
+  // A malformed code is the caller's doing: it uses a try without reaching Supabase.
   let matched = false
   if (CODE_FORMAT.test(code)) {
     const email = await accountEmail(admin, userId)
     // A fresh anon client: verifyOtp signs in, and that session must not stick to a shared client.
     const anon = createSupabaseAnon()
-    if (email && anon) {
-      const { data, error } = await anon.auth.verifyOtp({ email, token: code, type: 'email' })
-      matched = !error && !!data?.session
-      // The check signed the account in; that session is not wanted.
-      if (data?.session?.access_token) await admin.auth.admin.signOut(data.session.access_token, 'local').catch(() => {})
+    if (!email || !anon) return notChecked(!email ? 'no account email' : 'no Supabase client')
+    let reply: Awaited<ReturnType<typeof anon.auth.verifyOtp>>
+    try {
+      reply = await anon.auth.verifyOtp({ email, token: code, type: 'email' })
+    } catch (e) {
+      return notChecked((e as Error).message)
+    }
+    const { data, error } = reply
+    if (error && !isWrongCodeError(error)) return notChecked(`${error.status ?? '?'} ${error.code ?? ''}`.trim())
+    if (!error && !data?.session) return notChecked('no session in the reply')
+    matched = !error
+    // The check signed the account in; that session is not wanted.
+    const jwt = data?.session?.access_token
+    if (jwt) {
+      const out = await admin.auth.admin.signOut(jwt, 'local').catch((e: Error) => ({ error: e }))
+      if (out?.error) console.warn(`[phone] could not revoke the sign-in made by the code check for ${roomName}: ${out.error.message}`)
     }
   }
   // Tries run one at a time per call (the agent waits for each answer), so this is the latest count.

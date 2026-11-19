@@ -75,7 +75,7 @@ import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_EMAIL_CODE_ENABLED, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
-import { addCodeDigit, checkPhoneCode, phoneCallerAdmission } from './phone-code.js'
+import { PHONE_CODE_HANGUP_GRACE_MS, PHONE_CODE_TIMEOUT_MS, addCodeDigit, checkPhoneCode, heldCode, isPhoneLinePlayer as isLinePlayer, phoneCallerAdmission, phoneCodeAction, removePhoneCaller } from './phone-code.js'
 import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
 import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, saySwitchOutcome, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
@@ -2382,10 +2382,23 @@ async function main() {
   let phoneCodeBuffer = ''
   let phoneCodeChecking = false
   let phoneCodeVerifiedRoom: string | null = null
-  const clearPhoneCode = () => { phoneCodeCaller = null; phoneCodeBuffer = ''; phoneCodeVerifiedRoom = null }
-  // The frontend's spoken lines (hold, code prompt, retry) join a call's room as
-  // URL ingress participants: never a user, and their leaving ends nothing.
-  const isPhoneLinePlayer = (p: RemoteParticipant) => p.kind === ParticipantKind.INGRESS && isPhoneCallLive(activeRoomName, phoneRoomName, true)
+  let phoneCodeTimer: ReturnType<typeof setTimeout> | null = null
+  const clearPhoneCode = () => {
+    phoneCodeCaller = null; phoneCodeBuffer = ''; phoneCodeVerifiedRoom = null
+    if (phoneCodeTimer) { clearTimeout(phoneCodeTimer); phoneCodeTimer = null }
+  }
+  // Line players (phone-code.ts isPhoneLinePlayer; also the #365 hold line, flag on or off).
+  const isPhoneLinePlayer = (p: RemoteParticipant) => isLinePlayer(p.kind === ParticipantKind.INGRESS, activeRoomName, phoneRoomName)
+  // Ends a call still waiting for its code, if `caller` is still the one waiting:
+  // removes the caller, else leaves the room.
+  const endPhoneCodeCall = (caller: RemoteParticipant, why: string) => {
+    const room = activeRoomName
+    if (phoneCodeCaller !== caller || !room) return
+    console.log(`📞🔐 Ending the call in ${room}: ${why}`)
+    removePhoneCaller(room, caller.identity).then((done) => {
+      if (!done && phoneCodeCaller === caller) destroyRoomSession(`phone-code-${why}`).catch(() => {})
+    })
+  }
   // A participant leaving a phone room that was never adopted (a line player, or
   // anyone during the code step) ends nothing. True when the leave is handled here.
   const phoneCodeLeave = (p: RemoteParticipant): boolean => {
@@ -2399,24 +2412,40 @@ async function main() {
     }
     return true
   }
-  // One keypad press during the code step. Six digits go to the frontend, which
-  // counts the tries, speaks the retry line and hangs up after the last one.
-  const onPhoneCodeDigit = (digit: string) => {
-    if (phoneCodeChecking || !phoneCodeCaller || !activeRoomName) return
-    const step = addCodeDigit(phoneCodeBuffer, digit)
-    phoneCodeBuffer = step.buffer
-    if (!step.submit) return
+  // One try at the code. The frontend counts the tries and speaks the retry
+  // and goodbye lines; the agent hangs up itself after a used-up code in case
+  // the frontend cannot. Digits typed meanwhile are held for the next try.
+  const submitPhoneCode = (code: string) => {
     const caller = phoneCodeCaller
     const room = activeRoomName
+    if (!caller || !room) return
     phoneCodeChecking = true
-    checkPhoneCode(osbornFrontendUrl(), process.env.OSBORN_SYNC_TOKEN, room, step.submit).then((result) => {
+    checkPhoneCode(osbornFrontendUrl(), process.env.OSBORN_SYNC_TOKEN, room, code).then((result) => {
       phoneCodeChecking = false
       console.log(`📞🔐 Phone code for ${room}: ${result}`)
-      if (result !== 'ok' || phoneCodeCaller !== caller || activeRoomName !== room) return
-      phoneCodeVerifiedRoom = room
-      phoneCodeCaller = null
-      participantConnectedHandler?.(caller).catch((e) => console.error('📞 adopt after code failed:', e instanceof Error ? e.message : e))
+      if (phoneCodeCaller !== caller || activeRoomName !== room) return
+      const action = phoneCodeAction(result)
+      if (action === 'adopt') {
+        if (phoneCodeTimer) { clearTimeout(phoneCodeTimer); phoneCodeTimer = null }
+        phoneCodeVerifiedRoom = room
+        phoneCodeCaller = null
+        participantConnectedHandler?.(caller).catch((e) => console.error('📞 adopt after code failed:', e instanceof Error ? e.message : e))
+      } else if (action === 'hang-up') {
+        phoneCodeBuffer = ''
+        setTimeout(() => endPhoneCodeCall(caller, result), PHONE_CODE_HANGUP_GRACE_MS)
+      } else {
+        const held = heldCode(phoneCodeBuffer)
+        phoneCodeBuffer = held.buffer
+        if (held.submit) submitPhoneCode(held.submit)
+      }
     })
+  }
+  // One keypad press during the code step: six digits make a try.
+  const onPhoneCodeDigit = (digit: string) => {
+    if (!phoneCodeCaller || !activeRoomName) return
+    const step = addCodeDigit(phoneCodeBuffer, digit, phoneCodeChecking)
+    phoneCodeBuffer = step.buffer
+    if (step.submit) submitPhoneCode(step.submit)
   }
 
   // Watch gateway (mobile Track 2): bridges the native watchOS app's WS audio
@@ -5490,6 +5519,9 @@ async function main() {
     if (isPhoneCaller && phoneCallerAdmission({ verifiedRoom: phoneCodeVerifiedRoom, room: activeRoomName }) === 'code') {
       phoneCodeCaller = participant
       phoneCodeBuffer = ''
+      // Ends the call if no code has matched by the end of the window, even if the frontend is gone.
+      if (phoneCodeTimer) clearTimeout(phoneCodeTimer)
+      phoneCodeTimer = setTimeout(() => endPhoneCodeCall(participant, 'timeout'), PHONE_CODE_TIMEOUT_MS)
       cancelIdleExitTimer()
       console.log(`📞🔐 Phone caller ${participant.identity} must type the emailed code first; not adopted yet`)
       return

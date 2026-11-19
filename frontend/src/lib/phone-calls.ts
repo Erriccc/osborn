@@ -5,8 +5,9 @@
 import { IngressClient, IngressInput, RoomServiceClient } from 'livekit-server-sdk'
 import { checkSandboxClaim, serviceClient } from '@/lib/sandbox-claims'
 import { connectUserAgent } from '@/lib/connect-agent'
+import { sleep } from '@/lib/sleep'
 import {
-  CALL_CODE_TTL_MS, CODE_EXPIRED_LINE, CODE_LOCKED_LINE, CODE_PROMPT_LINE, CODE_RETRY_LINE, CODE_SEND_FAILED_LINE,
+  CALL_CODE_TTL_MS, CODE_DAILY_LIMIT_LINE, CODE_EXPIRED_LINE, CODE_LOCKED_LINE, CODE_PROMPT_LINE, CODE_RETRY_LINE, CODE_SEND_FAILED_LINE,
   callCodeNext, readCallCode, startCallCode,
 } from '@/lib/phone-code'
 
@@ -59,7 +60,6 @@ async function playInto(roomName: string, name: string, url: string | undefined)
   }
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
 /** Plays a line into the caller's room and lets it finish; `end` then hangs up. */
 async function say(roomName: string, name: string, url: string | undefined, ms: number, end = false): Promise<void> {
@@ -103,7 +103,7 @@ async function codeStep(
   if (sent === 'already-open') return 'connected'
   if (sent !== 'sent') {
     console.warn(`[phone] no code for ${roomName}: ${sent}`)
-    await sayThenHangUp(roomName, 'code-failed', line(CODE_SEND_FAILED_LINE), CODE_LINE_MS)
+    await sayThenHangUp(roomName, 'code-failed', line(sent === 'daily-limit' ? CODE_DAILY_LIMIT_LINE : CODE_SEND_FAILED_LINE), CODE_LINE_MS)
     return 'rejected'
   }
   await say(roomName, 'code-prompt', line(CODE_PROMPT_LINE), CODE_LINE_MS)

@@ -10,7 +10,8 @@ import { PHONE_ROOM_PREFIX } from '@/lib/phone'
  * keypad digits: `{ roomName, code }`, `Authorization: Bearer <sync token>`.
  * The token names the machine, so the account; a code is only checked for a
  * call that account's machine is in. Replies `{ result: 'ok' | 'wrong' |
- * 'locked' | 'expired' }`; routeCall speaks the matching line.
+ * 'locked' | 'expired' }`, or 503 `{ result: 'error' }` when the code could
+ * not be checked; routeCall speaks the matching line.
  */
 const MAX_BODY = 1024
 
@@ -30,5 +31,6 @@ export async function POST(request: Request) {
   const { data: rows } = await admin.from('instances').select('user_id').eq('sync_token', token).limit(2)
   if (rows?.length !== 1 || typeof rows[0]?.user_id !== 'string') return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
   const result = await checkCallCode(admin, rows[0].user_id, roomName, code)
-  return NextResponse.json({ result })
+  // 'error': the code was not checked (Supabase or network trouble); the try was given back.
+  return NextResponse.json({ result }, { status: result === 'error' ? 503 : 200 })
 }
