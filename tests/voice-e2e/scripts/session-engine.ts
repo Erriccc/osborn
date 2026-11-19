@@ -763,6 +763,8 @@ async function main() {
   const isPerson = (driver: string) => driver.startsWith('person:')
   const seesTab = (driver: string, p: Page) => !isPerson(driver) || ownerOf(p) === driver
   const seesTask = (driver: string, t: any) => !isPerson(driver) || !t?.tab?.owner || t.tab.owner === driver
+  // The driver's current tab only while it is theirs: what their /status, /stream and /audio show.
+  const ownedTab = (driver: string): Page | null => { const t = driverTab(driver); return t && ownerOf(t) === driver ? t : null }
   // When each driver last sent a command: a driver counts as still working for 10 minutes.
   const driverSeen = new Map<string, number>()
   const isWorking = (d: string) => Date.now() - (driverSeen.get(d) ?? 0) < 600000 && !!driverActive.get(d) && !driverActive.get(d)!.isClosed()
@@ -1122,8 +1124,7 @@ async function main() {
         // healthy room while the page sat on the "Session paused" idle screen.
         // A person sees their own tab here (the one their stream shows), never the fronted one.
         const viewer = driverId(req)
-        const own = driverTab(viewer)
-        const shown: Page | null = isPerson(viewer) ? (own && seesTab(viewer, own) ? own : null) : active
+        const shown: Page | null = isPerson(viewer) ? ownedTab(viewer) : active
         let pageUrl = ''
         let pageState = 'unresponsive'
         let idlePaused = false
@@ -1175,7 +1176,7 @@ async function main() {
           if (ownerOf(tab) !== driver) return json(res, { ok: false, code: 'not_your_tab', owner: ownerOf(tab), error: `tab ${q} is not yours ("${driver}") — you can watch only tabs you opened or took over` }, 409)
           return live.serveFrames(() => (!tab.isClosed() && ownerOf(tab) === driver ? tab : null), req, res)
         }
-        return live.serveFrames(() => { const t = driverTab(driver); return t && ownerOf(t) === driver ? t : null }, req, res)
+        return live.serveFrames(() => ownedTab(driver), req, res)
       }
       if (req.method === 'GET' && path === '/runs') {
         // All runs on this volume, newest last — pair with /clip?run=.
@@ -1242,8 +1243,8 @@ async function main() {
         // ABSENT from the video-only clips/stream), from the caller's tab; on a
         // headless cloud engine this is the only way to hear the agent.
         const audioDriver = driverId(req)
-        const audioPage = isPerson(audioDriver) ? driverTab(audioDriver) : callerTab(audioDriver)
-        if (!audioPage || !seesTab(audioDriver, audioPage)) return json(res, { ok: false, code: 'no_own_tab', error: 'you have no tab of your own to hear' }, 409)
+        const audioPage = isPerson(audioDriver) ? ownedTab(audioDriver) : callerTab(audioDriver)
+        if (!audioPage) return json(res, { ok: false, code: 'no_own_tab', error: 'you have no tab of your own to hear' }, 409)
         const a = await peekAudioToWav(audioPage)
         if (!a) {
           // A GET only reports: arming happens on /act, /say and /hear.
