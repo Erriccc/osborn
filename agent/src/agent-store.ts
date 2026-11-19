@@ -282,13 +282,14 @@ export function parseFrontMatter(md: string): { meta: Record<string, unknown>; b
 
 // ── Skills ───────────────────────────────────────────────────────────────────
 
+const FENCE = /^\s{0,3}(`{3,}|~{3,})/
 /** A SKILL.md body's first `# ` heading outside fenced code (a template inside a fence
  *  is not the skill's title), less a leading "Skill:", and the paragraph line after it. */
 export function skillHeading(body: string): { title?: string; paragraph?: string } {
   const lines = body.split(/\r?\n/)
   let fence: string | null = null
   for (let i = 0; i < lines.length; i++) {
-    const f = /^\s{0,3}(`{3,}|~{3,})/.exec(lines[i])
+    const f = FENCE.exec(lines[i])
     if (f) {
       if (!fence) fence = f[1]
       else if (f[1][0] === fence[0] && f[1].length >= fence.length && !lines[i].trim().slice(f[1].length).trim()) fence = null
@@ -300,11 +301,10 @@ export function skillHeading(body: string): { title?: string; paragraph?: string
     let j = i + 1
     while (j < lines.length && !lines[j].trim()) j++
     const next = lines[j]?.trim()
-    return { title: h[1].trim(), ...(next && !next.startsWith('#') && !/^(`{3,}|~{3,})/.test(next) ? { paragraph: next } : {}) }
+    return { title: h[1].trim(), ...(next && !next.startsWith('#') && !FENCE.test(next) ? { paragraph: next } : {}) }
   }
   return {}
 }
-
 
 /** Folder names of the skills shipped with the package. */
 export function coreSkillNames(pkgSkillsDir: string): Set<string> {
