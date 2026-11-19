@@ -111,10 +111,12 @@ export const SECRET_RULES: SecretRule[] = [
     re: /(?<![A-Za-z0-9_])snx_(?!proj_)[A-Za-z0-9]{16,}/g,
     replace: '[REDACTED-SONIOX-KEY]',
   },
-  // JWTs (header.payload.signature, base64url).
+  // JWTs (header.payload.signature, base64url). The lookbehind keeps a long
+  // `eyJeyJ…` run from restarting at every `eyJ`, yet still masks a token glued
+  // to a word character (`%20eyJ…`, an escaped `\neyJ…`).
   {
     kind: 'JWT',
-    re: /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
+    re: /(?<!eyJ[A-Za-z0-9_-]*?)eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g,
     replace: '[REDACTED-JWT]',
   },
   // API-key headers: x-api-key, x-goog-api-key (Gemini REST), and generic api-key

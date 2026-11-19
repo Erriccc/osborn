@@ -27,6 +27,9 @@ const CORPUS = [
   `AIzaSy${B.repeat(3)}kL3mN`,
   `fw_${B.repeat(3)}`, `snx_proj_${B.repeat(3)}`, `snx_${B.repeat(2)}`,
   `eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${B.repeat(2)}`,
+  // Glued to a word character (URL-encoded, or an escaped `\n` in a JSON string).
+  `Authorization%3A%20Bearer%20eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${B.repeat(2)}`,
+  `"line\\neyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.${B.repeat(2)}"`,
   `x-api-key: ${B.repeat(2)}`, `x-goog-api-key: ${B.repeat(2)}`,
   `Authorization: Basic ${B.repeat(2)}`, `Authorization: Bearer ${B.repeat(3)}`,
   `xoxb-1234567890-${B}`, 'AKIAIOSFODNN7EXAMPLE',
