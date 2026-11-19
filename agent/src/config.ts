@@ -818,11 +818,7 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
       const head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
       const tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
       const lastMessage = tail.lastUser ?? head.lastUser
-      // The turns seen in BOTH samples (a compacted transcript can have none in
-      // the head). Not extrapolated over the unread middle: that is mostly giant
-      // tool results, so scaling by size inflated a few hundred turns to tens of
-      // thousands, cached forever and deciding dedupe winners (#192). A lower
-      // bound, floored at 3 so a large session always clears the list gate.
+      // A lower bound: the turns in both samples, floored at 3 to clear the list gate.
       const messageCount = Math.max(3, head.count + tail.count)
       return {
         lastMessage,
@@ -973,7 +969,7 @@ interface SessionManifestEntry {
 interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
 // Older manifests are discarded on load. v2: sanitized preview fields. v3: the
 // large-file messageCount estimate changed, and unchanged files are never re-read.
-// v4: the large-file count is the sampled lower bound, not an extrapolation (#192).
+// v4: the large-file count is the sampled lower bound.
 const SESSION_MANIFEST_VERSION = 4
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')

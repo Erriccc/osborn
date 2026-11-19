@@ -1309,7 +1309,7 @@ export class ClaudeLLM extends llm.LLM {
   // the FULL source set — main JSONL + every sub-agent JSONL — exactly like the flat
   // index. Incremental (byte-offset resume) + fire-and-forget, so it never blocks a turn.
   #storeUpdating: boolean = false
-  #storeUpdateAgain: { sessionId: string; workingDir: string } | null = null
+  #storeUpdateAgain: { sessionId: string; workingDir: string; mainOnly: boolean } | null = null
 
   // Turbo mode — when true, every spawned agent (main + sub-agents) runs on
   // FAST_MODEL regardless of individual model config. Default off = no-op.
@@ -1428,16 +1428,20 @@ export class ClaudeLLM extends llm.LLM {
    * The guard lives here (on the long-lived ClaudeLLM, not the per-turn stream) so a slow
    * write can't overlap the next turn's write. Never throws; never blocks the caller.
    */
-  triggerStoreUpdate(sessionId: string, workingDir: string): void {
+  triggerStoreUpdate(sessionId: string, workingDir: string, mainOnly = false): void {
     if (!sessionId || sessionId === 'pending' || !workingDir) return
     if (process.env.OSBORN_STORE === '0') return
-    // A request during a sweep runs once after it, so the turn-end sweep is never lost.
-    if (this.#storeUpdating) { this.#storeUpdateAgain = { sessionId, workingDir }; return }
+    // A request during a sweep runs once after it (a full sweep if any request was full),
+    // so the turn-end sweep is never lost.
+    if (this.#storeUpdating) {
+      this.#storeUpdateAgain = { sessionId, workingDir, mainOnly: mainOnly && (this.#storeUpdateAgain?.mainOnly ?? true) }
+      return
+    }
     this.#storeUpdating = true
     ;(async () => {
       try {
         const embed = process.env.OSBORN_EMBED === '0' ? undefined : (await getEmbedder()) ?? undefined
-        const stats = await updateSessionStore(sessionId, workingDir, { embed })
+        const stats = await updateSessionStore(sessionId, workingDir, { embed, mainOnly })
         if (stats.newRows > 0) console.log(`🗄️  [store] +${stats.newRows} rows (${stats.totalRows} total, embedded=${stats.embeddedRows}) across main+subagents`)
       } catch (err: any) {
         console.error('🗄️  [store] update failed:', err?.message)
@@ -1445,7 +1449,7 @@ export class ClaudeLLM extends llm.LLM {
         this.#storeUpdating = false
         const again = this.#storeUpdateAgain
         this.#storeUpdateAgain = null
-        if (again) this.triggerStoreUpdate(again.sessionId, again.workingDir)
+        if (again) this.triggerStoreUpdate(again.sessionId, again.workingDir, again.mainOnly)
       }
     })()
   }
@@ -2373,8 +2377,9 @@ export class ClaudeLLM extends llm.LLM {
           this.#pendingToolUseByType.clear()
           // Ingest the finished reply now: the submit-time sweep ran before it was
           // written, so /session-messages would lack it until the next turn (#153).
+          // Main JSONL only; the next submit-time sweep picks up sub-agents.
           const sid = (msg as any).session_id || this.#sessionId
-          if (sid && this.#opts.workingDirectory) this.triggerStoreUpdate(sid, this.#opts.workingDirectory)
+          if (sid && this.#opts.workingDirectory) this.triggerStoreUpdate(sid, this.#opts.workingDirectory, true)
           console.log('✅ Claude turn complete (persistent session stays alive)')
         }
       }

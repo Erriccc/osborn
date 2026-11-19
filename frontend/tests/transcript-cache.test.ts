@@ -175,6 +175,48 @@ t('#153: older cache rows the replay window no longer holds are not resurrected'
   eq(reconcileReplay([], current).map(m => m.content), [], 'an undated replay keeps nothing from the cache')
 })
 
+// A reload: paint the cache, the greeting is spoken live, the replay lands, the screen is cached.
+function reload(s: ReturnType<typeof fakeStorage>, replay: ChatMessage[], live: ChatMessage[]): ChatMessage[] {
+  const paint = readCachedTranscript('u1', 'sess', s).map((c, i) =>
+    msg({ id: `prior-${i}-sess`, role: c.role, content: c.content, timestamp: c.ts ? new Date(c.ts) : new Date(0), fromCache: true }))
+  const screen = reconcileReplay(replay, [...paint, ...live])
+  cacheTranscript('u1', 'sess', screen, s)
+  return screen
+}
+
+t('#153: reloading with no speech shows one greeting, not one per reload', () => {
+  const s = fakeStorage()
+  const replay = [
+    msg({ id: 'prior-0-sess', content: 'question', timestamp: at('2026-11-11T23:20:00Z') }),
+    msg({ id: 'prior-1-sess', role: 'assistant', content: 'answer', timestamp: at('2026-11-11T23:20:05Z') }),
+  ]
+  let screen: ChatMessage[] = []
+  for (let n = 1; n <= 4; n++) {
+    const greeting = msg({ id: `greet-${n}`, role: 'assistant', content: 'Welcome back!', timestamp: at(`2026-11-11T23:3${n}:00Z`) })
+    screen = reload(s, replay, [greeting])
+  }
+  eq(screen.filter(m => m.content === 'Welcome back!').length, 1, 'one greeting after 4 reloads')
+})
+
+t('#153: a new short reply is kept even when an older one contains its words', () => {
+  const replay = [
+    msg({ id: 'prior-0-s', content: 'yes', timestamp: at('2026-11-11T23:20:00Z') }),
+    msg({ id: 'prior-1-s', role: 'assistant', content: 'Shipping now.', timestamp: at('2026-11-11T23:20:05Z') }),
+  ]
+  const current = [
+    ...replay.map(m => ({ ...m, fromCache: true })),
+    msg({ id: 'prior-2-s', content: 'yes, do it', timestamp: at('2026-11-11T23:30:00Z'), fromCache: true }),
+    msg({ id: 'prior-3-s', role: 'assistant', content: 'Done.', timestamp: at('2026-11-11T23:30:05Z'), fromCache: true }),
+  ]
+  eq(reconcileReplay(replay, current).map(m => m.content), ['yes', 'Shipping now.', 'yes, do it', 'Done.'], 'the new exchange survives')
+  const again = [...current.slice(0, 2), msg({ id: 'prior-2-s', content: 'yes', timestamp: at('2026-11-11T23:30:00Z'), fromCache: true })]
+  eq(reconcileReplay(replay, again).map(m => m.content), ['yes', 'Shipping now.', 'yes'], 'an identical later "yes" is not taken for the old one')
+})
+
+t('research log rows are never cached', () => {
+  eq(serializeTranscript([msg({ id: 'l1', role: 'assistant', content: 'researcher: reading files', category: 'log' }), msg({ id: 'c1', content: 'hi', category: 'chat' })]).map(i => i.id), ['c1'], 'log row dropped')
+})
+
 t('content and tail are bounded by what the replay can return', () => {
   const s = fakeStorage()
   const many: ChatMessage[] = []
