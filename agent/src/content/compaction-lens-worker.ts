@@ -284,7 +284,8 @@ async function main(): Promise<number> {
       lockDir = null
       if (job.sweepLockHeld || acquireLock(home)) {
         sweepHome = home
-        const s = await runLibrarySweep({ exclude: job.sweep.exclude, trigger: job.sweep.trigger, dry: job.sweep.dry, maxPages: job.sweep.max })
+        // A manual --sweep (print) is never held back by the cooldown.
+        const s = await runLibrarySweep({ exclude: job.sweep.exclude, trigger: job.sweep.trigger, dry: job.sweep.dry, maxPages: job.sweep.max, ...(job.sweep.print ? { cooldownMs: 0 } : {}) })
         logLine(logDir, `session ${sid}: sweep status=${s.status} pages=${s.pagesWritten} digests=${s.digestsWritten} calls=${s.modelCalls} cost=$${s.costUsd.toFixed(4)} errors=${s.errors.length}`)
         if (job.sweep.print) process.stdout.write(`${JSON.stringify(s)}\n`)
       } else {

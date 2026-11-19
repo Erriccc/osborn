@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { LOCK_FILE, LOCK_TTL_MS, LOG_FILE, acquireLock, findTranscriptBySessionId, libraryHomeDir, readSweepStatus, releaseLock, resolveProjectDir, slugDir, writeSweepStatus } from './lens-paths.js'
+import { LOCK_FILE, LOCK_TTL_MS, LOG_FILE, acquireLock, findTranscriptBySessionId, libraryHomeDir, readSweepStatus, releaseLock, resolveProjectDir, slugDir, sweepCoolingDown, writeSweepStatus, type SweepError } from './lens-paths.js'
 
 export interface LensLaunchPayload {
   sessionId: string
@@ -34,6 +34,7 @@ export interface SweepRequest {
 
 export type LensLaunchResult =
   | { status: 'disabled' }
+  | { status: 'cooldown' }
   | { status: 'no-key' }
   | { status: 'locked'; projectDir: string }
   | { status: 'unlockable'; projectDir: string | null }
@@ -231,6 +232,11 @@ export function launchLibrarySweep(live: string[], trigger: string): LensLaunchR
     mkdirSync(home, { recursive: true })
     if (!acquireLock(home)) return { status: 'locked', projectDir: home }
     lockHeld = true
+    if (sweepCoolingDown()) {
+      releaseLock(home)
+      lockHeld = false
+      return { status: 'cooldown' }
+    }
     const argFile = writeArgFile({ sweep: { exclude: live.filter(Boolean), trigger }, sweepLockHeld: true })
     const pid = spawnWorker(cmd, argFile, home, err => {
       releaseLock(home)
@@ -247,24 +253,26 @@ export function launchLibrarySweep(live: string[], trigger: string): LensLaunchR
 }
 
 /**
- * The /health view of the sweep status file (survives restarts). Counts, kinds and 8-char
- * ids or days only: never messages or paths (/health is public).
+ * The /health view of the Library: the last launches, and the sweep status file (survives
+ * restarts). Counts, timestamps and status / error codes only: no ids, days, costs, messages
+ * or paths (/health is public).
  */
 export function librarySweepHealth(): Record<string, unknown> {
   const s = readSweepStatus()
+  const launch = (r: LastRun | null) => (r ? { at: r.at, reason: r.reason, status: r.status, ...(r.attempt ? { attempt: r.attempt } : {}) } : null)
+  const codes = (errs: SweepError[] = []) => errs.reduce<Record<string, number>>((n, e) => ((n[e.kind] = (n[e.kind] ?? 0) + 1), n), {})
   return {
-    lastSpawned,
-    // 8-char ids of sessions waiting for a session-end retry.
-    pendingRetries: [...retries.keys()].map(id => id.slice(0, 8)),
-    lastStep: s?.lastStep ?? null,
+    lastRun: launch(lastRun),
+    lastSpawned: launch(lastSpawned),
+    pendingRetries: retries.size,
+    lastStep: s?.lastStep ? { at: s.lastStep.at, status: s.lastStep.status } : null,
     backlog: s?.backlog ?? null,
     lastSweep: s?.at
       ? {
-          status: s.status, trigger: s.trigger, at: s.at, finishedAt: s.finishedAt ?? null,
-          pagesWritten: s.pagesWritten, digestsWritten: s.digestsWritten, modelCalls: s.modelCalls, costUsd: s.costUsd,
-          capHit: !!s.capHit, errors: (s.errors ?? []).map(e => ({ kind: e.kind, ref: e.ref ?? null })),
+          status: s.status, trigger: s.trigger.replace(/[^a-z_:-]/gi, '').slice(0, 40), at: s.at, finishedAt: s.finishedAt ?? null,
+          pagesWritten: s.pagesWritten, digestsWritten: s.digestsWritten, modelCalls: s.modelCalls, capHit: !!s.capHit, errors: codes(s.errors),
         }
       : null,
-    workerError: s?.workerError ? { at: s.workerError.at, kind: s.workerError.kind, ref: s.workerError.ref ?? null } : null,
+    workerError: s?.workerError ? { at: s.workerError.at, kind: s.workerError.kind } : null,
   }
 }

@@ -201,7 +201,7 @@ export interface SweepError {
 }
 
 export interface SweepStatus {
-  status: 'running' | 'done' | 'disabled' | 'no-key' | 'error' | 'timeout' | 'died'
+  status: 'running' | 'done' | 'disabled' | 'no-key' | 'cooldown' | 'error' | 'timeout' | 'died'
   trigger: string
   at: string
   finishedAt?: string
@@ -257,4 +257,14 @@ export function writeSweepStatus(patch: Partial<SweepStatus>, home = libraryHome
   } catch {
     /* status is best-effort */
   }
+}
+
+/** A sweep does not start within this long of the last one finishing (agent start and every session end launch one). */
+export const SWEEP_COOLDOWN_MS = 30 * 60_000
+
+/** True while the last sweep finished less than `cooldownMs` ago. */
+export function sweepCoolingDown(cooldownMs = SWEEP_COOLDOWN_MS, home = libraryHomeDir()): boolean {
+  const s = readSweepStatus(home)
+  const at = s?.status === 'done' && s.finishedAt ? Date.parse(s.finishedAt) : NaN
+  return Number.isFinite(at) && Date.now() - at < cooldownMs
 }

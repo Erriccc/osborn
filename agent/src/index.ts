@@ -58,7 +58,7 @@ import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationIt
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
-import { launchLibraryOnSessionEnd, launchLibrarySweep, lastLibraryRun, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled } from './content/lens-launch.js'
+import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled } from './content/lens-launch.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
@@ -927,13 +927,12 @@ function startApiServer(workingDir: string, port: number): void {
         status: 'ok',
         workingDir,
         version,
-        // Library: is it on, can it call the model, does it reach /library (no values, 8-char session id).
+        // Library: is it on, can it call the model, does it reach /library. Public: counts, times and codes only.
         library: {
           enabled: isContentLensEnabled(),
           modelKey: !!(process.env.OPENROUTER_API_KEY || '').trim(),
           ingest: (() => { const c = resolveIngestConfig(); return 'reason' in c ? (c.reason === 'no-key' ? 'no-anon-key' : c.reason) : 'on' })(),
-          lastRun: lastLibraryRun(),
-          // Catch-up sweep: backlog left after the last sweep, that sweep's result, the last worker failure.
+          // Last launches, the worker's step outcome, the sweep's backlog and result, the last worker failure.
           ...librarySweepHealth(),
         },
         // WHERE this machine physically runs — Fly sets FLY_REGION (e.g. 'ord').

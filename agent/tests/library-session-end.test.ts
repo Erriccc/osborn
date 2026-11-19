@@ -64,11 +64,11 @@ try {
   const locked = launchLibraryOnSessionEnd(sid, wrongCwd, 'session_switch', [])!
   assert.equal(locked.status, 'locked')
   const health = () => librarySweepHealth() as any
-  assert.deepEqual(health().pendingRetries, [sid.slice(0, 8)])
+  assert.equal(health().pendingRetries, 1, "a retry is pending (a count: /health carries no ids)")
   assert.equal(health().lastSpawned?.status, 'spawned', 'not overwritten by the locked attempt')
   await new Promise(res => setTimeout(res, 300))
   assert.equal(lastLibraryRun()?.attempt, 2, 'retried up to the max')
-  assert.deepEqual(health().pendingRetries, [], 'and then stops')
+  assert.equal(health().pendingRetries, 0, 'and then stops')
   const h = health()
   assert.equal(h.lastSpawned.status, 'spawned')
   assert.equal(h.lastStep.status, 'no-db')

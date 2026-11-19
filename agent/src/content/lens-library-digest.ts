@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { mkdirSync, readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,7 +36,7 @@ import type { LibraryPeriod } from './lens-library-select.js'
 
 const DIGEST_MANIFEST_FILE = '.digest-manifest.json'
 /** Hard cap for one day's call. */
-const DIGEST_CAP_USD = 0.25
+export const DIGEST_CAP_USD = 0.25
 /** A day that failed this many times in a row is retried only when it gains a chat. */
 const MAX_DIGEST_FAILURES = 3
 const MAX_CHATS_PER_DAY = 60
@@ -75,6 +75,9 @@ export interface DigestResult {
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
+/** The machine's time zone (TZ): what "day" means for a digest. Cloud machines run on UTC. */
+export const machineTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+
 /** YYYY-MM-DD of `ts` in the machine's local time zone (TZ). */
 export function localDay(ts: string | number): string {
   const d = new Date(ts)
@@ -85,7 +88,7 @@ const localTime = (ts: string) => {
   return Number.isFinite(d.getTime()) ? `${pad(d.getHours())}:${pad(d.getMinutes())}` : '?'
 }
 
-const chatKey = (c: Pick<ShortChat, 'sessionId' | 'period'>): string => `${c.sessionId}:${c.period.startRowId}-${c.period.endRowId}`
+export const chatKey = (c: Pick<ShortChat, 'sessionId' | 'period'>): string => `${c.sessionId}:${c.period.startRowId}-${c.period.endRowId}`
 export const digestDir = (home = libraryHomeDir()): string => join(home, 'digests')
 const digestFileName = (day: string): string => `${day}-digest.md`
 
@@ -104,11 +107,15 @@ export function writeDigestManifest(dir: string, m: DigestManifest): void {
 }
 
 /**
- * Which past days need a (re)write: never digested, or holding a chat the page does not.
+ * Which past days need a (re)write: never digested, holding a chat the page does not, or holding
+ * a chat that is gone (`stale`: it grew into a written period page, or into a longer chat).
  * Chats that touch today wait (they are returned as `today`). Each pending day comes with ALL
- * its chats, so an updated page is complete. Pure.
+ * its current chats, so an updated page is complete. `emptied` = digested days none of whose
+ * chats is left: their page should go. Pure.
  */
-export function pendingDigestDays(chats: ShortChat[], m: DigestManifest, now = Date.now()): { days: Map<string, ShortChat[]>; today: ShortChat[] } {
+export function pendingDigestDays(
+  chats: ShortChat[], m: DigestManifest, now = Date.now(), stale: Set<string> = new Set(),
+): { days: Map<string, ShortChat[]>; today: ShortChat[]; emptied: string[] } {
   const today = localDay(now)
   const byDay = new Map<string, ShortChat[]>()
   const waiting: ShortChat[] = []
@@ -123,16 +130,20 @@ export function pendingDigestDays(chats: ShortChat[], m: DigestManifest, now = D
     }
     byDay.set(day, [...(byDay.get(day) ?? []), c])
   }
+  const emptied = Object.values(m.days)
+    .filter(e => e.status === 'ok' && !byDay.has(e.day) && e.chats.length > 0 && e.chats.every(k => stale.has(k)))
+    .map(e => e.day)
   for (const [day, cs] of [...byDay]) {
     const e = m.days[day]
     if (!e) continue
     const keys = cs.map(chatKey)
     const fresh = keys.some(k => !e.chats.includes(k))
+    const gone = e.chats.some(k => stale.has(k))
     // Keeps failing on the same chats: stop until another chat turns up for that day.
     const stuck = (e.failures ?? 0) >= MAX_DIGEST_FAILURES && keys.every(k => e.chats.includes(k) || (e.tried ?? []).includes(k))
-    if ((e.status === 'ok' && !fresh) || stuck) byDay.delete(day)
+    if ((e.status === 'ok' && !fresh && !gone) || stuck) byDay.delete(day)
   }
-  return { days: byDay, today: waiting }
+  return { days: byDay, today: waiting, emptied }
 }
 
 interface DigestItem {
@@ -157,10 +168,12 @@ function digestPrompt(day: string, items: DigestItem[]): string {
     .replace('{{chats}}', () => items.map(i => `<chat n="${i.n}">\n${i.text}\n</chat>`).join('\n\n'))
 }
 
-function renderDigestMd(day: string, items: DigestItem[], o: { costUsd: number; dry?: boolean }): string {
-  const L: string[] = [`<!-- osborn-digest: day=${day} chats=${items.length}${o.dry ? ' dry' : ''} -->`, `# Daily digest — ${day}`, '']
-  L.push('Short chats from this day (local time). Each is under the period minimum, so none has a period page of its own.', '')
-  L.push(`- Chats: ${items.length}`, o.dry ? '- Calls: none (dry run)' : `- Calls: 1, $${o.costUsd.toFixed(4)} (cap $${DIGEST_CAP_USD.toFixed(2)})`, '', '## Chats', '')
+function renderDigestMd(day: string, items: DigestItem[], o: { costUsd: number; dry?: boolean; total: number }): string {
+  const L: string[] = [`<!-- osborn-digest: day=${day} chats=${o.total}${o.dry ? ' dry' : ''} -->`, `# Daily digest — ${day}`, '']
+  L.push(`Short chats from this day; the day and the times are in ${machineTimeZone()}. Each is under the period minimum, so none has a period page of its own.`, '')
+  L.push(`- Chats: ${o.total}`)
+  if (o.total > items.length) L.push(`- Listed: the first ${items.length}; ${o.total - items.length} more short chat(s) that day are not summarised`)
+  L.push(o.dry ? '- Calls: none (dry run)' : `- Calls: 1, $${o.costUsd.toFixed(4)} (cap $${DIGEST_CAP_USD.toFixed(2)})`, '', '## Chats', '')
   for (const i of items) {
     const p = i.chat.period
     L.push(`### ${oneLine(i.title || i.fallbackTitle)}`, `- Session ${i.chat.sessionId.slice(0, 8)} · rows #${p.startRowId}–#${p.endRowId} · ${localTime(p.fromTs)}–${localTime(p.toTs)}`)
@@ -230,7 +243,8 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
     mkdirSync(dir, { recursive: true })
     const m = readDigestManifest(dir)
     const prev = m.days[o.day]
-    const chats = [...o.chats].sort((a, b) => a.period.fromTs.localeCompare(b.period.fromTs)).slice(0, MAX_CHATS_PER_DAY)
+    const every = [...o.chats].sort((a, b) => a.period.fromTs.localeCompare(b.period.fromTs))
+    const chats = every.slice(0, MAX_CHATS_PER_DAY)
     const reds = new Map<string, ClientRedactor>()
     const redFor = (pd: string) => reds.get(pd) ?? reds.set(pd, loadClientRedactor(pd)).get(pd)!
     const items: DigestItem[] = chats.map((c, i) => {
@@ -242,7 +256,8 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
       return { n: i + 1, chat: c, text, fallbackTitle: clip(oneLine(first), 80) || 'Untitled chat' }
     })
     const scrub = (s: string) => redactSecrets([...reds.values()].reduce((t, r) => r.redact(t), s), { assistant: true })
-    const keys = chats.map(chatKey)
+    // Every chat of the day is recorded, listed or not, so a busy day is not re-digested each run.
+    const keys = every.map(chatKey)
     const fail = (status: DigestStatus): DigestResult => {
       m.days[o.day] = {
         ...(prev ?? { day: o.day, file: digestFileName(o.day), chats: [] }),
@@ -281,7 +296,7 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
       if (!items.some(i => i.summary)) return fail('model-error')
     }
 
-    const markdown = scrub(renderDigestMd(o.day, items, { costUsd: res.costUsd, dry: o.dry }))
+    const markdown = scrub(renderDigestMd(o.day, items, { costUsd: res.costUsd, dry: o.dry, total: every.length }))
     const file = digestFileName(o.day)
     res.page = join(dir, file)
     writeAtomic(res.page, markdown)
@@ -301,4 +316,16 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
     log(`digest ${o.day}: failed (fail-open): ${e?.message ?? e}`)
     return { ...res, status: 'failed' }
   }
+}
+
+/** Remove a digested day none of whose chats is left (they grew into period pages). No model call. */
+export function removeDigestDay(dir: string, day: string, log: (m: string) => void = () => {}): void {
+  const m = readDigestManifest(dir)
+  const e = m.days[day]
+  if (!e) return
+  rmSync(join(dir, e.file), { force: true })
+  delete m.days[day]
+  writeDigestManifest(dir, m)
+  rebuildIndex(dir, 'daily digests')
+  log(`digest ${day}: removed (its chats are now in period pages)`)
 }

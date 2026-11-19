@@ -115,7 +115,7 @@ function renderDigestIndex(digests: DigestSummary[]): string {
   const ds = [...digests].sort((a, b) => b.day.localeCompare(a.day))
   const L: string[] = ['# Content library — daily digests', '']
   L.push(
-    'One page per local calendar day for chats too short to become a period page (under the period minimum, 1h by default): ' +
+    `One page per calendar day (machine time zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'}) for chats too short to become a period page (under the period minimum, 1h by default): ` +
       'each chat\'s title and a one-to-two line summary. Written by the catch-up sweep only for days that are over; a day is ' +
       'rewritten in place when new short chats turn up for it.',
     '',

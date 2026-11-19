@@ -17,6 +17,9 @@ delete process.env.OSBORN_CONTENT_LENS
 delete process.env.OSBORN_CONTENT_LENS_MODEL
 delete process.env.OSBORN_LIBRARY_MIN_PERIOD_H // default 1h
 delete process.env.OSBORN_SYNC_TOKEN // no cloud ingest here (library-ingest.test.ts covers the seam)
+process.env.OSBORN_HOME = join(tmp, 'osborn-home') // the machine's daily spend ledger
+delete process.env.OSBORN_CONTENT_DAILY_USD
+delete process.env.OSBORN_CONTENT_DAY_CAP_USD
 delete process.env.OSBORN_LENS_DENYLIST
 
 const { runLibrarySweep } = await import('../src/content/lens-library-sweep.js')
@@ -24,6 +27,7 @@ const { runLibraryStep, readManifest, libraryDirFor } = await import('../src/con
 const { readDigestManifest, digestDir, localDay } = await import('../src/content/lens-library-digest.js')
 const { libraryHomeDir, readSweepStatus, acquireLock, releaseLock, LOCK_FILE, SWEEP_STATUS_FILE } = await import('../src/content/lens-paths.js')
 const { launchLibrarySweep, librarySweepHealth } = await import('../src/content/lens-launch.js')
+const { daySpent: daySpentNow } = await import('../src/content/content-llm.js')
 
 let pass = 0
 const t = async (name: string, fn: () => unknown) => {
@@ -88,7 +92,7 @@ const capDb = makeSession(capSid, capRows)
 const groupStart = (g: number) => 2 * g + 1
 
 await t('cap: one sweep writes at most 10 pages, the newest first, and reports the rest as backlog', async () => {
-  const s = await runLibrarySweep({ trigger: 'test' })
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test' })
   assert.equal(s.status, 'done', JSON.stringify(s.errors))
   assert.equal(periodCalls, 10)
   assert.equal(s.pagesWritten, 10)
@@ -98,7 +102,7 @@ await t('cap: one sweep writes at most 10 pages, the newest first, and reports t
   assert.deepEqual(okKeys(capDb, capSid), [3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(groupStart))
 })
 await t('cap: the next sweep picks up the older periods (gap before the written pages), same keys and numbering', async () => {
-  const s = await runLibrarySweep({ trigger: 'test' })
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test' })
   assert.equal(s.pagesWritten, 3)
   assert.equal(periodCalls, 13)
   assert.deepEqual(s.backlog, { periods: 0, digestDays: 0, todayChats: 0 })
@@ -108,7 +112,7 @@ await t('cap: the next sweep picks up the older periods (gap before the written 
   assert.equal(pagesOf(capDb, capSid).length, 13)
 })
 await t('idempotent: a third sweep makes no model call and writes nothing', async () => {
-  const s = await runLibrarySweep({ trigger: 'test' })
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test' })
   assert.equal(periodCalls, 13)
   assert.equal(s.pagesWritten + s.digestsWritten + s.modelCalls, 0)
 })
@@ -143,7 +147,7 @@ await t('session end alone writes one page (the tail) and leaves the older perio
   periodCalls = 0
 })
 await t('sweep: writes the older periods, skips the live session, digests past days only', async () => {
-  const s = await runLibrarySweep({ trigger: 'test', exclude: [lSid], now: NOW })
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
   assert.equal(s.status, 'done', JSON.stringify(s.errors))
   assert.deepEqual(okKeys(aDb, aSid), [1, 3, 5], 'periods 1 and 2 written by the sweep')
   assert.deepEqual(pagesOf(lDb, lSid), [], 'live session untouched')
@@ -160,6 +164,7 @@ await t('digest: grouped by LOCAL day (23:00 New York stays on its day), never t
   const md = readFileSync(join(dDir, '2026-03-02-digest.md'), 'utf-8')
   assert.match(md, /^- Chats: 2$/m)
   assert.ok(md.includes('Late night question') && md.includes('Morning question'), md)
+  assert.ok(md.includes('in America/New_York'), 'the page says which time zone its day is in')
   assert.ok(md.indexOf('Morning question') < md.indexOf('Late night question'), 'chronological')
   assert.ok(!md.includes('Chat from today'))
   const idx = readFileSync(join(dDir, 'INDEX.md'), 'utf-8')
@@ -177,18 +182,21 @@ await t('status file: written next to the sweep lock, survives (read back), /hea
   assert.deepEqual(h.backlog, s.backlog)
   assert.equal(h.lastSweep.pagesWritten, 2)
   assert.equal(h.lastSweep.digestsWritten, 2)
+  const pub = JSON.stringify(h)
+  assert.ok(!/costUsd|"ref"|sweep-|\/tmp|\$/.test(pub), `public /health stays counts, times and codes: ${pub}`)
+  assert.ok(daySpentNow() > 0, 'page and digest calls are charged to the daily ledger')
   assert.ok(!existsSync(join(home, LOCK_FILE)), 'the sweep does not leave the lock behind (the worker owns it)')
 })
 await t('idempotent: second sweep → no model call; digest pages unchanged', async () => {
   const before = readFileSync(join(dDir, '2026-03-02-digest.md'), 'utf-8')
-  const s = await runLibrarySweep({ trigger: 'test', exclude: [lSid], now: NOW })
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
   assert.equal(s.modelCalls, 0)
   assert.equal(periodCalls + digestCalls, 4)
   assert.equal(readFileSync(join(dDir, '2026-03-02-digest.md'), 'utf-8'), before)
 })
 await t('digest: a day that gains a chat is rewritten in place (one call, same file)', async () => {
   makeSession('sweep-s4-0001', [['user', 'Afternoon follow up', day(2, 14)], ['assistant', 'answer', day(2, 14, 20)]])
-  const s = await runLibrarySweep({ trigger: 'test', exclude: [lSid], now: NOW })
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
   assert.equal(s.digestsWritten, 1)
   assert.equal(digestCalls, 3)
   const md = readFileSync(join(dDir, '2026-03-02-digest.md'), 'utf-8')
@@ -205,13 +213,13 @@ await t('no retry storm: a period with an unusable reply is tried once per sweep
   try {
     for (let i = 1; i <= 3; i++) {
       const before = periodCalls
-      const s = await runLibrarySweep({ trigger: 'test', exclude: [lSid], now: NOW })
+      const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
       assert.equal(periodCalls - before, 1, `sweep ${i}: one attempt`)
       assert.ok(s.errors.some(e => e.kind === 'period' && e.ref === 'sweep-er'))
       assert.equal(readManifest(libraryDirFor(eDb, eSid), eSid).periods['1'].failures, i)
     }
     const before = periodCalls
-    const s = await runLibrarySweep({ trigger: 'test', exclude: [lSid], now: NOW })
+    const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
     assert.equal(periodCalls, before, 'given up after 3 failures')
     assert.equal(s.backlog?.periods, 0)
   } finally { failPeriods = 'none' }
@@ -221,14 +229,68 @@ await t('outage: two failed calls in a row stop the sweep, and an outage never c
   failPeriods = 'http500'
   try {
     const before = periodCalls
-    const s = await runLibrarySweep({ trigger: 'test', exclude: [lSid], now: NOW })
+    const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
     assert.equal(periodCalls - before, 2, 'stopped after two failures, not all three')
     assert.ok(s.errors.some(e => /twice in a row/.test(e.message ?? '')))
     assert.equal(s.backlog?.periods, 3)
     for (const [sid, db] of dbs) assert.equal(readManifest(libraryDirFor(db, sid), sid).periods['1']?.failures ?? 0, 0)
   } finally { failPeriods = 'none' }
-  const s = await runLibrarySweep({ trigger: 'test', exclude: [lSid], now: NOW })
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
   assert.equal(s.pagesWritten, 3, 'recovered on the next run')
+})
+await t('overlap: a digested chat that grows into a period page leaves its digest (rewritten, or removed when empty)', async () => {
+  // s1 (2 Mar, 23:00) and s3 (4 Mar, alone on its day) carry on for over an hour → period pages.
+  makeSession('sweep-s1-0001', [['assistant', 'more', day(3, 0, 30)]])
+  makeSession('sweep-s3-0001', [['assistant', 'more', day(4, 10, 30)]])
+  const before = { p: periodCalls, d: digestCalls }
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
+  assert.equal(s.pagesWritten, 2, JSON.stringify(s.errors))
+  assert.deepEqual([periodCalls - before.p, digestCalls - before.d], [2, 1], 'two pages, one digest rewrite, no call for the removal')
+  const md = readFileSync(join(dDir, '2026-03-02-digest.md'), 'utf-8')
+  assert.match(md, /^- Chats: 2$/m)
+  assert.ok(!md.includes('Late night question') && md.includes('Morning question'), md)
+  assert.ok(!existsSync(join(dDir, '2026-03-04-digest.md')), 'a day with no short chat left loses its page')
+  assert.equal(readDigestManifest(dDir).days['2026-03-04'], undefined)
+  assert.ok(!readFileSync(join(dDir, 'INDEX.md'), 'utf-8').includes('2026-03-04'))
+})
+await t('a busy day (over 60 chats) records every chat, so it is not re-digested next run', async () => {
+  for (let i = 0; i < 61; i++) makeSession(`sweep-busy-${String(i).padStart(4, '0')}`, [['user', `Busy question ${i}`, day(5, 8, i % 60) + Math.floor(i / 60) * H], ['assistant', 'answer', day(5, 8, i % 60) + Math.floor(i / 60) * H + 30_000]])
+  const before = digestCalls
+  await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
+  assert.equal(digestCalls - before, 1)
+  const md = readFileSync(join(dDir, '2026-03-05-digest.md'), 'utf-8')
+  assert.match(md, /^- Chats: 61$/m)
+  assert.match(md, /1 more short chat\(s\) that day are not summarised/)
+  assert.equal(readDigestManifest(dDir).days['2026-03-05'].chats.length, 61)
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
+  assert.equal(digestCalls - before, 1, 'no second call for the same day')
+  assert.equal(s.backlog?.digestDays, 0)
+})
+await t('spend: every call is charged to the daily content ledger; the sweep stops at the daily cap', async () => {
+  const cSid = 'sweep-cap-day-0001'
+  makeSession(cSid, [['user', 'Capped work', day(6, 8)], ['assistant', 'done', day(6, 10)]])
+  process.env.OSBORN_CONTENT_DAILY_USD = String(daySpentNow() + 0.1) // less than one page's worst case
+  try {
+    const before = periodCalls
+    const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
+    assert.equal(periodCalls, before, 'no call once the cap would be crossed')
+    assert.equal(s.capHit, true)
+    assert.ok(s.errors.some(e => e.kind === 'cap'))
+    assert.equal(s.backlog?.periods, 1)
+  } finally { delete process.env.OSBORN_CONTENT_DAILY_USD }
+  const spent = daySpentNow()
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
+  assert.equal(s.pagesWritten, 1)
+  assert.ok(daySpentNow() > spent && daySpentNow() - spent < 0.1, 'settled to the actual cost, not the worst case')
+})
+await t('cooldown: no sweep starts within 30 min of the last one; the last result stays', async () => {
+  const before = periodCalls + digestCalls
+  const s = await runLibrarySweep({ trigger: 'test-cooldown', exclude: [lSid], now: NOW })
+  assert.equal(s.status, 'cooldown')
+  assert.equal(periodCalls + digestCalls, before)
+  assert.equal(readSweepStatus()?.trigger, 'test', 'status file not overwritten')
+  assert.equal(launchLibrarySweep([], 'test').status, 'cooldown', 'the launcher does not spawn either')
+  assert.ok(!existsSync(join(home, LOCK_FILE)))
 })
 await t('never two at once: a held sweep lock → launch returns locked (no spawn)', () => {
   assert.ok(acquireLock(home))
