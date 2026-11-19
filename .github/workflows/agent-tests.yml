@@ -4,7 +4,7 @@ name: agent-tests
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['agent/**', '.github/workflows/agent-tests.yml']
+    paths: ['agent/**', 'frontend/scripts/run-tests.mjs', '.github/workflows/agent-tests.yml']
 
 concurrency:
   group: agent-tests-${{ github.ref }}
@@ -24,16 +24,7 @@ jobs:
       - name: Install
         working-directory: agent
         run: npm ci --no-audit --no-fund
+      # The frontend's runner; the two skipped files read fixtures that exist only on one dev machine (/workspace/...).
       - name: Run tests
         working-directory: agent
-        # These two read fixtures that exist only on one dev machine (/workspace/...).
-        env:
-          SKIP: 'sanitizer-widened switch-blind-smoke'
-        run: |
-          failed=""
-          for f in tests/*.test.ts; do
-            name=$(basename "$f" .test.ts)
-            case " $SKIP " in *" $name "*) echo "skip $name"; continue;; esac
-            if timeout 180 npx --no-install tsx "$f" > "/tmp/$name.log" 2>&1; then echo "ok   $name"; else echo "FAIL $name"; tail -30 "/tmp/$name.log"; failed="$failed $name"; fi
-          done
-          [ -z "$failed" ] || { echo "Failed:$failed"; exit 1; }
+        run: node ../frontend/scripts/run-tests.mjs . sanitizer-widened switch-blind-smoke
