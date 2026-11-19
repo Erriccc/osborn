@@ -1,6 +1,6 @@
 /**
- * Sliding-window per-key limiter for /api/demo-access. Bounded: a key whose hits have all
- * expired is dropped, and past maxKeys the oldest keys go first, so rotating keys cannot
+ * Sliding-window per-key limiter for /api/demo-access. Bounded: past maxKeys the least recently
+ * used keys go first, so rotating keys cannot
  * grow the map without limit.
  */
 export function createRateLimiter({ limit, windowMs, maxKeys }: { limit: number; windowMs: number; maxKeys: number }) {
@@ -13,10 +13,8 @@ export function createRateLimiter({ limit, windowMs, maxKeys }: { limit: number;
       if (recent.length >= limit) { hits.set(key, recent); return true }
       recent.push(now)
       hits.set(key, recent)
-      if (hits.size > maxKeys) {
-        hits.forEach((ts, k) => { if (!ts.some((t) => now - t < windowMs)) hits.delete(k) })
-        Array.from(hits.keys()).slice(0, Math.max(0, hits.size - maxKeys)).forEach((k) => hits.delete(k))
-      }
+      // Insertion order is last use, so the first key is the least recently used (and any expired one).
+      while (hits.size > maxKeys) hits.delete(hits.keys().next().value!)
       return false
     },
     size: () => hits.size,

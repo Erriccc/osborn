@@ -57,10 +57,9 @@ async function recordLead(email: string): Promise<void> {
 }
 
 export async function POST(req: NextRequest) {
-  const ip =
-    req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ||
-    req.headers.get('x-real-ip') ||
-    'unknown'
+  // The key is client-influenced, so keep only something IP-shaped and short (bounds memory per key).
+  const raw = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || req.headers.get('x-real-ip') || ''
+  const ip = /^[0-9a-fA-F:.]{2,45}$/.test(raw) ? raw : 'unknown'
 
   let email: string
   try {
@@ -73,7 +72,7 @@ export async function POST(req: NextRequest) {
   if (email.length > 320 || !EMAIL_RE.test(email)) {
     return NextResponse.json({ ok: false, error: 'Enter a valid email address.' }, { status: 400 })
   }
-  // Only a valid email counts, so typos behind a shared address do not lock out the next guest.
+  // Only a valid email counts toward the limit.
   if (limiter.limited(ip)) {
     return NextResponse.json({ ok: false, error: 'Too many attempts. Try again shortly.' }, { status: 429 })
   }
