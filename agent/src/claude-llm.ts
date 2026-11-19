@@ -12,7 +12,8 @@ import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUse
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
-import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock } from './prompts.js'
+import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, PHONE_TOOLS_DENIED } from './prompts.js'
+import { phoneToolPolicy } from './data-sender-auth.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
 import { appendCompactionRecord, countTranscriptRows } from './compaction-log.js'
 import { getEmbedder } from './embedder.js'
@@ -1311,6 +1312,10 @@ export class ClaudeLLM extends llm.LLM {
   // FAST_MODEL regardless of individual model config. Default off = no-op.
   #turbo: boolean = false
 
+  // Phone call — when true, the PreToolUse hook denies every tool (talk-only
+  // call, see PHONE_TOOLS_ENABLED). Read at each tool call, so it applies mid-session.
+  #phoneCall: boolean = false
+
   constructor(opts: ClaudeLLMOptions = {}) {
     super()
 
@@ -1524,6 +1529,14 @@ export class ClaudeLLM extends llm.LLM {
 
   /** Read-only accessor used by ClaudeLLMStream (private fields are class-scoped). */
   get turbo(): boolean { return this.#turbo }
+
+  /** A phone caller holds this session (index.ts sets it per voice session): tools are denied. */
+  setPhoneCall(on: boolean): void {
+    if (this.#phoneCall !== on) console.log(`📞 Phone call ${on ? 'ON: tools denied' : 'OFF'}`)
+    this.#phoneCall = on
+  }
+
+  get phoneCall(): boolean { return this.#phoneCall }
 
   // Steer-priority suppression state (adversarial findings #1/#8): a 'now'
   // message aborts the running turn, so never stamp it while that turn is
@@ -2691,6 +2704,14 @@ class ClaudeLLMStream extends llm.LLMStream {
               const toolInput = input?.tool_input || {}
               const agentType = input?.agent_type || null
               console.log(`🔍 PreToolUse: toolName=${toolName} agent_type=${agentType} agent_id=${(input as any)?.agent_id || 'none'} all_keys=[${Object.keys(input || {}).join(', ')}]`)
+
+              // Phone call: talk-only. Runs before allowedTools, so it also stops the
+              // auto-approved tools, sub-agent dispatch and MCP tools.
+              if (phoneToolPolicy(this.#llmRef.phoneCall) === 'deny') {
+                console.log(`📞 Phone call: denied ${toolName} (phone tools are off)`)
+                this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: 'Tools are off on a phone call.', agent: agentType ?? 'main' })
+                return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: PHONE_TOOLS_DENIED }
+              }
 
               // Spoken-progress cadence + runaway backstop (main orchestrator only).
               // Only the MAIN agent's direct tool calls count (agent_type === null).

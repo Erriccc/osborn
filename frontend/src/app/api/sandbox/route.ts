@@ -23,6 +23,7 @@ import {
   getLastUpdateResult,
 } from '@/lib/cloud'
 import { checkSandboxClaim, claimSandboxForUser, knownSandboxClaim } from '@/lib/sandbox-claims'
+import { connectUserAgent } from '@/lib/connect-agent'
 
 /**
  * GET /api/sandbox — get current user's sandbox status
@@ -502,60 +503,14 @@ export async function POST(request: Request) {
       // explicit leave); this brings it back. Idempotent on the agent side
       // (no-op if already connected). Server-side fetch — no CORS.
       //
-      // SELF-WAKE (0.9.260, connect-latency fix): connect-room now WAKES the
-      // machine + waits for health itself, so the client can fire it the instant
-      // the button is clicked and SKIP the separate room-code round-trip (whose
-      // wake + waitForHealth(15s) + 5x(5s fetch + 2s sleep) retry loop stacked
-      // ON TOP of this call — up to ~35s of redundant waiting, measured as the
-      // bulk of the "Connecting to agent…" orb). One wake, one health wait, here.
-      const sbCR = await findUserSandbox(user.id, await getKnownSandboxId())
-      if (!sbCR?.previewUrl) {
-        return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
-      }
-
-      // Wake the machine if it isn't running (boot time is inherent — the agent
-      // must be up to join the room). Idempotent: a no-op when already running.
-      if (sbCR.status !== 'running') {
-        console.log(`[sandbox] connect-room: sandbox is ${sbCR.status}, starting...`)
-        const crSyncToken = await getSyncToken()
-        const woken = await startSandbox(sbCR.id, user.id, crSyncToken)
-        if (!woken || woken.status !== 'running') {
-          return NextResponse.json({ success: false, error: 'Failed to wake sandbox' }, { status: 503 })
-        }
-      }
-
-      // Ensure osborn is actually answering before we ask it to join (a just-woken
-      // or frozen agent won't). Restart the service only if it's unhealthy.
-      const crUrl = sbCR.previewUrl
-      const crHealthy = await checkOsbornHealth(crUrl)
-      if (!crHealthy) {
-        console.log(`[sandbox] connect-room: osborn health check failed, restarting service...`)
-        await restartService(sbCR.id)
-        await waitForHealth(crUrl, 15)
-      }
-
-      // Hit the agent's /connect-room. The agent joins the LiveKit room on this
-      // call; cold connect (room.connect via rtc-node) takes 7-15s. Timeout must
-      // exceed that so we don't abort and force a second connect cycle (which
-      // previously doubled the cold-path latency). Retry only for transient
-      // network errors, not for "still connecting" races.
-      for (let i = 0; i < 4; i++) {
-        try {
-          const r = await fetch(`${crUrl}/connect-room`, {
-            method: 'POST',
-            signal: AbortSignal.timeout(25000),
-          })
-          if (r.ok) {
-            // Forward the roomName the agent returns (0.9.83+ temporary rooms) so
-            // the client mints its token for the room the agent actually joined.
-            const body = await r.json().catch(() => ({}))
-            return NextResponse.json({ success: true, roomName: (body as any)?.roomName ?? null })
-          }
-        } catch {
-          // agent not ready yet — brief backoff then retry
-        }
-        await new Promise(res => setTimeout(res, 1500))
-      }
+      // SELF-WAKE (0.9.260, connect-latency fix): connect-room WAKES the
+      // machine + waits for health itself (connectUserAgent), so the client can
+      // fire it the instant the button is clicked and SKIP the separate
+      // room-code round-trip. One wake, one health wait, there.
+      const cr = await connectUserAgent(user.id, await getKnownSandboxId(), getSyncToken)
+      if (cr.ok) return NextResponse.json({ success: true, roomName: cr.roomName })
+      if (cr.reason === 'no-sandbox') return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
+      if (cr.reason === 'wake-failed') return NextResponse.json({ success: false, error: 'Failed to wake sandbox' }, { status: 503 })
       return NextResponse.json({ success: false })
     }
 

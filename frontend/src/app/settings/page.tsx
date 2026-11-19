@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { SettingsSection, SettingsRow, Switch, Segmented } from '@/components/settings/ui'
 import DeleteSandboxDialog from '@/components/settings/DeleteSandboxDialog'
+import PhoneCalls from '@/components/settings/PhoneCalls'
 import { AgentStore, ListState, SkillStore, SkillViewer, pill, rolesData, type NamedAgent, type RolesData } from '@/components/AgentStore'
 import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
@@ -129,6 +130,7 @@ export default function SettingsPage() {
   const [themePref, setThemePref] = useThemePref()
   const [turbo, setTurbo] = useState(false)
   const [turboSaving, setTurboSaving] = useState(false)
+  const [callConsentAt, setCallConsentAt] = useState<string | null>(null)
 
   const [syncCopied, setSyncCopied] = useState(false)
   const [globalSyncCopied, setGlobalSyncCopied] = useState(false)
@@ -291,6 +293,7 @@ export default function SettingsPage() {
       .then(d => {
         if (d.instance?.sync_token) setSyncToken(d.instance.sync_token)
         if (typeof d.instance?.turbo === 'boolean') setTurbo(d.instance.turbo)
+        setCallConsentAt(d.instance?.call_consent_at ?? null)
       })
       .catch(() => setKeysError("Could not load your account's machine details. Reload to try again."))
   }, [user, loading])
@@ -842,6 +845,7 @@ export default function SettingsPage() {
           )}
         </SettingsRow>
       )}
+      {user && <PhoneCalls supabase={supabase} user={user} consentAt={callConsentAt} onUser={setUser} onConsent={setCallConsentAt} />}
       <SettingsRow label="Library" sublabel="Saved outputs, documents, and references">
         <Link
           href="/library"

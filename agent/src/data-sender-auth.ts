@@ -137,6 +137,127 @@ export function canBecomeController(
   return !!participantUserId && participantUserId === ownerUserId
 }
 
+/**
+ * Room-name prefix of the inbound phone dispatch rule (LiveKit `individual`
+ * rule, roomPrefix "call-"). POST /connect-room only joins a caller-supplied
+ * room with this prefix, and only behind the sync-token check.
+ */
+const PHONE_ROOM_PREFIX = 'call-'
+
+/** A room name POST /connect-room may join for a phone call. */
+export function isPhoneRoomName(name: unknown): name is string {
+  return typeof name === 'string'
+    && name.length <= 128
+    && name.startsWith(PHONE_ROOM_PREFIX)
+    && /^[A-Za-z0-9_+\-]+$/.test(name)
+}
+
+/** Keypad answer to a pending approval on a phone call: 1 allows, 2 denies, anything else is ignored. */
+export function keypadAnswer(digit: string | undefined | null): boolean | null {
+  if (digit === '1') return true
+  if (digit === '2') return false
+  return null
+}
+
+/**
+ * Keypad approvals on a phone call. Off: caller ID alone is not proof enough
+ * to approve a tool, so every permission raised while a phone caller holds the
+ * session is denied and keypad 1 approves nothing. Turned on once a second
+ * factor confirms the caller.
+ */
+export const PHONE_KEYPAD_APPROVALS_ENABLED = false
+
+/**
+ * Tools on a phone call. Off: a call is talk-only, so the PreToolUse hook
+ * (claude-llm.ts) denies every tool while a phone caller holds the session,
+ * including the ones allowedTools auto-approves (Bash, Read, WebFetch …),
+ * sub-agent dispatch and MCP tools. Turned on once a second factor confirms
+ * the caller.
+ */
+export const PHONE_TOOLS_ENABLED = false
+
+/** What happens to a permission raised during a phone call: denied unless keypad approvals are on. */
+export function phonePermissionPolicy(inPhoneCall: boolean, approvalsEnabled = PHONE_KEYPAD_APPROVALS_ENABLED): 'deny' | 'ask' {
+  return inPhoneCall && !approvalsEnabled ? 'deny' : 'ask'
+}
+
+/** What happens to any tool call during a phone call: denied unless phone tools are on. */
+export function phoneToolPolicy(inPhoneCall: boolean, toolsEnabled = PHONE_TOOLS_ENABLED): 'deny' | 'allow' {
+  return inPhoneCall && !toolsEnabled ? 'deny' : 'allow'
+}
+
+/**
+ * A phone call is live: the agent is in the room an authorised phone connect
+ * asked for AND a SIP participant is in it. False as soon as the caller leaves.
+ */
+export function isPhoneCallLive(activeRoomName: string | null, phoneRoomName: string | null, sipPresent: boolean): boolean {
+  return !!activeRoomName && activeRoomName === phoneRoomName && sipPresent
+}
+
+/**
+ * What POST /connect-room does with the room the agent is in.
+ * - 'fresh': no room, or an empty one: (tear it down and) make a new room
+ *   (the requested phone room, else a new name).
+ * - 'reuse': return the occupied room: a browser connect while no phone call is
+ *   live, or a phone connect for the room the agent is already in.
+ * - 'busy' (409): the room is someone else's: a phone connect while a user is in
+ *   another room, or a browser connect during a live phone call (the caller's
+ *   room is never handed to a browser).
+ */
+export function planConnectRoom(s: {
+  activeRoomName: string | null
+  occupied: boolean
+  phoneCallLive: boolean
+  phoneRoom?: string
+}): 'fresh' | 'reuse' | 'busy' {
+  if (!s.activeRoomName || !s.occupied) return 'fresh'
+  if (s.phoneRoom) return s.activeRoomName === s.phoneRoom ? 'reuse' : 'busy'
+  return s.phoneCallLive ? 'busy' : 'reuse'
+}
+
+/**
+ * Handles one keypad press (index.ts DtmfReceived). Only the SIP caller in an
+ * authorised phone room counts; with approvals off a 1 settles nothing (a 2
+ * still denies). Returns what was done.
+ */
+export function handlePhoneKeypad(
+  press: { sip: boolean; inPhoneRoom: boolean; digit: string | undefined | null },
+  settle: (allow: boolean) => boolean,
+  approvalsEnabled = PHONE_KEYPAD_APPROVALS_ENABLED,
+): 'ignored' | 'approved' | 'denied' | 'no pending permission' {
+  if (!press.sip || !press.inPhoneRoom) return 'ignored'
+  const allow = keypadAnswer(press.digit)
+  if (allow === null || (allow && !approvalsEnabled)) return 'ignored'
+  if (!settle(allow)) return 'no pending permission'
+  return allow ? 'approved' : 'denied'
+}
+
+/** Most bytes POST /connect-room reads; its body is only `{ roomName }`. */
+export const CONNECT_ROOM_MAX_BODY = 4096
+
+/**
+ * Reads a request body up to `max` bytes. Returns null as soon as it is
+ * longer (the caller answers 413) and stops reading.
+ */
+export async function readBodyCapped(body: AsyncIterable<Buffer | string>, max: number): Promise<string | null> {
+  const parts: Buffer[] = []
+  let size = 0
+  for await (const chunk of body) {
+    const b = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
+    size += b.length
+    if (size > max) return null
+    parts.push(b)
+  }
+  return Buffer.concat(parts).toString('utf8')
+}
+
+export interface JoinOptions {
+  /** The joiner is a SIP (phone) participant. */
+  sip?: boolean
+  /** The agent joined this room through an authorised phone connect (POST /connect-room with a roomName). */
+  phoneRoom?: boolean
+}
+
 export interface JoinDecision {
   /** Build the voice session for this joiner (index.ts participantConnectedHandler). */
   adoptSession: boolean
@@ -156,7 +277,12 @@ export interface JoinDecision {
  *   when it joins with no controller (the opt-in watch voice path that hears
  *   the watch mic). When a controller already exists it is NOT adopted: the
  *   full session rebuild would tear down the owner's live session and reset
- *   currentUserId to '' (the gateway's token has no metadata).
+ *   currentUserId to '' (the gateway's token has no metadata). Nor in a
+ *   phone room, where the rebuild would take the caller's session.
+ * - A SIP (phone) joiner: never the controller, whatever its identity. It
+ *   gets the voice session only in a room the agent joined through an
+ *   authorised phone connect, and only while no controller holds the session.
+ *   Anywhere else it is ignored, in single-tenant mode too.
  * - Any other identity: never the controller; gets a session only in
  *   single-tenant mode (no owner), matching the old behavior there.
  */
@@ -165,9 +291,14 @@ export function resolveJoin(
   joinerUserId: string | undefined | null,
   ownerUserId: string | undefined | null,
   currentController: string | null,
+  opts: JoinOptions = {},
 ): JoinDecision {
+  if (opts.sip) {
+    return { adoptSession: !!opts.phoneRoom && !currentController, controller: currentController }
+  }
   if (joinerIdentity === AGENT_SELF_IDENTITY) {
-    return { adoptSession: !currentController, controller: currentController }
+    // In a phone room the caller holds the session without being the controller.
+    return { adoptSession: !currentController && !opts.phoneRoom, controller: currentController }
   }
   if (joinerIdentity.startsWith(USER_IDENTITY_PREFIX)) {
     return canBecomeController(joinerUserId, ownerUserId)
