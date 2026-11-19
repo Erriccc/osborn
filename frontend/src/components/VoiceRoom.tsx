@@ -93,7 +93,7 @@ function AudioPopover({ disabled }: { disabled?: boolean }) {
   return (
     <div className="relative">
       <button onClick={() => setOpen((v) => !v)} disabled={disabled}
-        aria-label="Audio settings" title="Audio (mic & speaker)"
+        aria-label="Audio settings" title="Audio (mic & speaker)" aria-haspopup="dialog" aria-expanded={open}
         className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-medium transition-all ${
           disabled ? 'text-gray-600 cursor-not-allowed'
             : open ? 'bg-amber-500/20 text-amber-300' : 'text-gray-500 hover:bg-gray-800/60 hover:text-gray-200'
@@ -101,12 +101,12 @@ function AudioPopover({ disabled }: { disabled?: boolean }) {
         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072M18.364 5.636a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
         </svg>
-        <span className="hidden pane-xl:inline">Audio</span>
+        <span className="hidden pane-2xl:inline">Audio</span>
       </button>
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div ref={popRef} className="fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(22rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0">
+          <div ref={popRef} role="dialog" aria-label="Audio settings" className="fixed inset-x-0 bottom-0 max-h-[78vh] overflow-y-auto sm:overflow-hidden sm:absolute sm:inset-x-auto sm:bottom-auto sm:left-auto sm:right-0 sm:top-full sm:mt-2 sm:max-h-none sm:w-[min(22rem,calc(100vw-1.5rem))] z-50 bg-gray-900 border border-gray-700/60 rounded-t-2xl sm:rounded-xl shadow-2xl pb-[env(safe-area-inset-bottom)] sm:pb-0">
             <div className="px-3 py-2 border-b border-gray-800">
               <span className="text-xs font-semibold text-gray-200">🎧 Audio</span>
             </div>
@@ -4179,9 +4179,9 @@ function VoiceRoomInner({
                 at a glance and every screenshot carries a timestamp. */}
             <LiveClock showDate dateClassName="hidden pane-xl:inline" />
 
-            {/* Compaction status pill — header-level summary (always visible during compact) */}
+            {/* Compaction status pill — wide columns only (pane-2xl); the slim banner under the header carries it at every width. */}
             {compactionStatus !== 'idle' && (
-              <div className={`flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-semibold transition-all duration-300 ${
+              <div className={`hidden pane-2xl:flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-semibold transition-all duration-300 ${
                 compactionStatus === 'compacting'
                   ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-[0_0_12px_rgba(245,158,11,0.3)]'
                   : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-[0_0_12px_rgba(16,185,129,0.3)]'
@@ -4515,9 +4515,9 @@ function VoiceRoomInner({
             Visible for the full duration (typically 1–3 min), rolling stages keep the user
             informed something is happening. Replaces the older 3-second flash pill which
             users routinely missed. */}
-        {/* Compaction indicator — SLIM single line. The header already carries a
-            "Teaching Osborn…" pill; this is just a quiet one-liner so a frequent
-            compaction doesn't dominate the screen. No subtitle, no stage list. */}
+        {/* Compaction indicator — SLIM single line, at every width (the header's
+            "Teaching Osborn…" pill only shows from pane-2xl); a quiet one-liner so a
+            frequent compaction doesn't dominate the screen. No subtitle, no stage list. */}
         {compactionStatus !== 'idle' && (
           <div className={`flex items-center gap-2 px-3 py-1 border-b text-[11px] transition-all ${
             compactionStatus === 'compacting'
