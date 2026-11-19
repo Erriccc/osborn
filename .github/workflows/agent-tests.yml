@@ -1,0 +1,39 @@
+# Runs every agent test script (standalone node:assert files) on PRs that touch the agent.
+name: agent-tests
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths: ['agent/**', '.github/workflows/agent-tests.yml']
+
+concurrency:
+  group: agent-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+      - name: Install
+        working-directory: agent
+        run: npm ci --no-audit --no-fund
+      - name: Run tests
+        working-directory: agent
+        # These two read fixtures that exist only on one dev machine (/workspace/...).
+        env:
+          SKIP: 'sanitizer-widened switch-blind-smoke'
+        run: |
+          failed=""
+          for f in tests/*.test.ts; do
+            name=$(basename "$f" .test.ts)
+            case " $SKIP " in *" $name "*) echo "skip $name"; continue;; esac
+            if timeout 180 npx --no-install tsx "$f" > "/tmp/$name.log" 2>&1; then echo "ok   $name"; else echo "FAIL $name"; tail -30 "/tmp/$name.log"; failed="$failed $name"; fi
+          done
+          [ -z "$failed" ] || { echo "Failed:$failed"; exit 1; }
