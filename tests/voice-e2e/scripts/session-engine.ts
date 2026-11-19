@@ -207,13 +207,16 @@ async function main() {
   const SHARED_PROFILE = join(OUT_DIR, 'profiles', 'shared.json')
   const sharedState = existsSync(SHARED_PROFILE) && (!useAuth || statSync(SHARED_PROFILE).mtimeMs > statSync(profile).mtimeMs)
     ? SHARED_PROFILE : useAuth ? profile : undefined
+  // A saved profile file that cannot be read is moved aside (`.bad`) and the context opens with `fallback`.
+  const openSaved = <S>(open: (s?: S) => Promise<BrowserContext>, state: S | undefined, file: string, fallback?: S): Promise<BrowserContext> =>
+    open(state).catch(async (e) => {
+      if (state !== file) throw e
+      try { renameSync(file, `${file}.bad`) } catch { /* ignore */ }
+      mark(`saved profile unreadable (${(e as Error).message.slice(0, 80)}) — moved aside`)
+      return open(fallback)
+    })
   const newShared = (state?: string) => browser.newContext({ permissions: ['microphone'], ...(state ? { storageState: state } : {}) })
-  const context: BrowserContext = await newShared(sharedState).catch(async (e) => {
-    if (sharedState !== SHARED_PROFILE) throw e
-    try { renameSync(SHARED_PROFILE, `${SHARED_PROFILE}.bad`) } catch { /* ignore */ }
-    console.log(`[engine] saved shared profile unreadable (${(e as Error).message.slice(0, 80)}) — moved aside`)
-    return newShared(useAuth ? profile : undefined)
-  })
+  const context: BrowserContext = await openSaved(newShared, sharedState, SHARED_PROFILE, useAuth ? profile : undefined)
   // NO recordVideo — per-task clips from the live-stream ring buffer are
   // the video record (the continuous recording grew unbounded).
   // tsx/esbuild injects a __name helper that isn't defined in the browser's
@@ -266,13 +269,7 @@ async function main() {
     const signedIn = device ? contexts.get(key) : undefined
     const state = signedIn ? await signedIn.storageState().catch(() => undefined) : existsSync(file) ? file : undefined
     const open = (s?: typeof state) => browser.newContext({ ...(device ? devices[DEVICE_PRESETS[device]] : {}), permissions: ['microphone'], ...(s ? { storageState: s } : {}) })
-    // An unreadable saved profile is moved aside and opens fresh, like the shared one at boot.
-    const c = await open(state).catch(async (e) => {
-      if (state !== file) throw e
-      try { renameSync(file, `${file}.bad`) } catch { /* ignore */ }
-      mark(`saved profile unreadable (${(e as Error).message.slice(0, 80)}) — moved aside, opening it fresh`)
-      return open()
-    })
+    const c = await openSaved(open, state, file)
     if (device) c.on('page', (p) => {
       pageDevice.set(p, device)
       p.once('close', () => {
@@ -779,7 +776,8 @@ async function main() {
   const tabSeenBy = (viewer: string, p: Page | null) => (!p ? null : { ...activeTab(p), owner: ownerSeenBy(ownerOf(p), viewer), ...(seesTab(viewer, p) ? {} : { url: '' }) })
   // When each driver last sent a command: a driver counts as still working for 10 minutes.
   const driverSeen = new Map<string, number>()
-  const isWorking = (d: string) => Date.now() - (driverSeen.get(d) ?? 0) < 600000 && !!driverActive.get(d) && !driverActive.get(d)!.isClosed()
+  const seenRecently = (d: string) => Date.now() - (driverSeen.get(d) ?? 0) < 600000
+  const isWorking = (d: string) => seenRecently(d) && !!driverActive.get(d) && !driverActive.get(d)!.isClosed()
   let actionChain: Promise<unknown> = Promise.resolve()
   let inflight = 0  // commands running or queued; capture never pauses under one
   // One stuck command (a mouth whose voice services all hang, a page that never
@@ -1901,7 +1899,7 @@ async function main() {
           // A person releasing a tab they took control of hands it back to its previous owner.
           if (isPersonDriver(driver) && tk && tk.by === driver) handBackTab(target, tk)
           // A person's own-profile tab holds their sign-ins: releasing it closes it, never leaves it for others.
-          else if (isPersonDriver(driver) && body.i > 0 && pageProfile.get(target) === driver.toLowerCase()) { await closeAt(body.i); mark(`tab release (closed, own profile): ${body.i}`) }
+          else if (isPersonDriver(driver) && body.i > 0 && pageProfile.get(target) === driver) { await closeAt(body.i); mark(`tab release (closed, own profile): ${body.i}`) }
           else { tabOwners.delete(target); takeovers.delete(target); mark(`tab release: ${body.i}`) }
         }
         else if (body.op === 'cast') {
@@ -1963,13 +1961,11 @@ async function main() {
           return json(res, { ok: true, journey, knownJourneys: listJourneys(host) })
         }
         if (body.op === 'end') {
+          return await withLock(async () => {
           if (!journey) return json(res, { error: 'no journey in progress' }, 400)
           // Only its owner ends a journey while they are still sending commands; a journey whose
           // owner went quiet for 10 minutes can be ended by anyone, so it never blocks the engine.
-          const ownerLive = (j: NonNullable<typeof journey>) => !!j.owner && j.owner !== body.owner && Date.now() - (driverSeen.get(j.owner) ?? 0) < 600000
-          return await withLock(async () => {
-          if (!journey) return json(res, { error: 'no journey in progress' }, 400)
-          if (ownerLive(journey)) return json(res, { ok: false, code: 'journey_owned', owner: ownerSeenBy(journey.owner, body.owner), error: `journey "${journey.name}" belongs to "${ownerSeenBy(journey.owner, body.owner)}", who is still working — only they can end it` }, 409)
+          if (journey.owner && journey.owner !== body.owner && seenRecently(journey.owner)) return json(res, { ok: false, code: 'journey_owned', owner: ownerSeenBy(journey.owner, body.owner), error: `journey "${journey.name}" belongs to "${ownerSeenBy(journey.owner, body.owner)}", who is still working — only they can end it` }, 409)
           const steps = scenarioSteps.slice(journey.startStep)
           let saved: string | null = null
           if (body.save !== false && steps.length) {
@@ -2202,8 +2198,9 @@ async function main() {
         let restoredActive: Page | null = null
         for (const t of extra.filter((t: any) => keep.has(t))) {
           active = await openTab(await contextFor(t.profile || '', isDeviceKind(t.device) ? t.device : undefined), t.url); watchPage(active)
-          if (t.owner) tabOwners.set(active, { owner: t.owner, claimedAt: Date.now() })
-          if (t.cast && t.owner) { live?.setCast(active); castBy = t.cast }  // the cast survives a restart
+          // Owners saved before driver ids were canonical (#243) get the canonical spelling.
+          if (t.owner) tabOwners.set(active, { owner: canonicalDriverId(t.owner), claimedAt: Date.now() })
+          if (t.cast && t.owner) { live?.setCast(active); castBy = canonicalDriverId(t.cast) }  // the cast survives a restart
           if (t === wasActive) restoredActive = active
         }
         if (keep.size) {
