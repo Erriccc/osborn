@@ -70,6 +70,8 @@ export function transcriptCacheKey(userId: string | null | undefined): string {
   return `${TRANSCRIPT_CACHE_PREFIX}:${userId || 'anon'}`
 }
 
+const timeOf = (m: ChatMessage) => (m.timestamp instanceof Date ? m.timestamp.getTime() : NaN)
+
 /** Reduce a live transcript to the cacheable tail: keep the last MAX_ITEMS of
  * what the agent would re-serve, cap each item's content. Exported for tests. */
 export function serializeTranscript(messages: ChatMessage[]): CachedMessage[] {
@@ -90,7 +92,7 @@ export function serializeTranscript(messages: ChatMessage[]): CachedMessage[] {
     const content = typeof m.content === 'string' ? m.content : ''
     // A normal bubble needs text; a compaction marker is kept even when empty.
     if (!content && !m.compaction) continue
-    const ms = m.timestamp instanceof Date ? m.timestamp.getTime() : NaN
+    const ms = timeOf(m)
     out.push({
       id: m.id,
       role: m.role,
@@ -160,7 +162,6 @@ export function cacheTranscript(
 const turnText = (m: ChatMessage) =>
   (typeof m.content === 'string' ? m.content : '').slice(0, MAX_CONTENT).trim()
 const isTurn = (m: ChatMessage) => m.role === 'user' || m.role === 'assistant'
-const timeOf = (m: ChatMessage) => (m.timestamp instanceof Date ? m.timestamp.getTime() : NaN)
 
 /**
  * Put the authoritative replay in place of the optimistic paint (#153). The
