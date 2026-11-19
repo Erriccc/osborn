@@ -72,6 +72,8 @@ export interface BuildRoomRowsOptions {
 export const SEARCH_IDLE_CAP = 100
 
 const short = (id: string) => (id ? id.substring(0, 8) : '')
+/** How a background slot is named in the rail and in its chat lines. */
+export const backgroundSessionTitle = (slotId: string) => `Background session ${short(slotId)}`
 
 function projectName(cwd: string | undefined): string | undefined {
   if (!cwd) return undefined
@@ -148,7 +150,7 @@ export function buildRoomRows(
       ? { ...sessionRow(match, status, now, slot.id), cwd: match.cwd ?? slot.workingDir, project: projectName(match.cwd ?? slot.workingDir) }
       : {
           id: slot.id,
-          title: `Background session ${short(slot.id)}`,
+          title: backgroundSessionTitle(slot.id),
           status,
           isLive: false,
           switching: false,

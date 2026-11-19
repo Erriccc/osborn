@@ -32,6 +32,7 @@ import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type To
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
+import { backgroundSessionTitle } from '@/lib/rooms'
 import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
 import { isRedundantFinal } from '@/lib/claude-output'
 import { isAuthGateTerminal } from '@/lib/connect-gate'
@@ -2885,7 +2886,7 @@ function VoiceRoomInner({
         }
       } else if (data.type === 'steward_verdict' && data.verdict && data.slotId) {
         // A background session's steward (#255): its card lives in that session's own history.
-        addMessageRef.current?.('system', `Background session ${String(data.slotId).slice(0, 8)}: Steward ${data.verdict}${data.summary ? ` — ${data.summary}` : ''}`, undefined, 'chat')
+        addMessageRef.current?.('system', `${backgroundSessionTitle(String(data.slotId))}: Steward ${data.verdict}${data.summary ? ` — ${data.summary}` : ''}`, undefined, 'chat')
       } else if (data.type === 'steward_verdict' && data.verdict) {
         // Steward verdict card (#221): persisted by the agent, rebuilt on reload by buildPriorItems.
         const { type: _type, ...verdict } = data
@@ -2902,7 +2903,7 @@ function VoiceRoomInner({
         // agent (#254); a background session's line is labelled and kept in that session (#255).
         const gate: StewardGateRecord = { gate: data.decision === 'deny' ? 'deny' : 'advise', message: String(data.message ?? ''), at: new Date().toISOString() }
         if (data.slotId) {
-          addMessageRef.current?.('system', `Background session ${String(data.slotId).slice(0, 8)}: ${stewardGateLine(gate)}`, undefined, 'chat')
+          addMessageRef.current?.('system', `${backgroundSessionTitle(String(data.slotId))}: ${stewardGateLine(gate)}`, undefined, 'chat')
         } else {
           setMessages(prev => [...prev, {
             id: `steward-gate-${Date.now()}-${Math.random()}`,
