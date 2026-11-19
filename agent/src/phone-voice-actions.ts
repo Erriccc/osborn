@@ -17,7 +17,7 @@ export type VoiceAction =
   | { kind: 'status' }
   | { kind: 'stop'; agent?: string }
   | { kind: 'sessions' }
-  | { kind: 'switch'; query: string }
+  | { kind: 'switch'; query: string; target: SessionChoice }
   | { kind: 'outputs' }
   | { kind: 'keep_working' }
 
@@ -33,29 +33,41 @@ export function normalizeUtterance(text: string): string {
   return s.replace(/\s+(please|thanks|thank you|now)$/, '').trim()
 }
 
-const FOR_CALL = '(?: for (?:this|the) call)?'
-const ANSWER_ALLOW = /^(?:yes|yeah|yep|yup|sure|allow|allow it|approve|approve it|go ahead|do it)$/
-const ANSWER_DENY = /^(?:no|nope|deny|deny it|dont|do not|reject|reject it|dont do it|do not do it)$/
+// Every pattern is a whole, short, unmistakable command; everyday speech that
+// merely starts the same way ("go to the next step", "keep going", "stop the
+// build") is a normal turn for the model.
+// Yes/no count only while the request the caller heard read out is pending.
+const ANSWER_ALLOW = /^(?:yes|yeah|yep|yup|allow|allow it|approve|approve it)$/
+const ANSWER_DENY = /^(?:no|nope|deny|deny it|reject|reject it|dont allow it|do not allow it)$/
+// A spoken mode change is saved (the app and later calls use it too); there is no call-only mode.
+const MODE_PREFIX = '(?:switch to |use |turn on |set approvals to )?'
 const MODE_PATTERNS: [RegExp, ApprovalMode][] = [
-  [new RegExp(`^(?:allow|approve|auto approve) (?:everything|all|all actions)${FOR_CALL}$`), 'allow-all'],
-  [new RegExp(`^(?:switch to |use |turn on )?allow all(?: mode)?${FOR_CALL}$`), 'allow-all'],
-  [new RegExp(`^(?:switch to |use |turn on )?auto ?review(?: mode)?${FOR_CALL}$`), 'auto-review'],
-  [new RegExp(`^(?:ask me|ask me first|ask me every time|ask before (?:everything|each action|anything))${FOR_CALL}$`), 'ask'],
-  [new RegExp(`^(?:switch to |use |turn on )?ask me mode${FOR_CALL}$`), 'ask'],
+  [new RegExp(`^${MODE_PREFIX}(?:allow all|allow everything|approve everything)(?: mode)?$`), 'allow-all'],
+  [new RegExp(`^${MODE_PREFIX}auto ?review(?: mode)?$`), 'auto-review'],
+  [new RegExp(`^${MODE_PREFIX}ask me(?: first)? mode$`), 'ask'],
+  [/^(?:switch to ask me|ask me before (?:each|every) action|ask me every time)$/, 'ask'],
 ]
-const STATUS = /^(?:what are you (?:doing|working on|up to)|whats (?:pending|happening|going on|running)|what is (?:pending|happening|going on|running)|are you (?:busy|working|working on anything|still working)|status|status update|give me a status update)$/
-const STOP_MAIN = /^(?:stop|stop that|stop it|stop this|stop everything|stop working|cancel that|cancel it)$/
-const STOP_AGENT = /^stop the ([a-z][a-z0-9 -]*?)(?: agent| sub agent| subagent)?$/
-const SESSIONS = /^(?:what (?:were|are) my (?:recent |last )?(?:sessions|conversations)|(?:list|read me|tell me) my (?:recent |last )?(?:sessions|conversations)|(?:my )?recent (?:sessions|conversations))$/
-const SWITCH = /^(?:switch|go|go back|move|change) to (?:my |the )?(.+?)(?: session| project| conversation| chat)?$/
-const OUTPUTS = /^(?:what did you (?:make|build|create|write|produce)|read me the summary|what (?:are|were) (?:the|your) outputs|what files did you (?:make|create|write))(?: (?:in|for) this session)?$/
-const KEEP_WORKING = /^(?:keep (?:working|going)(?: after i hang up| when i hang up| in the background)?|work in the background|keep working on it)$/
+const STATUS = /^(?:what are you (?:doing|working on)|whats pending|what is pending|are you (?:busy|still working)|status|status update|give me a status update)$/
+const STOP_MAIN = /^(?:stop|stop that|stop it|stop everything|stop working|cancel that)$/
+// A named agent: one of the built-in roles, or anything followed by "agent".
+const AGENT_ROLES = '(?:researcher|reasoner|writer|steward|reviewer|tester|planner|reader)'
+const STOP_AGENT = new RegExp(`^stop the (?:(${AGENT_ROLES})(?: agent)?|([a-z][a-z0-9 -]*?) (?:agent|sub agent|subagent))$`)
+const SESSIONS = /^(?:what (?:were|are) my recent (?:sessions|conversations)|(?:list|read me) my (?:recent )?sessions|my recent sessions)$/
+// Only an explicit switch: "switch to …", "switch session to …", "go back to …" (and then only a session that matches by name).
+const SWITCH = /^(?:switch(?: session)? to|go back to) (?:my |the )?(.+?)(?: session| project| conversation)?$/
+const OUTPUTS = /^(?:what did you make(?: in this session)?|what files did you (?:make|create)(?: in this session)?|read me the session summary|what are (?:the|your) outputs)$/
+const KEEP_WORKING = /^(?:keep working (?:after i hang up|when i hang up|in the background)|work in the background)$/
 
 /**
  * The voice action a caller's utterance asks for, or null (a normal turn for
- * the model). A yes/no answers an approval only while one is pending.
+ * the model). A yes/no answers an approval only while one is pending. A
+ * switch matches only when `sessions` holds a session the name picks
+ * (pickSession); otherwise the turn goes to the model.
  */
-export function matchVoiceAction(text: string, ctx: { permissionPending: boolean }): VoiceAction | null {
+export function matchVoiceAction(
+  text: string,
+  ctx: { permissionPending: boolean; sessions?: SessionChoice[] },
+): VoiceAction | null {
   const s = normalizeUtterance(text)
   if (!s || s.split(' ').length > MAX_WORDS) return null
   if (ctx.permissionPending) {
@@ -66,12 +78,15 @@ export function matchVoiceAction(text: string, ctx: { permissionPending: boolean
   if (STATUS.test(s)) return { kind: 'status' }
   if (STOP_MAIN.test(s)) return { kind: 'stop' }
   const agent = STOP_AGENT.exec(s)
-  if (agent) return { kind: 'stop', agent: agent[1].trim() }
+  if (agent) return { kind: 'stop', agent: (agent[1] || agent[2]).trim() }
   if (SESSIONS.test(s)) return { kind: 'sessions' }
   if (OUTPUTS.test(s)) return { kind: 'outputs' }
   if (KEEP_WORKING.test(s)) return { kind: 'keep_working' }
   const sw = SWITCH.exec(s)
-  if (sw && sw[1].trim()) return { kind: 'switch', query: sw[1].trim() }
+  if (sw && sw[1].trim()) {
+    const target = pickSession(sw[1].trim(), ctx.sessions ?? [])
+    if (target) return { kind: 'switch', query: sw[1].trim(), target }
+  }
   return null
 }
 
@@ -93,14 +108,17 @@ const words = (s: string) => normalizeUtterance(s).split(' ').filter((w) => w &&
 
 /**
  * The session a spoken name points at: the most words of the query in its
- * title or project folder name. Ties go to the earlier (most recent) entry;
- * no word in common → null.
+ * title or project folder name. It needs at least half the query's words
+ * (rounded up), and at least 2 when the query has 2 or more, so a stray
+ * shared word ("next") never picks a session. Ties go to the earlier (most
+ * recent) entry; too few words in common → null.
  */
 export function pickSession<T extends SessionChoice>(query: string, sessions: T[]): T | null {
-  const q = words(query)
+  const q = [...new Set(words(query))]
   if (!q.length) return null
+  const need = Math.max(Math.ceil(q.length / 2), q.length >= 2 ? 2 : 1)
   let best: T | null = null
-  let bestScore = 0
+  let bestScore = need - 1
   for (const s of sessions) {
     const folder = String(s.cwd || s.projectPath || '').split('/').filter(Boolean).pop() || ''
     const hay = new Set([...words(s.title || ''), ...words(folder.replace(/[-_.]+/g, ' '))])
@@ -149,5 +167,5 @@ export function sayOutputs(artifacts: { fileName?: string }[], max = 5): string 
 
 /** The spoken confirmation of a mode change. */
 export function sayModeChanged(mode: ApprovalMode): string {
-  return `${approvalModeLabel(mode)} is on. It stays on, in the app too, until you change it.`
+  return `${approvalModeLabel(mode)} is on. That's saved, so it stays on in the app and on later calls until you change it.`
 }

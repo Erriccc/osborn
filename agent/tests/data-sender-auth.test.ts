@@ -18,6 +18,7 @@ import {
   keypadAnswer,
   PHONE_KEYPAD_APPROVALS_ENABLED,
   phonePermissionPolicy,
+  phoneRequestRoute,
   PHONE_TOOLS_ENABLED,
   phoneToolPolicy,
   planConnectRoom,
@@ -325,11 +326,30 @@ t('phonePermissionPolicy: every permission during a phone call is denied while a
 })
 t('index.ts: permission requests in a phone room are denied before the always-allow list or the prompt', () => {
   const start = src.indexOf("directLLM.events.on('permission_request'")
-  const deny = src.indexOf("if (phonePermissionPolicy(inPhoneRoom()) === 'deny')", start)
+  const deny = src.indexOf("if (phoneRoute === 'deny')", start)
   const respond = src.indexOf('directLLM.respondToPermission(false', deny)
   const allowList = src.indexOf('isAlwaysAllowed(sessionAllows, toolName, input)', start)
   const prompt = src.indexOf("type: 'permission_request'", start)
   assert.ok(start > 0 && deny > start && respond > deny && respond < allowList && allowList < prompt, 'deny must come first')
+})
+t('phoneRequestRoute: a brain parked from a call keeps the phone policy until re-attached', () => {
+  // Keypad approvals off (today): a live call and a parked-from-call brain are both denied.
+  assert.equal(phoneRequestRoute({ liveCall: true, parkedFromCall: false }), 'deny')
+  assert.equal(phoneRequestRoute({ liveCall: false, parkedFromCall: true }), 'deny')
+  assert.equal(phoneRequestRoute({ liveCall: false, parkedFromCall: false }), 'normal')
+  // Keypad approvals on: a parked brain's requests wait for a person; the live call follows the mode.
+  assert.equal(phoneRequestRoute({ liveCall: false, parkedFromCall: true }, true), 'hold')
+  assert.equal(phoneRequestRoute({ liveCall: true, parkedFromCall: false }, true), 'normal')
+  assert.equal(phoneRequestRoute({ liveCall: false, parkedFromCall: false }, true), 'normal')
+})
+t('index.ts: a held request skips the always-allow list and the saved mode; the brain is marked on a call park and cleared on re-attach', () => {
+  const start = src.indexOf("directLLM.events.on('permission_request'")
+  const body = src.slice(start, start + 9000)
+  assert.match(body, /phoneRequestRoute\(\{ liveCall: inPhoneRoom\(\), parkedFromCall: directLLM === phoneParkedBrain \}\)/)
+  assert.match(body, /if \(!holdForPerson && isAlwaysAllowed\(sessionAllows, toolName, input\)\)/)
+  assert.match(body, /if \(auto\.approve && !holdForPerson\)/)
+  assert.match(src, /phoneParkedBrain = phoneCallerLeft \? currentLLM : null\s+parkWarm\('participant_disconnected'\)/)
+  assert.match(src, /const reused = claimWarm\(\)[\s\S]{0,200}if \(reused === phoneParkedBrain\) phoneParkedBrain = null[\s\S]{0,200}createDirectSession\(resumeSessionId, reused\)/)
 })
 
 // Fix round 2: a phone call is talk-only; the caller's room never goes to a browser.

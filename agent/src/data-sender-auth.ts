@@ -205,6 +205,23 @@ export function phonePermissionPolicy(inPhoneCall: boolean, approvalsEnabled = P
   return inPhoneCall && !approvalsEnabled ? 'deny' : 'ask'
 }
 
+/**
+ * How a permission request is handled when its brain belongs to a phone call:
+ * the live call, or a brain parked after "keep working" on a call that no
+ * browser or app session has re-attached yet.
+ * - 'deny': keypad approvals off (phonePermissionPolicy) — denied at once.
+ * - 'hold': parked from a call — left pending for a person; never answered by
+ *   the saved approval mode or the call's always-allow list.
+ * - 'normal': anything else (the live call with keypad approvals on, or no call).
+ */
+export function phoneRequestRoute(
+  s: { liveCall: boolean; parkedFromCall: boolean },
+  approvalsEnabled = PHONE_KEYPAD_APPROVALS_ENABLED,
+): 'deny' | 'hold' | 'normal' {
+  if (phonePermissionPolicy(s.liveCall || s.parkedFromCall, approvalsEnabled) === 'deny') return 'deny'
+  return s.parkedFromCall && !s.liveCall ? 'hold' : 'normal'
+}
+
 /** What happens to any tool call during a phone call: denied unless phone tools are on. */
 export function phoneToolPolicy(inPhoneCall: boolean, toolsEnabled = PHONE_TOOLS_ENABLED): 'deny' | 'allow' {
   return inPhoneCall && !toolsEnabled ? 'deny' : 'allow'

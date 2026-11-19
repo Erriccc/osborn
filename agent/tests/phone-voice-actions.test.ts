@@ -31,38 +31,71 @@ t('normalizeUtterance drops fillers, punctuation and a trailing please', () => {
 })
 
 t('1. a yes/no answers a pending approval, and only while one is pending', () => {
-  for (const s of ['Yes.', 'yeah', 'Allow it', 'go ahead', 'OK, approve']) assert.deepEqual(matchVoiceAction(s, pending), { kind: 'answer', answer: 'allow' }, s)
-  for (const s of ['No.', 'nope', 'deny', "Don't", 'reject it']) assert.deepEqual(matchVoiceAction(s, pending), { kind: 'answer', answer: 'deny' }, s)
+  for (const s of ['Yes.', 'yeah', 'Allow it', 'OK, approve']) assert.deepEqual(matchVoiceAction(s, pending), { kind: 'answer', answer: 'allow' }, s)
+  for (const s of ['No.', 'nope', 'deny', 'reject it']) assert.deepEqual(matchVoiceAction(s, pending), { kind: 'answer', answer: 'deny' }, s)
   assert.equal(matchVoiceAction('yes', idle), null, 'a plain yes is a normal turn when nothing is pending')
   assert.equal(matchVoiceAction('yes and also add a test for it', pending), null, 'not the whole utterance')
+  for (const s of ['go ahead', 'sure', 'do it', "don't", 'do not do it']) assert.equal(matchVoiceAction(s, pending), null, `${s}: conversational, not an approval`)
 })
 
-t('2. approval mode by voice', () => {
-  assert.deepEqual(matchVoiceAction('Allow everything for this call', idle), { kind: 'mode', mode: 'allow-all' })
+t('2. approval mode by voice: no call-only mode', () => {
+  assert.deepEqual(matchVoiceAction('Allow everything', idle), { kind: 'mode', mode: 'allow-all' })
   assert.deepEqual(matchVoiceAction('auto-review', idle), { kind: 'mode', mode: 'auto-review' })
   assert.deepEqual(matchVoiceAction('switch to auto review mode', idle), { kind: 'mode', mode: 'auto-review' }, 'mode wins over a session switch')
-  assert.deepEqual(matchVoiceAction('ask me first', idle), { kind: 'mode', mode: 'ask' })
+  assert.deepEqual(matchVoiceAction('ask me every time', idle), { kind: 'mode', mode: 'ask' })
+  assert.deepEqual(matchVoiceAction('switch to ask me', idle), { kind: 'mode', mode: 'ask' })
+  for (const s of ['allow everything for this call', 'auto review for the call', 'ask me first', 'ask me', 'allow all the tests to run']) {
+    assert.equal(matchVoiceAction(s, idle), null, s)
+  }
+  assert.match(sayModeChanged('allow-all'), /saved/, 'the reply says the change is saved')
 })
 
 t('3. status', () => {
   for (const s of ['What are you doing?', "what's pending", 'are you busy', 'status update']) assert.deepEqual(matchVoiceAction(s, idle), { kind: 'status' }, s)
+  for (const s of ["what's happening in this function", "what's going on", 'what are you up to with that refactor']) assert.equal(matchVoiceAction(s, idle), null, s)
 })
 
-t('4. stop the main turn or one agent', () => {
+t('4. stop the main turn or a named agent', () => {
   for (const s of ['Stop.', 'stop that', 'cancel that', 'Stop everything']) assert.deepEqual(matchVoiceAction(s, idle), { kind: 'stop' }, s)
   assert.deepEqual(matchVoiceAction('stop the researcher', idle), { kind: 'stop', agent: 'researcher' })
   assert.deepEqual(matchVoiceAction('Stop the writer agent.', idle), { kind: 'stop', agent: 'writer' })
-  assert.equal(matchVoiceAction('stop using tabs in the config file and use spaces instead', idle), null)
-  assert.equal(matchVoiceAction("don't stop", idle), null)
+  assert.deepEqual(matchVoiceAction('stop the docs helper agent', idle), { kind: 'stop', agent: 'docs helper' })
+  for (const s of ['stop the build', 'stop the server', 'stop the bleeding', 'stop this', 'stop using tabs in the config file and use spaces instead', "don't stop"]) {
+    assert.equal(matchVoiceAction(s, idle), null, s)
+  }
 })
 
-t('5-8. sessions, switch, outputs, keep working', () => {
+const SESSIONS = [
+  { sessionId: 'n', title: 'Next.js setup', cwd: '/w/site' },
+  { sessionId: 'l', title: 'Login page redesign', cwd: '/w/web' },
+  { sessionId: 'b', title: 'Fix the billing webhook', cwd: '/w/billing-service' },
+  { sessionId: 'p', title: 'Landing page copy', cwd: '/w/site' },
+]
+const withSessions = { permissionPending: false, sessions: SESSIONS }
+
+t('6. switch: only an explicit "switch to" / "switch session to" / "go back to", and only a session the name picks', () => {
+  assert.equal((matchVoiceAction('Switch to my billing project', withSessions) as any)?.target?.sessionId, 'b')
+  assert.equal((matchVoiceAction('switch session to the landing page', withSessions) as any)?.target?.sessionId, 'p')
+  assert.equal((matchVoiceAction('go back to the login page redesign', withSessions) as any)?.target?.sessionId, 'l')
+  // Everyday speech never switches.
+  for (const s of ['go to the next step', 'move to the login page', 'go to the login page', 'change to the next step', 'switch to the next step', 'go back to the next step']) {
+    assert.equal(matchVoiceAction(s, withSessions), null, s)
+  }
+  // No session picked → null, so the turn reaches the model (nothing spoken).
+  assert.equal(matchVoiceAction('switch to kubernetes', withSessions), null)
+  assert.equal(matchVoiceAction('switch to billing', idle), null, 'no session list → model')
+  assert.doesNotMatch(src, /couldn't find a session/, 'the runner never speaks a miss')
+  assert.match(src, /case 'switch': \{[\s\S]{0,200}const target = action\.target/, 'the runner switches to the target the matcher picked')
+})
+
+t('5, 7, 8. sessions, outputs, keep working', () => {
   assert.deepEqual(matchVoiceAction('What were my recent sessions?', idle), { kind: 'sessions' })
-  assert.deepEqual(matchVoiceAction('Switch to my billing project', idle), { kind: 'switch', query: 'billing' })
-  assert.deepEqual(matchVoiceAction('go back to the landing page session', idle), { kind: 'switch', query: 'landing page' })
   assert.deepEqual(matchVoiceAction('What did you make?', idle), { kind: 'outputs' })
-  assert.deepEqual(matchVoiceAction('read me the summary', idle), { kind: 'outputs' })
+  assert.deepEqual(matchVoiceAction('read me the session summary', idle), { kind: 'outputs' })
   assert.deepEqual(matchVoiceAction('Keep working after I hang up', idle), { kind: 'keep_working' })
+  for (const s of ['keep going', 'keep working', 'keep working on it', 'read me the summary', 'what did you make of the error', 'recent conversations with the client']) {
+    assert.equal(matchVoiceAction(s, idle), null, s)
+  }
 })
 
 t('ordinary requests stay with the model', () => {
@@ -83,18 +116,20 @@ t('a call may only answer deny, and only make the mode stricter, until keypad ap
   assert.equal(phoneMayChangeMode('ask', 'allow-all', true), true)
 })
 
-t('pickSession: most words of the spoken name, ties to the most recent', () => {
-  const sessions = [
-    { sessionId: 'a', title: 'Fix the billing webhook', cwd: '/w/api' },
-    { sessionId: 'b', title: 'Landing page copy', cwd: '/w/site' },
-    { sessionId: 'c', title: 'Billing export to CSV', cwd: '/w/billing-service' },
-  ]
-  assert.equal(pickSession('billing', sessions)?.sessionId, 'a', 'tie → most recent')
-  assert.equal(pickSession('billing service', sessions)?.sessionId, 'c', 'project folder counts')
-  assert.equal(pickSession('landing page', sessions)?.sessionId, 'b')
-  assert.equal(pickSession('kubernetes', sessions), null)
-  assert.equal(pickSession('my project', sessions), null, 'filler only')
+t('pickSession: at least half the words (rounded up), and at least 2 for a 2+ word name', () => {
+  assert.equal(pickSession('billing', SESSIONS)?.sessionId, 'b', 'one word, one match')
+  assert.equal(pickSession('billing service', SESSIONS)?.sessionId, 'b', 'project folder counts')
+  assert.equal(pickSession('landing page', SESSIONS)?.sessionId, 'p')
+  assert.equal(pickSession('next step', SESSIONS), null, '1 of 2 words is not enough')
+  assert.equal(pickSession('login page', SESSIONS)?.sessionId, 'l')
+  assert.equal(pickSession('new login flow page', SESSIONS)?.sessionId, 'l', '2 of 4')
+  assert.equal(pickSession('new login flow for mobile', SESSIONS), null, '1 of 4')
+  assert.equal(pickSession('kubernetes', SESSIONS), null)
+  assert.equal(pickSession('my project', SESSIONS), null, 'filler only')
+  const tie = [{ sessionId: 'x', title: 'Billing export' }, { sessionId: 'y', title: 'Billing webhook' }]
+  assert.equal(pickSession('billing', tie)?.sessionId, 'x', 'tie → most recent')
 })
+
 
 t('spoken replies', () => {
   assert.equal(sayStatus({ turnInFlight: false, tasks: [], pending: null }), "I'm not working on anything right now.")
@@ -138,7 +173,7 @@ t('the agent cannot loosen its mode or answer an approval over HTTP: there is no
   assert.match(src, /function takePhoneVoiceAction\(text: string\): boolean \{\s+if \(!inPhoneRoom\(\)\) return false/)
 })
 t('index.ts: a spoken yes/no and the keypad answer only the request the caller heard', () => {
-  assert.match(src, /const heard = !!phonePromptedRequestId && pendingPermissionHolder\(\)\?\.getPendingPermission\?\.\(\)\?\.requestId === phonePromptedRequestId\s+const action = matchVoiceAction\(text, \{ permissionPending: heard \}\)/)
+  assert.match(src, /const heard = !!phonePromptedRequestId && pendingPermissionHolder\(\)\?\.getPendingPermission\?\.\(\)\?\.requestId === phonePromptedRequestId\s+const action = matchVoiceAction\(text, \{ permissionPending: heard, sessions: phoneSessions \}\)/)
   assert.match(src, /if \(inPhoneRoom\(\)\) \{\s+phonePromptedRequestId = requestId/)
 })
 t('index.ts: voice actions go through runAppAction and its allow-list', () => {

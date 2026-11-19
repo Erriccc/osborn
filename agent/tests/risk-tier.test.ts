@@ -118,7 +118,20 @@ check('config, VCS, hooks, settings and secrets are high in the workspace', () =
     for (const tool of ['Write', 'Edit', 'MultiEdit', 'Read']) assert.equal(classifyRisk(tool, { file_path: p }, root), 'high', `${tool} ${p}`)
     assert.equal(autoApproval('auto-review', 'Edit', { file_path: p }, root).approve, false, `auto-review ${p}`)
   }
-  for (const p of ['src/app.ts', `${root}/README.md`, 'docs/guide.md', './src/x.ts']) {
+  for (const p of [
+    // agent instructions at any depth
+    'CLAUDE.md', `${root}/CLAUDE.local.md`, 'packages/api/AGENTS.md', 'docs/claude.md',
+    // build, install, deploy and CI files
+    'package.json', 'apps/web/package.json', 'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml', 'bun.lockb', 'Cargo.lock', 'go.sum', 'poetry.lock',
+    'Makefile', 'Dockerfile', 'Dockerfile.sandbox', 'docker-compose.yml', 'scripts/deploy.sh', 'bin/setup.bash', 'Jenkinsfile', 'Procfile',
+    'azure-pipelines.yml', 'bitbucket-pipelines.yml', 'codemagic.yaml', 'fly.toml', 'railway.toml', 'nixpacks.toml', 'vercel.json',
+    // secret-looking names
+    'certs/server.pem', 'tls.key', 'id_rsa', 'id_ed25519.pub', 'aws-credentials.json', 'config/credentials.yml', 'app-secrets.yaml', 'client_secret.json', 'store.p12',
+  ]) {
+    assert.equal(isSensitivePath(p), true, p)
+    assert.equal(classifyRisk('Edit', { file_path: p }, root), 'high', p)
+  }
+  for (const p of ['src/app.ts', `${root}/README.md`, 'docs/guide.md', './src/x.ts', 'src/clock.ts', 'src/block.json', 'src/keyboard.ts', 'docs/package-guide.md']) {
     assert.equal(isSensitivePath(p), false, p)
     assert.equal(classifyRisk('Edit', { file_path: p }, root), 'low', p)
   }

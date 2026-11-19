@@ -1,6 +1,6 @@
-import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, chmodSync } from 'fs'
+import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, chmodSync, realpathSync, lstatSync, readlinkSync } from 'fs'
 import { homedir } from 'os'
-import { dirname, join } from 'path'
+import { dirname, join, resolve } from 'path'
 import { Document, isMap, parse, parseDocument, stringify } from 'yaml'
 import type { McpServerConfig } from './claude-handler.js'
 import { cleanTurnText } from './content/transcript-sanitizer.js'
@@ -80,8 +80,15 @@ export function readApprovalMode(file = CONFIG_FILE): ApprovalMode {
  * half-written config. Refuses (false) when the existing file cannot be
  * parsed or is not a mapping, rather than overwrite it.
  */
-export function writeApprovalMode(mode: ApprovalMode, file = CONFIG_FILE): boolean {
+export function writeApprovalMode(mode: ApprovalMode, configFile = CONFIG_FILE): boolean {
   try {
+    // A symlinked config (dotfiles repo) is written through to its target; the link stays.
+    let file = configFile
+    try {
+      if (lstatSync(configFile).isSymbolicLink()) {
+        file = existsSync(configFile) ? realpathSync(configFile) : resolve(dirname(configFile), readlinkSync(configFile))
+      }
+    } catch { /* no file yet */ }
     let doc = new Document({})
     let fileMode = 0o600
     if (existsSync(file)) {

@@ -2,7 +2,7 @@
 // session always-allow list.
 // Run: npx tsx agent/tests/approval-policy.test.ts
 import assert from 'node:assert/strict'
-import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -241,6 +241,16 @@ t('the mode is saved in config.yaml, keeping the other keys; unreadable config i
     writeFileSync(file, 'a: [unclosed\n')
     assert.equal(writeApprovalMode('allow-all', file), false, 'refuses YAML with errors')
     assert.equal(readFileSync(file, 'utf-8'), 'a: [unclosed\n')
+    // A symlinked config is written through to its target; the link stays a link.
+    const target = join(dir, 'dotfiles', 'osborn.yaml')
+    mkdirSync(dirname(target), { recursive: true })
+    writeFileSync(target, '# kept in my dotfiles\napprovalMode: ask\n')
+    const link = join(dir, 'link-config.yaml')
+    symlinkSync(target, link)
+    assert.equal(writeApprovalMode('auto-review', link), true)
+    assert.equal(lstatSync(link).isSymbolicLink(), true, 'still a symlink')
+    assert.match(readFileSync(target, 'utf-8'), /^# kept in my dotfiles\napprovalMode: auto-review\n/)
+    assert.equal(readApprovalMode(link), 'auto-review')
     writeFileSync(file, 'approvalMode: everything\n')
     assert.equal(readApprovalMode(file), 'ask', 'an unknown value reads as ask')
     writeFileSync(file, '- not\n- a map\n')
@@ -251,7 +261,7 @@ t('the mode is saved in config.yaml, keeping the other keys; unreadable config i
 t('index.ts: the mode is applied after the phone deny and the always-allow list, before the phone prompt', () => {
   const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../src/index.ts'), 'utf-8')
   const start = src.indexOf("directLLM.events.on('permission_request'")
-  const phoneDeny = src.indexOf("phonePermissionPolicy(inPhoneRoom()) === 'deny'", start)
+  const phoneDeny = src.indexOf("if (phoneRoute === 'deny')", start)
   const always = src.indexOf('isAlwaysAllowed(sessionAllows', start)
   const auto = src.indexOf('autoApproval(approvalMode, toolName, input, workingDir)', start)
   const prompt = src.indexOf('phoneApprovalPrompt(toolName, input)', start)

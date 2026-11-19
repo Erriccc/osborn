@@ -74,9 +74,9 @@ import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
-import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phonePermissionPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
-import { matchVoiceAction, phoneMayChangeMode, pickSession, sayModeChanged, sayOutputs, saySessions, sayStatus, type VoiceAction } from './phone-voice-actions.js'
+import { matchVoiceAction, phoneMayChangeMode, sayModeChanged, sayOutputs, saySessions, sayStatus, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -329,7 +329,8 @@ let intentionalLeave = false
 let currentDuck: ReturnType<typeof installDuck> | null = null
 let duckRestoreTimer: ReturnType<typeof setTimeout> | null = null
 // phoneRoom: join this caller's room (a phone call) instead of a fresh one.
-let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null// Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
+let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null
+// Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
 // agent's room and play the agent's REAL TTS audio track — bit-identical to
 // the browser voice experience (2026-08-01 quality architecture; replaces the
 // synth-file chain when connected). Set from main() where the room name lives.
@@ -794,7 +795,6 @@ function startApiServer(workingDir: string, port: number): void {
       if (refusal) reply(refusal.status, { error: refusal.error })
       return !!refusal
     }
-
 
     if (req.method === 'GET' && url.pathname === '/skills') {
       if (unauthorized() || storeRefused(true)) return
@@ -3057,6 +3057,11 @@ async function main() {
   let sessionAllows = newSessionAllows()
   // The request a phone caller last heard read out: the keypad and a spoken yes/no answer only that one.
   let phonePromptedRequestId: string | null = null
+  // Sessions a call's "switch to …" picks from: loaded when the call starts, refreshed by "recent sessions".
+  let phoneSessions: SessionChoice[] = []
+  // A brain parked after "keep working" on a call: its requests keep the phone
+  // policy (denied, or left pending) until a browser or app session re-attaches it.
+  let phoneParkedBrain: unknown = null
   // Tool approval mode (#364): saved in config.yaml, set from the app, applied
   // to every permission request (browser and phone calls).
   let approvalMode: ApprovalMode = readApprovalMode()
@@ -4672,15 +4677,20 @@ async function main() {
       // Every answer names this id (settlePendingPermission); a late one never settles a newer request.
       const requestId: string = data.requestId
 
-      // A phone caller cannot approve tools until PHONE_KEYPAD_APPROVALS_ENABLED is on: deny straight away.
-      if (phonePermissionPolicy(inPhoneRoom()) === 'deny') {
+      // A phone caller cannot approve tools until PHONE_KEYPAD_APPROVALS_ENABLED is on:
+      // deny straight away. That holds for a brain parked after "keep working" on a
+      // call too, until a browser or app session re-attaches it ('hold' = it waits
+      // for a person; the saved mode and always-allow list never answer it).
+      const phoneRoute = phoneRequestRoute({ liveCall: inPhoneRoom(), parkedFromCall: directLLM === phoneParkedBrain })
+      if (phoneRoute === 'deny') {
         console.log(`📞 Phone call: denied ${toolName} (keypad approvals are off)`)
         directLLM.respondToPermission(false, PHONE_PERMISSION_DENIED, requestId)
         return
       }
+      const holdForPerson = phoneRoute === 'hold'
 
       // Check session always-allow list before showing dialog
-      if (isAlwaysAllowed(sessionAllows, toolName, input)) {
+      if (!holdForPerson && isAlwaysAllowed(sessionAllows, toolName, input)) {
         console.log(`✅ Session always-allow: ${toolName} ${input?.file_path || ''}`)
         directLLM.respondToPermission(true, undefined, requestId)
         return
@@ -4748,7 +4758,7 @@ async function main() {
       // The saved approval mode (#364) answers here, for the browser and phone
       // calls alike; the browser only shows what was approved.
       const auto = autoApproval(approvalMode, toolName, input, workingDir)
-      if (auto.approve) {
+      if (auto.approve && !holdForPerson) {
         console.log(`⚡ Auto-approved (${approvalMode}, ${auto.tier}): ${toolName}`)
         directLLM.respondToPermission(true, undefined, requestId)
         sendToFrontend({ type: 'permission_auto_approved', requestId, toolName, input: data.input, description, diff: diffString, mode: approvalMode, tier: auto.tier })
@@ -5500,6 +5510,8 @@ async function main() {
     // as the machine owner and resumes the most recent session (none = a new one).
     if (isPhoneCaller) {
       currentUserId = OWNER_USER_ID
+      // The sessions a spoken "switch to …" can pick from (the match must be decided before the model turn).
+      listAllClaudeSessions(50).then((all) => { phoneSessions = all.map(sessionListEntry) }).catch(() => {})
       try {
         const [latest] = await listAllClaudeSessions(1)
         const cwd = latest ? await resolveCwdForSession(latest.sessionId, latest.cwd) : null
@@ -5570,6 +5582,8 @@ async function main() {
     if (KEEP_WARM && warmLLM && warmSessionId && resumeSessionId && warmSessionId === resumeSessionId && Date.now() < warmExpiry) {
       console.log(`🔥 [KEEP-WARM] re-attaching session ${warmSessionId.slice(0, 8)} — zero replay`)
       const reused = claimWarm()
+      // Re-attached: its requests follow whoever holds it now (a browser or app, or a new call).
+      if (reused === phoneParkedBrain) phoneParkedBrain = null
       if (pendingSessionClose) { try { await pendingSessionClose } catch {} }
       const result = await createDirectSession(resumeSessionId, reused)
       session = result.session
@@ -6436,6 +6450,8 @@ async function main() {
       // independent of the room (no longer currentLLM, not in slots, so
       // agentsActive() is false), so releaseAgents + fast-leave free the empty
       // room with no billing burn. The warm grace/watchdog free the parked brain.
+      // Parked from a call: its requests keep the phone policy until a browser or app re-attaches.
+      phoneParkedBrain = phoneCallerLeft ? currentLLM : null
       parkWarm('participant_disconnected')
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
@@ -7591,7 +7607,7 @@ async function main() {
     if (!inPhoneRoom()) return false
     // A yes/no counts only for the request the caller heard read out.
     const heard = !!phonePromptedRequestId && pendingPermissionHolder()?.getPendingPermission?.()?.requestId === phonePromptedRequestId
-    const action = matchVoiceAction(text, { permissionPending: heard })
+    const action = matchVoiceAction(text, { permissionPending: heard, sessions: phoneSessions })
     if (!action) return false
     console.log(`📞 Voice action: ${JSON.stringify(action)}`)
     void runPhoneVoiceAction(action)
@@ -7641,12 +7657,13 @@ async function main() {
       }
       case 'sessions': {
         const replies = await runAppAction({ type: 'list_sessions' })
-        return saySessions(replies.find((r) => r.type === 'sessions_list')?.sessions ?? [])
+        const sessions = replies.find((r) => r.type === 'sessions_list')?.sessions ?? []
+        phoneSessions = sessions
+        return saySessions(sessions)
       }
       case 'switch': {
-        const replies = await runAppAction({ type: 'list_sessions' })
-        const target = pickSession(action.query, replies.find((r) => r.type === 'sessions_list')?.sessions ?? [])
-        if (!target) return `I couldn't find a session called ${action.query}.`
+        // matchVoiceAction only returns a switch whose name picked a session (pickSession).
+        const target = action.target
         const name = target.title || action.query
         if (target.sessionId === llmNow?.sessionId) return `You're already in ${name}.`
         const busy = llmNow?.busyState?.()

@@ -67,15 +67,30 @@ export function isInWorkspace(rawPath: unknown, root: string = WORKSPACE_ROOT): 
   return p === base || p.startsWith(base + '/')
 }
 
-// Paths that change how tools, the agent or the repo behave, or hold secrets:
-// any dot segment (.git, .claude, .husky, .github, .env*, node_modules/.bin,
-// .githooks, .npmrc …), a hooks folder, and any settings or hook file. Never
-// LOW, even inside the workspace.
+// File names that steer agents, builds, CI or deploys, or look like secrets.
+const SENSITIVE_NAMES: RegExp[] = [
+  /settings|hook/i,                                             // settings and hook files
+  /^(?:claude|claude\.local|agents)\.md$/i,                     // agent instructions, at any depth
+  /^package\.json$/i,                                           // scripts run on install/build
+  /(?:^|[-.])lock(?:\.json|\.ya?ml|b)?$|\.lock$|^go\.sum$/i,    // lockfiles
+  /^(?:makefile|gnumakefile|justfile|rakefile|jenkinsfile|procfile)$/i,
+  /^dockerfile(?:\..+)?$|^docker-compose[\w.-]*\.ya?ml$|^compose\.ya?ml$/i,
+  /\.(?:sh|bash|zsh|fish|ps1|bat|cmd)$/i,                       // shell scripts
+  /^(?:azure-pipelines|bitbucket-pipelines|codemagic|cloudbuild|buildspec|appveyor)\.ya?ml$/i, // CI
+  /^(?:fly|railway|nixpacks|netlify|vercel)\.(?:toml|json)$/i,  // deploy configs
+  /\.(?:pem|key|p12|pfx|jks|keystore)$/i, /^id_(?:rsa|dsa|ecdsa|ed25519)/i, /credential/i, /secret/i,
+]
+
+// Paths that change how tools, the agent, builds or the repo behave, or hold
+// secrets: any dot segment (.git, .claude, .husky, .github, .gitlab-ci.yml,
+// .env*, node_modules/.bin, .githooks, .npmrc …), a hooks folder, and the
+// SENSITIVE_NAMES above. Never LOW, even inside the workspace.
 export function isSensitivePath(rawPath: unknown): boolean {
   if (typeof rawPath !== 'string') return true
   const segs = rawPath.trim().split(/[\\/]+/).filter((s) => s && s !== '.')
   if (segs.some((s) => s.startsWith('.') || /^hooks?$/i.test(s))) return true
-  return /settings|hook/i.test(segs[segs.length - 1] || '')
+  const base = segs[segs.length - 1] || ''
+  return SENSITIVE_NAMES.some((re) => re.test(base))
 }
 
 // Grep/Glob search the workspace (cwd) when they are given no path.
