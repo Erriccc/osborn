@@ -6374,7 +6374,7 @@ async function main() {
         }
       }
       // A call has no approvals picker on screen: say which mode is on (#364).
-      if (isPhoneCaller) await greetViaVoice(approvalModeAnnouncement(approvalMode, PHONE_TOOLS_ENABLED))
+      if (isPhoneCaller) await greetViaVoice(approvalModeAnnouncement(approvalMode, { toolsOn: PHONE_TOOLS_ENABLED, keypadOn: PHONE_KEYPAD_APPROVALS_ENABLED }))
     } catch (err) {
       console.error('❌ Failed to start session:', err)
     }

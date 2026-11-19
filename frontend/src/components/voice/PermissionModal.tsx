@@ -66,8 +66,8 @@ function parseDiffLines(diff: string) {
  * ApprovalCard — inline permission approval, rendered inside the transcript
  * message flow (NOT a `fixed inset-0 z-50` full-screen overlay). The agent
  * pauses the one task awaiting this decision; the rest of the UI (header,
- * panels, composer) stays live. Spoken "allow"/"deny"/"always allow" resolves
- * the same pending request independently of this card — the card is only a view.
+ * panels, composer) stays live. In the browser only these buttons answer it
+ * (a spoken answer is settled only on a phone call, by the agent).
  *
  * `reviewMode` (session mode 'auto-review') starts the diff expanded so the full
  * change is shown immediately for a fast decision; it does NOT auto-approve.
@@ -224,9 +224,6 @@ export function ApprovalCard({
                 Always
               </button>
             </div>
-            <p className="text-gray-600 text-[10px] text-center">
-              Or say &quot;allow&quot;, &quot;deny&quot;, or &quot;always allow&quot;
-            </p>
           </div>
         )}
       </div>

@@ -49,15 +49,21 @@ export function autoApproval(
   return { approve: mode === 'allow-all' || (mode === 'auto-review' && tier === 'low'), tier }
 }
 
-/** What a phone caller hears at the start of the call about approvals (#364). */
-export function approvalModeAnnouncement(mode: ApprovalMode, phoneToolsOn: boolean): string {
+/**
+ * What a phone caller hears at the start of the call about approvals (#364).
+ * It says what actually happens on the call: with phone tools off nothing
+ * runs; with keypad approvals off every request that needs an OK is declined
+ * (the phone policy runs before the mode), so the mode is not claimed.
+ */
+export function approvalModeAnnouncement(mode: ApprovalMode, call: { toolsOn: boolean; keypadOn: boolean }): string {
+  if (!call.toolsOn) return 'Tools are off on phone calls for now, so on this call I can only talk.'
+  if (!call.keypadOn) return 'Approvals are off on phone calls for now: anything that needs your OK is declined, so approve it in the app.'
   const how = mode === 'allow-all'
     ? 'I will run actions without asking.'
     : mode === 'auto-review'
-      ? 'I will run low-risk actions and ask you about anything risky.'
-      : 'I will ask you before each action.'
-  const toolsOff = phoneToolsOn ? '' : ' Tools are off on phone calls for now, so on this call I can only talk.'
-  return `${approvalModeLabel(mode)} is on. ${how}${toolsOff}`
+      ? 'I will run low-risk actions and ask you about anything risky: press 1 to allow, 2 to deny, 3 to always allow.'
+      : 'I will ask you before each action: press 1 to allow, 2 to deny, 3 to always allow.'
+  return `${approvalModeLabel(mode)} is on. ${how}`
 }
 
 type ToolInput = Record<string, unknown> | null | undefined

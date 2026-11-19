@@ -81,10 +81,25 @@ t('isApprovalMode accepts only the three modes', () => {
   for (const m of ['', 'Allow all', 'allow_all', null, undefined, 1, {}]) assert.equal(isApprovalMode(m), false, String(m))
 })
 t('a call announces the active mode, and says when phone tools are off', () => {
-  assert.match(approvalModeAnnouncement('allow-all', true), /^Allow all is on\. I will run actions without asking\.$/)
-  assert.match(approvalModeAnnouncement('auto-review', true), /^Auto-review is on\. .*risky/)
-  assert.match(approvalModeAnnouncement('ask', true), /^Ask me is on\. I will ask you before each action\.$/)
-  assert.match(approvalModeAnnouncement('allow-all', false), /Tools are off on phone calls/)
+  const on = { toolsOn: true, keypadOn: true }
+  assert.match(approvalModeAnnouncement('allow-all', on), /^Allow all is on\. I will run actions without asking\.$/)
+  assert.match(approvalModeAnnouncement('auto-review', on), /^Auto-review is on\. .*risky.*press 1 to allow/)
+  assert.match(approvalModeAnnouncement('ask', on), /^Ask me is on\. I will ask you before each action: press 1/)
+  // Tools off: nothing runs, whatever the mode.
+  for (const m of ['ask', 'auto-review', 'allow-all'] as const) {
+    assert.equal(approvalModeAnnouncement(m, { toolsOn: false, keypadOn: true }), 'Tools are off on phone calls for now, so on this call I can only talk.', m)
+  }
+})
+t('tools on but keypad approvals off: every request is declined, so no mode is claimed', () => {
+  for (const m of ['ask', 'auto-review', 'allow-all'] as const) {
+    const said = approvalModeAnnouncement(m, { toolsOn: true, keypadOn: false })
+    assert.match(said, /anything that needs your OK is declined/, m)
+    assert.doesNotMatch(said, /without asking|Allow all is on|Auto-review is on|Ask me is on/, m)
+  }
+})
+t('index.ts announces with both phone flags', () => {
+  const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../src/index.ts'), 'utf-8')
+  assert.match(src, /approvalModeAnnouncement\(approvalMode, \{ toolsOn: PHONE_TOOLS_ENABLED, keypadOn: PHONE_KEYPAD_APPROVALS_ENABLED \}\)/)
 })
 t('the mode is saved in config.yaml, keeping the other keys; unreadable config is not overwritten', () => {
   const dir = mkdtempSync(join(tmpdir(), 'osb-approval-'))
