@@ -1070,7 +1070,7 @@ export async function createSandbox(userId: string, syncToken?: string): Promise
  *      This handles users who provisioned a sprite before the timestamp-suffix
  *      change and haven't been re-recorded in Supabase yet.
  *
- * Returns null if the sprite does not exist (404) or lookup fails.
+ * Returns null if the sprite does not exist (404); throws when the lookup fails.
  * Maps sprite state: "cold" → "stopped", "running" → "running", anything else → "error".
  */
 export async function findUserSandbox(

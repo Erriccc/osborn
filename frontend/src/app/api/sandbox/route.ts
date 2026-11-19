@@ -25,6 +25,12 @@ import {
 import { checkSandboxClaim, claimSandboxForUser, knownSandboxClaim } from '@/lib/sandbox-claims'
 import { connectUserAgent } from '@/lib/connect-agent'
 
+// findUserSandbox returns null on a confirmed 404 and throws when the lookup failed
+// (auth, network, rate limit): undefined here is "unknown", answered with
+// lookupFailed(), never "no sandbox" (which clears the record or provisions another).
+const lookupSandbox = (userId: string, id?: string) => findUserSandbox(userId, id).catch(() => undefined)
+const lookupFailed = () => NextResponse.json({ error: 'Sandbox lookup failed, try again' }, { status: 503 })
+
 /**
  * GET /api/sandbox — get current user's sandbox status
  *
@@ -70,17 +76,8 @@ export async function GET() {
   // (instance.sandbox_id), since each createSandbox now generates a unique
   // timestamped name (see generateUniqueSpriteName). Fall back to deterministic
   // name only when Supabase has no record (legacy users / first-time provision lookup).
-  let sandbox: Awaited<ReturnType<typeof findUserSandbox>> = null
-  let lookupFailed = false
-  try {
-    sandbox = await findUserSandbox(user.id, instance?.sandbox_id ?? undefined)
-  } catch {
-    // Non-404 error (auth failure, network blip, rate limit) — treat as
-    // "unknown", not "gone". Do NOT clear the DB record; fall through to
-    // return available:true with the DB-cached info so the frontend can still
-    // show the machine without blowing away the user's cloud config.
-    lookupFailed = true
-  }
+  // A failed lookup (undefined) keeps the DB record: the cached state is returned below.
+  const sandbox = await lookupSandbox(user.id, instance?.sandbox_id ?? undefined)
 
   if (sandbox) {
     // Sync DB if it differs (handles label-found-but-DB-stale case)
@@ -106,7 +103,7 @@ export async function GET() {
 
   // Fly API lookup errored (non-404): return DB-cached state so the frontend
   // doesn't lose its cloud config on a transient auth/network hiccup.
-  if (lookupFailed && instance?.sandbox_id) {
+  if (sandbox === undefined && instance?.sandbox_id) {
     console.warn(`[sandbox] findUserSandbox threw for ${user.id} — returning cached DB state`)
     return NextResponse.json({
       available: true,
@@ -122,9 +119,7 @@ export async function GET() {
     })
   }
   // Failed with nothing recorded: unknown, not "none" (sandbox:null would auto-provision).
-  if (lookupFailed) {
-    return NextResponse.json({ error: 'Sandbox lookup failed, try again' }, { status: 503 })
-  }
+  if (sandbox === undefined) return lookupFailed()
 
   // Lookup returned null (app confirmed gone via 404) — clear stale DB record
   if (instance?.sandbox_id) {
@@ -212,13 +207,6 @@ export async function POST(request: Request) {
   // another user's machine. Same check + response shape as restart-service /
   // update-osborn / version. GET /api/sandbox syncs a fallback-found sandbox
   // id into instances before returning it, so legit callers always match.
-  // findUserSandbox throws when the lookup failed (not a 404): null here, which callers
-  // answer with lookupFailed() rather than a raw 500 or a wrong "no sandbox".
-  const lookupSandbox = async (id?: string): Promise<{ sb: Awaited<ReturnType<typeof findUserSandbox>> } | null> => {
-    try { return { sb: await findUserSandbox(user.id, id) } } catch { return null }
-  }
-  const lookupFailed = () => NextResponse.json({ error: 'Sandbox lookup failed, try again' }, { status: 503 })
-
   const claimedByOthers = async (id: string): Promise<boolean> =>
     (await checkSandboxClaim(supabase, id, user.id)) !== 'mine'
 
@@ -268,14 +256,11 @@ export async function POST(request: Request) {
       }
       const existingId = known.id
       if (existingId) {
-        try {
-          const existing = await findUserSandbox(user.id, existingId)
-          if (existing) return NextResponse.json(existing)
-          // null = confirmed gone (404) — fall through and create a fresh one.
-        } catch {
-          // Transient lookup failure: don't risk a duplicate machine.
-          return NextResponse.json({ error: 'Sandbox lookup failed, try again' }, { status: 503 })
-        }
+        const existing = await lookupSandbox(user.id, existingId)
+        // Transient lookup failure: don't risk a duplicate machine.
+        if (existing === undefined) return lookupFailed()
+        if (existing) return NextResponse.json(existing)
+        // null = confirmed gone (404) — fall through and create a fresh one.
       }
       // Same-process de-dupe for concurrent creates before the DB row lands.
       const inflight = inflightCreates.get(user.id)
@@ -291,10 +276,9 @@ export async function POST(request: Request) {
       if (cooldownUntil && Date.now() < cooldownUntil) {
         const known = await getKnownSandboxId()
         if (known) {
-          try {
-            const existing = await findUserSandbox(user.id, known)
-            if (existing) return NextResponse.json(existing)
-          } catch { /* lookup failed below — still refuse to machine-gun */ }
+          // A failed lookup still refuses to machine-gun below.
+          const existing = await lookupSandbox(user.id, known)
+          if (existing) return NextResponse.json(existing)
           return NextResponse.json(
             { error: 'A sandbox was just created for you and is still settling — retry in a few seconds' },
             { status: 429 },
@@ -459,9 +443,8 @@ export async function POST(request: Request) {
 
     case 'room-code': {
       // Get the sandbox for this user
-      const found = await lookupSandbox(await getKnownSandboxId())
-      if (!found) return lookupFailed()
-      const sb = found.sb
+      const sb = await lookupSandbox(user.id, await getKnownSandboxId())
+      if (sb === undefined) return lookupFailed()
       if (!sb?.previewUrl) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
@@ -534,9 +517,8 @@ export async function POST(request: Request) {
       // leave / went idle). Stops connection-minute burn without stopping the
       // machine. No-op if the sandbox isn't running (already in no room).
       // Server-side fetch — no CORS.
-      const foundLR = await lookupSandbox(await getKnownSandboxId())
-      if (!foundLR) return lookupFailed()
-      const sbLR = foundLR.sb
+      const sbLR = await lookupSandbox(user.id, await getKnownSandboxId())
+      if (sbLR === undefined) return lookupFailed()
       if (!sbLR?.previewUrl || sbLR.status !== 'running') {
         return NextResponse.json({ success: true })
       }
@@ -563,9 +545,8 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Invalid token' }, { status: 400 })
       }
 
-      const found = await lookupSandbox(await getKnownSandboxId())
-      if (!found) return lookupFailed()
-      const sb = found.sb
+      const sb = await lookupSandbox(user.id, await getKnownSandboxId())
+      if (sb === undefined) return lookupFailed()
       if (!sb) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
@@ -712,9 +693,8 @@ export async function POST(request: Request) {
 
     case 'check-version': {
       // Find sandbox for this user
-      const cvFound = await lookupSandbox(await getKnownSandboxId())
-      if (!cvFound) return lookupFailed()
-      const cvSandbox = cvFound.sb
+      const cvSandbox = await lookupSandbox(user.id, await getKnownSandboxId())
+      if (cvSandbox === undefined) return lookupFailed()
       if (!cvSandbox) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
@@ -764,7 +744,7 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Sandbox not found' }, { status: 404 })
       }
 
-      const vuSandbox = (await lookupSandbox(sandboxId))?.sb
+      const vuSandbox = await lookupSandbox(user.id, sandboxId)
       // Run version + last-result probes in parallel — they're independent
       // and we want the freshest snapshot of all three signals at the same
       // wall-clock instant.
@@ -793,9 +773,8 @@ export async function POST(request: Request) {
       //
       // This is read-only — no restore is triggered. The dashboard shows a
       // banner; the user explicitly chooses recovery.
-      const ccFound = await lookupSandbox(await getKnownSandboxId())
-      if (!ccFound) return lookupFailed()
-      const ccSandbox = ccFound.sb
+      const ccSandbox = await lookupSandbox(user.id, await getKnownSandboxId())
+      if (ccSandbox === undefined) return lookupFailed()
       if (!ccSandbox) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
