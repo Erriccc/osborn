@@ -27,7 +27,7 @@ import { Budget, chat, getModelInfo } from './lens-model.js'
 import { loadClientRedactor, type ClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { parseJsonLoose } from './content-llm.js'
-import { parseDigest, rebuildIndex } from './lens-library-index.js'
+import { machineTimeZone, parseDigest, rebuildIndex } from './lens-library-index.js'
 import { clip, needsIngest, postContentIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
 import { writeAtomic } from './content-manifest.js'
 import { libraryHomeDir } from './lens-paths.js'
@@ -75,8 +75,6 @@ export interface DigestResult {
 }
 
 const pad = (n: number) => String(n).padStart(2, '0')
-/** The machine's time zone (TZ): what "day" means for a digest. Cloud machines run on UTC. */
-export const machineTimeZone = (): string => Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
 /** YYYY-MM-DD of `ts` in the machine's local time zone (TZ). */
 export function localDay(ts: string | number): string {

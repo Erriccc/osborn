@@ -35,7 +35,7 @@ import { redactSecrets } from './transcript-sanitizer.js'
 
 const SWEEP_MAX_PAGES = 10
 /** No new page is started after this long; the worker's hard timeout sits above it. */
-export const SWEEP_BUDGET_MS = 60 * 60_000
+const SWEEP_BUDGET_MS = 60 * 60_000
 const SCAN_CACHE_FILE = 'sweep-scan.json'
 
 export interface SweepOptions {
@@ -90,7 +90,8 @@ type Item =
   | { kind: 'period'; s: SessionStore; p: LibraryPeriod; at: number }
   | { kind: 'digest'; day: string; chats: ShortChat[]; at: number }
 
-const msg = (e: unknown) => redactSecrets(String(e instanceof Error ? e.message : e).replace(/\s+/g, ' '), { assistant: true }).slice(0, 200)
+/** An error as one redacted line of at most 200 chars: what the status file keeps (SweepError, workerError). */
+export const errorLine = (e: unknown): string => redactSecrets(String(e instanceof Error ? e.message : e).replace(/\s+/g, ' '), { assistant: true }).slice(0, 200)
 
 /** Run one sweep. Never throws; returns the status it wrote. */
 export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus> {
@@ -150,7 +151,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
         for (const p of b.short) shortChats.push({ ...s, period: p })
         scanned.push({ s, fp, periods: b.periods.length, short: b.short })
       } catch (e) {
-        err({ kind: 'scan', ref: s.sessionId.slice(0, 8), message: msg(e) })
+        err({ kind: 'scan', ref: s.sessionId.slice(0, 8), message: errorLine(e) })
       }
       alive()
     }
@@ -224,7 +225,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
           if (r.status === 'written' || r.status === 'dry' || r.status === 'model-error') calls++
           if (r.status === 'written') st.pagesWritten++
           if (r.status === 'written' || r.status === 'already-written') periodsDone++
-          if (r.status === 'model-error' || r.status === 'failed') err({ kind: 'period', ref: sid8, message: msg(r.errors.join('; ')) })
+          if (r.status === 'model-error' || r.status === 'failed') err({ kind: 'period', ref: sid8, message: errorLine(r.errors.join('; ')) })
           infraFails = r.status === 'failed' || isTransportError(r.errors) ? infraFails + 1 : 0
         } finally {
           if (held) guard.settle(held, spent)
@@ -242,7 +243,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
         st.costUsd += r.costUsd
         if (r.status !== 'failed') calls++
         if (r.status === 'written') st.digestsWritten++
-        if (r.status === 'model-error' || r.status === 'failed') err({ kind: 'digest', ref: it.day, message: msg(r.errors.join('; ')) })
+        if (r.status === 'model-error' || r.status === 'failed') err({ kind: 'digest', ref: it.day, message: errorLine(r.errors.join('; ')) })
         infraFails = r.status === 'failed' || isTransportError(r.errors) ? infraFails + 1 : 0
       }
       st.modelCalls = calls
@@ -262,7 +263,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
     log(`done: ${st.pagesWritten} page(s), ${st.digestsWritten} digest(s), ${calls} call(s), $${st.costUsd.toFixed(4)}; left: ${st.backlog.periods} period(s), ${st.backlog.digestDays} digest day(s)${st.capHit ? ' — cap reached' : ''}`)
     return finish('done')
   } catch (e) {
-    err({ kind: 'worker', message: msg(e) })
+    err({ kind: 'worker', message: errorLine(e) })
     return finish('error')
   }
 }

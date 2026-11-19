@@ -38,7 +38,7 @@ import { resolveSessionDb } from './lens-db.js'
 import { acquireLock, libraryHomeDir, readSweepStatus, refuseOutPath, releaseLock, resolveProjectDir, touchLock, writeSweepStatus } from './lens-paths.js'
 import { logLine } from './lens-profile.js'
 import { runLibraryStep, type LibraryStepOptions } from './lens-library.js'
-import { runLibrarySweep } from './lens-library-sweep.js'
+import { errorLine, runLibrarySweep } from './lens-library-sweep.js'
 import { runContentStep } from './content-run.js'
 import type { SweepRequest } from './lens-launch.js'
 
@@ -249,7 +249,7 @@ async function main(): Promise<number> {
         writeSweepStatus({ lastStep: { at: new Date().toISOString(), session: sid, status: lib.status, ...(lib.period ? { period: lib.period.index } : {}), costUsd: lib.costUsd } })
       }
       if (lib.status === 'failed' || lib.status === 'model-error') {
-        writeSweepStatus({ workerError: { at: new Date().toISOString(), kind: `library-${lib.status}`, ref: sid, message: lib.errors.join('; ').slice(0, 200) } })
+        writeSweepStatus({ workerError: { at: new Date().toISOString(), kind: `library-${lib.status}`, ref: sid, message: errorLine(lib.errors.join('; ')) } })
       }
     }
     // Step 3 — content plan (Stage A) for the period (per-compaction + --content; never backfill / --library).
@@ -298,10 +298,9 @@ async function main(): Promise<number> {
     logLine(logDir, `worker error: ${err instanceof Error ? err.stack || err.message : String(err)}`)
     if (err instanceof Error && /^(backfill|library|content):/.test(err.message)) process.stderr.write(`${err.message}\n`)
     // Visible on /health: a crashed worker no longer disappears into stdio 'ignore'.
-    const message = err instanceof Error ? err.message : String(err)
     writeSweepStatus({
       ...(sweepHome ? { status: 'error' as const, finishedAt: new Date().toISOString() } : {}),
-      workerError: { at: new Date().toISOString(), kind: job?.kind ?? 'worker', message: message.replace(/\s+/g, ' ').slice(0, 200) },
+      workerError: { at: new Date().toISOString(), kind: job?.kind ?? 'worker', message: errorLine(err) },
     })
     return 1
   } finally {
