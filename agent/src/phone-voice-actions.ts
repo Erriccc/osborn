@@ -16,10 +16,10 @@ export type VoiceAction =
   | { kind: 'mode'; mode: ApprovalMode }
   /** A mode command while a request waits: not applied (the caller hears how to answer it). */
   | { kind: 'mode_blocked'; mode: ApprovalMode }
-  /** "switch to …" picked a session: ask "Switch to <title>?" and wait for a yes. */
   | { kind: 'status' }
   | { kind: 'stop'; agent?: string }
   | { kind: 'sessions' }
+  /** "switch to …" picked a session: ask "Switch to <title>?" and wait for a yes. */
   | { kind: 'switch'; query: string; target: SessionChoice }
   | { kind: 'confirm_switch' }
   | { kind: 'cancel_switch' }
@@ -58,7 +58,6 @@ const STOP_MAIN = /^(?:stop|stop that|stop it|stop everything|stop working|cance
 const AGENT_ROLES = '(?:researcher|reasoner|writer|steward|reviewer|tester|planner|reader)'
 const STOP_AGENT = new RegExp(`^stop the (?:(${AGENT_ROLES})(?: agent)?|([a-z][a-z0-9 -]*?) (?:agent|sub agent|subagent))$`)
 const SESSIONS = /^(?:what (?:were|are) my recent (?:sessions|conversations)|(?:list|read me) my (?:recent )?sessions|my recent sessions)$/
-// Only an explicit switch: "switch to …", "switch session to …", "go back to …" (and then only a session that matches by name).
 // Only an explicit session switch, with the noun said: "switch to the X
 // session/project/conversation" or "switch session to X". Then the name must
 // pick a session by its title, and the caller confirms with a yes.
