@@ -113,6 +113,9 @@ export const MACHINE_ENV_DENYLIST: readonly string[] = [
   'SPRITES_API_TOKEN',
   'DAYTONA_API_KEY',
   'OSBORN_RAILWAY_API_KEY',
+  'META_WA_TOKEN',
+  'META_WA_PHONE_ID',
+  'SUPABASE_SEND_SMS_HOOK_SECRET',
 ]
 
 /** Delete every MACHINE_ENV_DENYLIST key from `env` in place; returns the keys removed. */

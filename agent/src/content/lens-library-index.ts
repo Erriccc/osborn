@@ -88,8 +88,8 @@ export function renderIndex(sessionLabel: string, pages: PageSummary[], digests:
   if (!ps.length && digests.length) return renderDigestIndex(digests)
   const L: string[] = [`# Content library — session ${sessionLabel}`, '']
   L.push(
-    'Period pages from the period map (review mode). New pages are written automatically by the content-lens worker when a ' +
-      'session ends or compacts, one per period, keyed on the period\'s opening boundary row; the catch-up sweep writes older ' +
+    'Period pages from the period map (review mode). New pages are written automatically by the content-lens worker on each ' +
+      'compaction and when a session ends, one per period spanning at least an hour, keyed on the period\'s opening boundary row; the catch-up sweep writes older ' +
       'periods that were skipped (at most 10 pages a run, newest first). Chats shorter than a period go to the daily digests ' +
       '(osb-library/digests). content-profile.md and the HWM are not touched.',
     '',

@@ -8,7 +8,7 @@ import './boot-secrets.js'
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
 import {
-  Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason,
+  Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
 import { AccessToken } from 'livekit-server-sdk'
 
@@ -56,7 +56,7 @@ import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAut
 import { statusManager } from './status-manager.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
-import { DIRECT_MODE_PROMPT } from './prompts.js'
+import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled } from './content/lens-launch.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
@@ -74,7 +74,7 @@ import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
-import { AGENT_SELF_IDENTITY, checkControlSender, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phonePermissionPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -326,7 +326,8 @@ let intentionalLeave = false
 // Native barge-in duck on the live session's audio output (see duck.ts)
 let currentDuck: ReturnType<typeof installDuck> | null = null
 let duckRestoreTimer: ReturnType<typeof setTimeout> | null = null
-let connectRoomHook: (() => Promise<string>) | null = null
+// phoneRoom: join this caller's room (a phone call) instead of a fresh one.
+let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null
 // Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
 // agent's room and play the agent's REAL TTS audio track — bit-identical to
 // the browser voice experience (2026-08-01 quality architecture; replaces the
@@ -1006,18 +1007,48 @@ function startApiServer(workingDir: string, port: number): void {
     // directly (mint its LiveKit token for it) rather than fetching /room-code.
     // The agent is in the room by the time this responds, so the user's join
     // fires ParticipantConnected (or is caught by the adopt-sweep either way).
+    // Phone calls (#361): an optional JSON body { roomName } joins that caller's
+    // room instead of a fresh one. Only with the sync token, only a "call-" room;
+    // 409 { error: 'busy' } while a user is in another room. No body = as before,
+    // except during a live phone call: 409 busy (never the caller's room).
     if (req.method === 'POST' && url.pathname === '/connect-room') {
+      // Stop reading past the cap without destroying the socket, so the 413 still goes out.
+      const raw = await readBodyCapped(req.iterator({ destroyOnReturn: false }), CONNECT_ROOM_MAX_BODY)
+      if (raw === null) {
+        res.writeHead(413, { 'Content-Type': 'application/json', Connection: 'close' })
+        res.end(JSON.stringify({ ok: false, error: 'body too large' }))
+        return
+      }
+      let phoneRoom: string | undefined
+      if (raw.trim()) {
+        let parsed: { roomName?: unknown } = {}
+        try { parsed = JSON.parse(raw) } catch {}
+        if (parsed.roomName !== undefined) {
+          if (unauthorized()) return
+          if (!isPhoneRoomName(parsed.roomName)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: 'invalid roomName' }))
+            return
+          }
+          phoneRoom = parsed.roomName
+        }
+      }
       if (!connectRoomHook) {
         res.writeHead(503, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: 'agent not ready' }))
         return
       }
-      connectRoomHook()
+      connectRoomHook(phoneRoom)
         .then((roomName) => {
           res.writeHead(200, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: true, roomName, status: livekitState.status }))
         })
         .catch((e) => {
+          if ((e as { code?: string })?.code === 'busy') {
+            res.writeHead(409, { 'Content-Type': 'application/json' })
+            res.end(JSON.stringify({ ok: false, error: 'busy', status: livekitState.status }))
+            return
+          }
           console.error('❌ /connect-room hook failed:', e)
           res.writeHead(500, { 'Content-Type': 'application/json' })
           res.end(JSON.stringify({ ok: false, error: e instanceof Error ? e.message : String(e), status: livekitState.status }))
@@ -2332,6 +2363,14 @@ async function main() {
   // null while the agent is idle (between sessions).
   let activeRoom: Room | null = null
   let activeRoomName: string | null = null  // the temporary room name currently joined
+  // The caller's room the last authorised phone connect asked for. A phone call
+  // is live only while the agent is in that room AND a SIP participant is in it
+  // (cleared when the caller leaves or the room session ends).
+  let phoneRoomName: string | null = null
+  const inPhoneRoom = () => isPhoneCallLive(
+    activeRoomName, phoneRoomName,
+    !!activeRoom && [...activeRoom.remoteParticipants.values()].some((p) => p.kind === ParticipantKind.SIP),
+  )
 
   // Watch gateway (mobile Track 2): bridges the native watchOS app's WS audio
   // + JSON into the user's LiveKit room via rtc-node. Opt-in — dormant unless
@@ -4482,15 +4521,16 @@ async function main() {
     // Apply turbo to the freshly created LLM so the main model also picks it up.
     // PipelineDirectLLM (llmOverride path) wraps its own ClaudeLLM and may not expose setTurbo.
     directLLM?.setTurbo?.(turboMode)
+    // Phone call: talk-only, every tool denied (PHONE_TOOLS_ENABLED). Recomputed on
+    // each session, so a re-attached brain follows whoever holds it now.
+    directLLM?.setPhoneCall?.(inPhoneRoom())
     currentLLM = directLLM
 
     // Watch bridge (mobile Track 1): a wrist ack/expiry settles whatever
     // permission is currently pending. Re-registered per session — harmless,
     // the latest closure wins and they all resolve through currentLLM.
     setWatchResultHandler((allow, toolName) => {
-      const target: any = currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
-      if (target) {
-        target.respondToPermission(allow)
+      if (settlePendingPermission(allow)) {
         console.log(`⌚️ Watch bridge settled ${toolName}: ${allow ? 'approve' : 'deny'}`)
       } else {
         // Already answered via the web UI — a late ack/expiry is a no-op.
@@ -4633,6 +4673,13 @@ async function main() {
       console.log(`⚠️ Permission needed: ${data.toolName}`)
       const toolName = data.toolName
       const input = data.input || {}
+
+      // A phone caller cannot approve tools until PHONE_KEYPAD_APPROVALS_ENABLED is on: deny straight away.
+      if (phonePermissionPolicy(inPhoneRoom()) === 'deny') {
+        console.log(`📞 Phone call: denied ${toolName} (keypad approvals are off)`)
+        directLLM.respondToPermission(false, PHONE_PERMISSION_DENIED)
+        return
+      }
 
       // Check session always-allow list before showing dialog
       if (toolName === 'Write' || toolName === 'Edit' || toolName === 'MultiEdit') {
@@ -5221,6 +5268,16 @@ async function main() {
     })
   }
 
+  // Settles whatever permission is pending (live session first, then a parked
+  // warm brain). Shared by the watch bridge and the phone keypad. False when
+  // nothing is pending (already answered elsewhere).
+  function settlePendingPermission(allow: boolean): boolean {
+    const target: any = currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
+    if (!target) return false
+    target.respondToPermission(allow)
+    return true
+  }
+
   // wireRoomHandlers(room): register EVERY room.on(...) listener onto a fresh
   // Room instance. Called once per session from createRoomSession(). The bodies
   // close over main()-scope state; `room` is the fresh instance passed in.
@@ -5277,6 +5334,12 @@ async function main() {
     room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => { participantConnectedHandler?.(p) })
     room.on(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected)
     room.on(RoomEvent.DataReceived, handleDataReceived)
+    // Phone calls: keypad 2 denies the pending approval; 1 allows only once
+    // PHONE_KEYPAD_APPROVALS_ENABLED is on. Only from the caller in an authorised phone room.
+    room.on(RoomEvent.DtmfReceived, (_code: number, digit: string, participant: RemoteParticipant) => {
+      const outcome = handlePhoneKeypad({ sip: participant?.kind === ParticipantKind.SIP, inPhoneRoom: inPhoneRoom(), digit }, settlePendingPermission)
+      if (outcome !== 'ignored') console.log(`📞 Keypad ${digit}: ${outcome}`)
+    })
   }
 
   // 0.9.83: handler kept as a named reference so createRoomSession's adopt-sweep
@@ -5305,10 +5368,15 @@ async function main() {
     // no controller exists (watch voice alone); joining after the owner it is
     // not adopted, so the owner's session and currentUserId stay intact.
     const joinerUserId = userIdFromMetadata(participant.metadata)
-    const join = resolveJoin(participant.identity, joinerUserId, OWNER_USER_ID, controllingUserIdentity)
+    // A phone caller (SIP) is adopted only in a room an authorised phone connect
+    // asked for, and never becomes the controller (it has no data channel).
+    const isPhoneCaller = participant.kind === ParticipantKind.SIP
+    const join = resolveJoin(participant.identity, joinerUserId, OWNER_USER_ID, controllingUserIdentity, { sip: isPhoneCaller, phoneRoom: inPhoneRoom() })
     controllingUserIdentity = join.controller
     if (!join.adoptSession) {
-      if (participant.identity === AGENT_SELF_IDENTITY) {
+      if (isPhoneCaller) {
+        console.warn(`🚫 phone caller ${participant.identity} is not in an authorised phone room; not adopting it`)
+      } else if (participant.identity === AGENT_SELF_IDENTITY) {
         console.log(`⌚ ${participant.identity} joined while ${controllingUserIdentity} controls the session; keeping the owner's voice session`)
       } else {
         console.warn(`🚫 ${participant.identity} is not the machine owner (token userId=${joinerUserId ?? 'none'}); not adopting it as the voice user`)
@@ -5417,6 +5485,22 @@ async function main() {
       console.log(`📂 Working directory: ${workingDir}`)
     } catch (err) {
       console.log('⚠️ Could not parse participant metadata, using config voiceMode:', voiceMode)
+    }
+    // A phone call carries no token metadata and has no session picker: it runs
+    // as the machine owner and resumes the most recent session (none = a new one).
+    if (isPhoneCaller) {
+      currentUserId = OWNER_USER_ID
+      try {
+        const [latest] = await listAllClaudeSessions(1)
+        const cwd = latest ? await resolveCwdForSession(latest.sessionId, latest.cwd) : null
+        if (latest && cwd) {
+          preSelectedSessionId = latest.sessionId
+          workingDir = cwd
+        }
+      } catch (e) {
+        console.warn('⚠️ phone call: latest session lookup failed:', e instanceof Error ? e.message : e)
+      }
+      console.log(`📞 Phone call: ${preSelectedSessionId ? `resuming ${preSelectedSessionId}` : 'new session'} in ${workingDir}`)
     }
 
     ctMark('participant joined + metadata parsed')
@@ -6246,8 +6330,8 @@ async function main() {
             }
           })()
         }
-      } else if (!preSelectedSessionId && hasRecentSession) {
-        // No pre-selected session but sessions exist — defer greeting for session gate
+      } else if (!preSelectedSessionId && hasRecentSession && !isPhoneCaller) {
+        // No pre-selected session but sessions exist — defer greeting for session gate (a phone call has none)
         console.log('⏳ Deferring greeting until session gate is completed')
       } else {
         // No sessions at all (or new session chosen) — greet as new user
@@ -6269,6 +6353,11 @@ async function main() {
 
   const handleParticipantDisconnected = (participant: RemoteParticipant) => {
     console.log(`👋 User left: ${participant.identity}`)
+    // The caller hung up: the call is over (inPhoneRoom() is false from here, so the
+    // next session gets tools back). Its brain is killed below, not parked, so nothing
+    // it was asked on the call runs after hang-up with tools on.
+    const phoneCallerLeft = participant.kind === ParticipantKind.SIP
+    if (phoneCallerLeft) phoneRoomName = null
     if (participant.identity === controllingUserIdentity) controllingUserIdentity = null
     cancelPendingSwitch('participant_disconnected', false)
 
@@ -6324,7 +6413,7 @@ async function main() {
       parkWarm('duplicate_identity')
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
-    } else if (KEEP_WARM && currentLLM && warmParkKey(currentLLM as any)) {
+    } else if (KEEP_WARM && currentLLM && warmParkKey(currentLLM as any) && !phoneCallerLeft) {
       // KEEP-WARM network/tab-close drop: park the subprocess instead of killing
       // it so a reconnect within the grace re-attaches with ZERO replay. We
       // STILL run the normal room teardown below — the parked brain is
@@ -7566,6 +7655,7 @@ async function main() {
     // Drop the reference immediately so nothing (handlers, sweeps) touches it.
     activeRoom = null
     activeRoomName = null
+    phoneRoomName = null
     if (aloneTimer) { clearTimeout(aloneTimer); aloneTimer = null }
     cancelFastLeaveTimer()
     intentionalLeave = true  // suppress the Disconnected handler's auto-rejoin
@@ -7607,7 +7697,8 @@ async function main() {
     return { token: await t.toJwt(), url: process.env.LIVEKIT_URL || '', room: activeRoomName }
   }
 
-  connectRoomHook = async (): Promise<string> => {
+  connectRoomHook = async (phoneRoom?: string): Promise<string> => {
+    const busy = () => Object.assign(new Error('busy: the agent is in another session'), { code: 'busy' })
     intentionalLeave = false
     cancelIdleExitTimer()
     // CONNECT TIMING: stamp the server's request-incoming moment (the user asked
@@ -7617,17 +7708,33 @@ async function main() {
     // Idempotency: an active session with a user present is reused (return its
     // room name). An active-but-empty session (agent joined, user never showed,
     // or a stale race) is torn down and replaced with a fresh one.
+    const plan = planConnectRoom({
+      activeRoomName: activeRoom ? activeRoomName : null,
+      occupied: !!activeRoom && activeRoom.remoteParticipants.size > 0,
+      // A caller's room is never handed to a browser, even once the caller has left.
+      phoneCallLive: inPhoneRoom() || isPhoneRoomName(activeRoomName),
+      phoneRoom,
+    })
+    if (plan === 'busy') {
+      console.log(`🔌 /connect-room — busy: ${phoneRoom ? 'a user is in another room' : 'a phone call is live'} (${activeRoomName})`)
+      throw busy()
+    }
+    if (plan === 'reuse') {
+      console.log(`🔌 /connect-room — already connected with a user present, reusing ${activeRoomName}`)
+      return activeRoomName as string
+    }
     if (activeRoom && activeRoomName) {
-      if (activeRoom.remoteParticipants.size > 0) {
-        console.log(`🔌 /connect-room — already connected with a user present, reusing ${activeRoomName}`)
-        return activeRoomName
-      }
       console.log('🔌 /connect-room — active room is empty; tearing down + creating fresh')
       await destroyRoomSession('connect-room replacing empty session')
     }
-    const targetRoomName = buildRoomName()
-    console.log(`🔌 /connect-room — creating fresh room session: ${targetRoomName}`)
+    const targetRoomName = phoneRoom || buildRoomName()
+    if (phoneRoom) phoneRoomName = phoneRoom
+    console.log(`🔌 /connect-room — creating fresh room session: ${targetRoomName}${phoneRoom ? ' (phone call)' : ''}`)
     await createRoomSession(targetRoomName)
+    // A concurrent browser connect won the in-flight join: that room is not the caller's.
+    if (phoneRoom && activeRoomName !== phoneRoom) throw busy()
+    // A browser connect that awaited an in-flight phone join: never hand it the caller's room.
+    if (!phoneRoom && isPhoneRoomName(activeRoomName)) throw busy()
     // Return the room the agent actually joined. When a concurrent /connect-room
     // call awaited an in-flight session, activeRoomName is the first call's room
     // name — which differs from targetRoomName generated here. Always use the

@@ -69,7 +69,7 @@ tier; viewport width decides its HOME, never its existence:
 | 4 · Occasional | auto-approve, mute, meeting, files, copy | **collapse into mobile menu** (with state badges, e.g. ON/OFF) | header; below a 512px chat column (`pane-sm`, Rooms and Outputs open) meeting and background agents move into More |
 | 5 · Identity | settings + profile | ONE control: avatar opens settings sheet | same |
 
-Desktop widths here are the chat column's, not the window's (`lib/pane-size.ts`): the Rooms rail and the Outputs panel narrow it.
+Desktop widths here are the chat column's, not the window's (`lib/pane-size.ts`): the Rooms rail and the Outputs panel narrow it. The model version, the Audio label and the header compaction pill wait for a 1120px column (`pane-2xl`), so a 1280 window with Rooms open keeps the header on one row at rest; the slim banner under the header carries compaction at every width.
 
 Grounding (research): iOS HIG 44pt touch targets + ≤5 top-level actions;
 progressive disclosure ("priority+overflow" nav pattern — visible = state +
