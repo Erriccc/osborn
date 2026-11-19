@@ -24,7 +24,7 @@ import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
-import { parseStewardVerdict, appendStewardVerdict } from './steward-verdict.js'
+import { parseStewardVerdict, appendStewardRecord, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
@@ -2481,6 +2481,13 @@ class ClaudeLLMStream extends llm.LLMStream {
   // SDK hook input omits the prompt. Cleared when consumed by the matching start.
   #pendingTaskByType = new Map<string, string>()
 
+  // Steward verdicts and gate events go to the session's sidecar (steward.jsonl) so a reload rebuilds them.
+  #recordSteward(rec: StewardRecord): void {
+    try {
+      if (this.#sessionId && this.#opts.workingDirectory) appendStewardRecord(this.#sessionId, this.#opts.workingDirectory, rec)
+    } catch (e) { console.warn('steward record persist failed:', e instanceof Error ? e.message : e) }
+  }
+
   constructor(
     llmInstance: ClaudeLLM,
     {
@@ -2750,7 +2757,10 @@ class ClaudeLLMStream extends llm.LLMStream {
               let stewardNote: string | null = null  // advise mode: rides the allow tail below
               if (toolName === 'Bash') {
                 const gate = await stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
-                if (gate.decision !== 'allow') this.#eventEmitter.emit('steward_gate', { decision: gate.decision, message: gate.message })
+                if (gate.decision !== 'allow') {
+                  this.#recordSteward({ gate: gate.decision, message: gate.message ?? '', at: new Date().toISOString() })
+                  this.#eventEmitter.emit('steward_gate', { decision: gate.decision, message: gate.message })
+                }
                 if (gate.decision === 'deny') {
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
                 }
@@ -3276,9 +3286,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               const atRole = roleOf(at, this.#opts.agentRoles, NAMED_AGENTS)
               const verdict = atRole && ROLES[atRole].verdict ? parseStewardVerdict(msg) : null
               if (verdict) {
-                try {
-                  if (this.#sessionId && this.#opts.workingDirectory) appendStewardVerdict(this.#sessionId, this.#opts.workingDirectory, verdict)
-                } catch (e) { console.warn('steward verdict persist failed:', e instanceof Error ? e.message : e) }
+                this.#recordSteward(verdict)
                 this.#eventEmitter.emit('steward_verdict', verdict)
               }
               // Pattern #1 verifier chaining — CORRECT timing (moved here from PostToolUse).

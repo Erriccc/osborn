@@ -28,7 +28,7 @@ import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
-import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
+import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type StewardGateRecord, stewardGateLine, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
@@ -160,7 +160,7 @@ function buildPriorItems(
   sessionId: string,
   msgs: Array<{ role: string; content: string; ts?: string | number | null }>,
   compactions?: PriorCompaction[],
-  steward?: StewardVerdict[],
+  steward?: Array<StewardVerdict | StewardGateRecord>,
 ): ChatMessage[] {
   // Unified timeline: messages (kind 0) and compaction markers (kind 1), merged by
   // timestamp. A tie puts the marker AFTER the messages at that instant — a
@@ -169,6 +169,7 @@ function buildPriorItems(
     | { kind: 0; t: number; idx: number; role: string; content: string }
     | { kind: 1; t: number; idx: number; comp: CompactionMarker }
     | { kind: 2; t: number; idx: number; verdict: StewardVerdict }
+    | { kind: 3; t: number; idx: number; gate: StewardGateRecord }
 
   const rows: Row[] = []
   // Bug 14bedf48: control notices in the stored history are not You bubbles.
@@ -198,8 +199,9 @@ function buildPriorItems(
 
   ;(Array.isArray(steward) ? steward : []).forEach((v, i) => {
     const t = new Date(v?.at).getTime()
-    if (!v?.verdict || Number.isNaN(t)) return
-    rows.push({ kind: 2, t, idx: i, verdict: v })
+    if (Number.isNaN(t)) return
+    if ('verdict' in v && v.verdict) rows.push({ kind: 2, t, idx: i, verdict: v })
+    else if ('gate' in v && v.gate) rows.push({ kind: 3, t, idx: i, gate: v })
   })
 
   rows.sort((a, b) => (a.t !== b.t ? a.t - b.t : a.kind !== b.kind ? a.kind - b.kind : a.idx - b.idx))
@@ -213,7 +215,15 @@ function buildPriorItems(
       lastDay = day
       items.push({ id: `prior-day-${day}-${sessionId}`, role: 'system', content: `── ${day} ──`, timestamp: t })
     }
-    if (r.kind === 2) {
+    if (r.kind === 3) {
+      items.push({
+        id: `prior-steward-gate-${r.idx}-${sessionId}`,
+        role: 'system',
+        content: stewardGateLine(r.gate),
+        timestamp: t,
+        stewardGate: r.gate,
+      })
+    } else if (r.kind === 2) {
       items.push({
         id: `prior-steward-${r.idx}-${sessionId}`,
         role: 'system',
@@ -834,9 +844,9 @@ function VoiceRoomInner({
     // compaction placement), so the cached paint is identical to what replaces it.
     const items: ChatMessage[] = buildPriorItems(
       preSelectedSessionId,
-      cached.filter(c => !c.compaction && !c.steward).map(c => ({ role: c.role, content: c.content, ts: c.ts })),
+      cached.filter(c => !c.compaction && !c.steward && !c.stewardGate).map(c => ({ role: c.role, content: c.content, ts: c.ts })),
       cached.flatMap(c => (c.compaction ? [c.compaction] : [])),
-      cached.flatMap(c => (c.steward ? [c.steward] : [])),
+      cached.flatMap<StewardVerdict | StewardGateRecord>(c => (c.steward ? [c.steward] : c.stewardGate ? [c.stewardGate] : [])),
     ).map(m => ({ ...m, fromCache: true }))
     setMessages(prev => {
       // Never overwrite anything real that already arrived (fast reconnect).
@@ -907,7 +917,7 @@ function VoiceRoomInner({
   const hydrateSwitchedRef = useRef<(sessionId: string, query: string, fallback: Array<{ role: string; content: string }>) => void>(() => {})
   hydrateSwitchedRef.current = (sessionId, query, fallback) => {
     const base = agentUrl ? agentUrl.replace(/\/$/, '') : ''
-    const paint = (msgs: Array<{ role: string; content: string; ts?: string | number | null }>, compactions?: PriorCompaction[], steward?: StewardVerdict[]) => {
+    const paint = (msgs: Array<{ role: string; content: string; ts?: string | number | null }>, compactions?: PriorCompaction[], steward?: Array<StewardVerdict | StewardGateRecord>) => {
       if (currentSessionIdRef.current && currentSessionIdRef.current !== sessionId) return
       const items = buildPriorItems(sessionId, msgs, compactions, steward)
       setMessages(prev => [...items, ...prev.filter(m => !m.id.startsWith('prior-') && !m.fromCache)])
@@ -2873,6 +2883,9 @@ function VoiceRoomInner({
             return next
           })
         }
+      } else if (data.type === 'steward_verdict' && data.verdict && data.slotId) {
+        // A background session's steward (#255): its card lives in that session's own history.
+        addMessageRef.current?.('system', `Background session ${String(data.slotId).slice(0, 8)}: Steward ${data.verdict}${data.summary ? ` — ${data.summary}` : ''}`, undefined, 'chat')
       } else if (data.type === 'steward_verdict' && data.verdict) {
         // Steward verdict card (#221): persisted by the agent, rebuilt on reload by buildPriorItems.
         const { type: _type, ...verdict } = data
@@ -2885,8 +2898,21 @@ function VoiceRoomInner({
           steward: verdict as StewardVerdict,
         }])
       } else if (data.type === 'steward_gate') {
-        // The steward sign-off gate advised on or refused a commit / push / PR.
-        addMessageRef.current?.('system', `Steward gate ${data.decision === 'deny' ? 'refused' : 'warned'}: ${data.message ?? ''}`, undefined, 'chat')
+        // The steward sign-off gate advised on or refused a commit / push / PR. Persisted by the
+        // agent (#254); a background session's line is labelled and kept in that session (#255).
+        const gate: StewardGateRecord = { gate: data.decision === 'deny' ? 'deny' : 'advise', message: String(data.message ?? ''), at: new Date().toISOString() }
+        if (data.slotId) {
+          addMessageRef.current?.('system', `Background session ${String(data.slotId).slice(0, 8)}: ${stewardGateLine(gate)}`, undefined, 'chat')
+        } else {
+          setMessages(prev => [...prev, {
+            id: `steward-gate-${Date.now()}-${Math.random()}`,
+            role: 'system' as const,
+            content: stewardGateLine(gate),
+            timestamp: new Date(gate.at),
+            category: 'chat' as const,
+            stewardGate: gate,
+          }])
+        }
       } else if (data.type === 'tool_blocked') {
         // A refused tool call in this session (a background slot's carry slotId). The
         // one-time history reminder is a nudge, not a refusal, so it gets no line.

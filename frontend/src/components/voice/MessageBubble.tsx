@@ -112,6 +112,12 @@ function StewardVerdictCard({ data }: { data: StewardVerdict }) {
       <StewardRow label="Net-new">{listOrNone(data.netNew)}</StewardRow>
       <StewardRow label="Removed">{listOrNone(data.removed)}</StewardRow>
       {data.lines && <StewardRow label="Lines">{data.lines}</StewardRow>}
+      {data.impact && data.impact.length > 0 && (
+        <details>
+          <summary className="cursor-pointer text-gray-500 hover:text-gray-300">Impact ({data.impact.length})</summary>
+          <div className="mt-1 pl-[5.5rem]">{listOrNone(data.impact)}</div>
+        </details>
+      )}
       {data.history && data.history.length > 0 && (
         <details>
           <summary className="cursor-pointer text-gray-500 hover:text-gray-300">History ({data.history.length})</summary>

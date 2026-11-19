@@ -62,7 +62,7 @@ import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setL
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
-import { readStewardVerdicts } from './steward-verdict.js'
+import { readStewardRecords } from './steward-verdict.js'
 import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, ClientNoteQueue, parseFavoriteChanged, parseLegacyFavoriteNotice } from './transcript-wiring.js'
 import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
@@ -747,7 +747,7 @@ function startApiServer(workingDir: string, port: number): void {
         // pass their own cwd; honoured only if the session really lives there.
         const readDir = sessionMessagesDir(sessionId, url.searchParams.get('workingDirectory'), workingDir, sessionExists)
         const compactions = readCompactionMarkers(sessionId, readDir)
-        const steward = readStewardVerdicts(sessionId, readDir)
+        const steward = readStewardRecords(sessionId, readDir)
         const dbPath = storeExists(sessionId, readDir)
         if (!dbPath) {
           res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -2920,6 +2920,13 @@ async function main() {
     }
   }
 
+  // Steward verdict card + sign-off gate line (#221) → chat. A background slot's carry its slotId (#255).
+  function forwardStewardEvents(events: { on(event: string, fn: (d: any) => void): unknown }, slotId?: string): void {
+    const tag = slotId ? { slotId } : {}
+    events.on('steward_verdict', (v: any) => { sendToFrontend({ type: 'steward_verdict', ...tag, ...v }).catch(() => {}) })
+    events.on('steward_gate', (d: any) => { sendToFrontend({ type: 'steward_gate', ...tag, decision: d.decision, message: d.message }).catch(() => {}) })
+  }
+
   // ============================================================
   // SLICE 1: spawnBackgroundSession
   // Creates a fully headless ClaudeLLM subprocess that resumes an
@@ -3007,6 +3014,7 @@ async function main() {
     // Wire up the LLM's internal EventEmitter so hook-emitted events also flow.
     bgLLM.events.on('session_id', (data: any) => bgEmitter.emit('session_id', data))
     bgLLM.events.on('tool_blocked', (data: any) => bgEmitter.emit('tool_blocked', data))
+    forwardStewardEvents(bgLLM.events, slotId)
 
     // Build minimal sdkOptions for the headless cold start.
     // resume: sessionId brings up real prior context from JSONL.
@@ -5039,8 +5047,7 @@ async function main() {
     }))
 
     // Steward verdict card + sign-off gate note (#221) → chat
-    directLLM.events.on('steward_verdict', (v: any) => sendToFrontend({ type: 'steward_verdict', ...v }))
-    directLLM.events.on('steward_gate', (d: any) => sendToFrontend({ type: 'steward_gate', decision: d.decision, message: d.message }))
+    forwardStewardEvents(directLLM.events)
     directLLM.events.on('tool_blocked', (d: any) => sendToFrontend({ type: 'tool_blocked', ...d }))
 
     // Dispatcher v1 — sub-agent started → frontend stop-key signal (Feature A2)
@@ -6348,7 +6355,7 @@ async function main() {
                     // transcript rebuilds its "Conversation compacted" rows too.
                     const compactions = readCompactionMarkers(preSelectedSessionId!, workingDir)
                     // Last few cards, without the full return text, so the push stays under the packet limit.
-                    const steward = readStewardVerdicts(preSelectedSessionId!, workingDir).slice(-10).map(({ raw, ...v }) => v)
+                    const steward = readStewardRecords(preSelectedSessionId!, workingDir).slice(-10).map(r => ({ ...r, raw: undefined }))
                     if (priorMessages.length > 0) {
                       await sendToFrontend({ type: 'prior_messages', sessionId: preSelectedSessionId, messages: priorMessages, compactions, steward })
                       console.log(`💬 Sent ${priorMessages.length} prior messages (+${compactions.length} compaction markers) from DB for optimistic UI`)

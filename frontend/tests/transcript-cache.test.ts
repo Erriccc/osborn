@@ -53,6 +53,16 @@ t('serialize drops streaming, empty, already-cached and local system rows', () =
   eq(items[2].compaction, { skillNames: [], skillsWritten: 0, at: 1 }, 'compaction passed through')
 })
 
+t('#254: a steward gate line is cached with its record, a plain system notice is not', () => {
+  const gate = { gate: 'deny' as const, message: 'not signed off', at: '2026-11-13T00:00:00.000Z' }
+  const items = serializeTranscript([
+    msg({ id: 'n1', role: 'system', content: 'Steward gate refused: not signed off' }),
+    msg({ id: 'g1', role: 'system', content: 'Steward gate refused: not signed off', stewardGate: gate }),
+  ])
+  eq(items.map(i => i.id), ['g1'], 'kept ids')
+  eq(items[0].stewardGate, gate, 'gate record passed through')
+})
+
 t('serialize drops synthetic day/Today dividers, keeps real messages', () => {
   const items = serializeTranscript([
     msg({ id: 'prior-day-Nov 11-sess', role: 'assistant', content: '── Nov 11 ──' }),
