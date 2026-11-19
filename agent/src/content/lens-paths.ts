@@ -334,7 +334,8 @@ export interface SweepStatus {
   status: 'running' | 'done' | 'disabled' | 'no-key' | 'cooldown' | 'error' | 'timeout' | 'died'
   trigger: string
   at: string
-  finishedAt?: string
+  /** null while a sweep runs (the previous run's end is cleared, its backlog kept). */
+  finishedAt?: string | null
   pid?: number
   pagesWritten: number
   digestsWritten: number
@@ -384,7 +385,9 @@ export function writeSweepStatus(patch: Partial<SweepStatus>, home = libraryHome
     } catch {
       /* first write */
     }
-    const next = { ...prev, ...patch, errors: (patch.errors ?? prev.errors ?? []).slice(0, 20) }
+    // Only the fields the patch sets: an undefined one never wipes the previous value (e.g. the backlog while a sweep runs).
+    const set = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined))
+    const next = { ...prev, ...set, errors: (patch.errors ?? prev.errors ?? []).slice(0, 20) }
     writePrivateAtomic(path, JSON.stringify(next, null, 2) + '\n')
   }
   try {
@@ -407,4 +410,41 @@ export function sweepCoolingDown(cooldownMs = SWEEP_COOLDOWN_MS, home = libraryH
   if (!s || !['done', 'timeout', 'error', 'died'].includes(s.status)) return false
   const at = Date.parse(s.finishedAt ?? s.at)
   return Number.isFinite(at) && Date.now() - at < cooldownMs
+}
+
+// ── Live sessions, as the agent sees them now (read by a running sweep before each page) ──
+
+export const LIVE_FILE = 'live-sessions.json'
+let lastLive = ''
+
+/** Record the live session ids for running sweeps. Rewritten only when the list changes (or to refresh its age). Never throws. */
+export function writeLiveSessions(ids: string[], home = libraryHomeDir()): void {
+  const list = [...new Set(ids.filter(Boolean))].sort()
+  const key = list.join(',')
+  const path = join(home, LIVE_FILE)
+  try {
+    const fresh = Date.now() - statSync(path).mtimeMs < 60_000
+    if (key === lastLive && fresh) return
+  } catch {
+    /* not written yet */
+  }
+  try {
+    mkdirSync(home, { recursive: true })
+    writePrivateAtomic(path, JSON.stringify({ at: new Date().toISOString(), ids: list }) + '\n')
+    lastLive = key
+  } catch {
+    /* best-effort */
+  }
+}
+
+/** Live session ids the agent wrote within `maxAgeMs`, else null (no agent, or a stale file). */
+export function readLiveSessions(maxAgeMs = 3 * 60_000, home = libraryHomeDir()): string[] | null {
+  try {
+    const path = join(home, LIVE_FILE)
+    if (Date.now() - statSync(path).mtimeMs > maxAgeMs) return null
+    const o = JSON.parse(readFileSync(path, 'utf-8'))
+    return Array.isArray(o?.ids) ? o.ids.map(String) : null
+  } catch {
+    return null
+  }
 }

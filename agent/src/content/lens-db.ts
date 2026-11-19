@@ -124,6 +124,9 @@ export function includeSubagents(): boolean {
   return ['1', 'true', 'yes', 'on'].includes((process.env.OSBORN_LENS_INCLUDE_SUBAGENTS ?? '').trim().toLowerCase())
 }
 
+/** The conversation-row filter both readers share: user/assistant rows, main thread unless subagents are included. */
+const conversationRows = (): string => `msg_type IN ('user', 'assistant')${includeSubagents() ? '' : ` AND source = 'main'`}`
+
 /**
  * Ids and timestamps of the same conversation rows loadConversationRows reads (same source and
  * msg_type filter), with no blob read, decompression or sanitising: what segmentation needs.
@@ -133,8 +136,7 @@ export function loadRowStamps(dbPath: string): { id: number; timestamp: string }
   const db = new Database(dbPath, { readonly: true, fileMustExist: true })
   try {
     db.pragma('busy_timeout = 5000')
-    const where = includeSubagents() ? '' : `AND source = 'main'`
-    const rows = db.prepare(`SELECT id, ts FROM content WHERE msg_type IN ('user', 'assistant') ${where} ORDER BY id`).all() as { id: number; ts: string | null }[]
+    const rows = db.prepare(`SELECT id, ts FROM content WHERE ${conversationRows()} ORDER BY id`).all() as { id: number; ts: string | null }[]
     return rows.map(r => ({ id: r.id, timestamp: r.ts ?? '' }))
   } finally {
     db.close()
@@ -149,11 +151,10 @@ export function loadConversationRows(dbPath: string, afterRowId = 0, clientRedac
   const db = new Database(dbPath, { readonly: true, fileMustExist: true })
   try {
     db.pragma('busy_timeout = 5000')
-    const where = includeSubagents() ? '' : `AND source = 'main'`
     const upper = Number.isFinite(throughRowId) ? `AND id <= ${Math.floor(throughRowId!)}` : ''
     const stmt = db.prepare(
       `SELECT id, ts, msg_type, blob FROM content
-       WHERE id > ? ${upper} AND msg_type IN ('user', 'assistant') ${where}
+       WHERE id > ? ${upper} AND ${conversationRows()}
        ORDER BY id`,
     )
     const out: DbLoad = { dbPath, records: [], maxRowId: afterRowId, stats: { rowsRead: 0, dropped: 0, unwrapped: 0, chars: 0, stripped: {} } }

@@ -22,7 +22,7 @@
 import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { isContentLensEnabled } from './lens-launch.js'
-import { SWEEP_COOLDOWN_MS, acquireLock, libraryHomeDir, releaseLock, sweepCoolingDown, touchLock, writeSweepStatus, type SweepError, type SweepStatus } from './lens-paths.js'
+import { SWEEP_COOLDOWN_MS, readLiveSessions, acquireLock, libraryHomeDir, releaseLock, sweepCoolingDown, touchLock, writeSweepStatus, type SweepError, type SweepStatus } from './lens-paths.js'
 import { logLine } from './lens-profile.js'
 import { libraryBacklog, libraryDirFor, libraryMinSpanMs, readManifest, runLibraryStep, type ManifestEntry } from './lens-library.js'
 import type { LibraryPeriod } from './lens-library-select.js'
@@ -103,7 +103,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
   const deadline = Date.now() + SWEEP_BUDGET_MS
   const now = o.now ?? Date.now()
   const st: SweepStatus = {
-    status: 'running', trigger: o.trigger ?? 'manual', at: new Date().toISOString(), finishedAt: undefined, pid: process.pid,
+    status: 'running', trigger: o.trigger ?? 'manual', at: new Date().toISOString(), finishedAt: null, pid: process.pid,
     pagesWritten: 0, digestsWritten: 0, modelCalls: 0, costUsd: 0, capHit: false, errors: [], backlog: undefined,
   }
   const err = (e: SweepError) => {
@@ -147,18 +147,30 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
     // A live session's project is left alone: its compaction run must find the project lock free.
     const liveProjects = new Set(stores.filter(s => exclude.has(s.sessionId)).map(s => s.projectDir))
     let livePeriods = 0
+    // Sessions whose short chats are known this run (scanned, or from the cache): a digest day is only
+    // rewritten when every chat it holds comes from one of them, so a rewrite never drops a chat.
+    const known = new Set<string>()
     for (const s of stores) {
       if (Date.now() > deadline) {
         st.capHit = true
-        err({ kind: 'scan', message: 'time budget reached while scanning; the rest waits for the next run' })
+        err({ kind: 'time', message: 'time budget reached while scanning; the rest waits for the next run' })
         break
       }
-      if (exclude.has(s.sessionId)) continue
-      const fp = `${fingerprint(s.db)}|${minSpan}`
       const hit = cache[s.sessionId]
+      if (exclude.has(s.sessionId)) {
+        // Live: never scanned, but its last settled short chats still belong to their days.
+        if (hit && Array.isArray(hit.short)) {
+          nextCache[s.sessionId] = hit
+          for (const p of hit.short) shortChats.push({ ...s, period: p })
+          known.add(s.sessionId)
+        }
+        continue
+      }
+      const fp = `${fingerprint(s.db)}|${minSpan}`
       if (hit?.fp === fp && Array.isArray(hit.short)) {
         nextCache[s.sessionId] = hit
         for (const p of hit.short) shortChats.push({ ...s, period: p })
+        known.add(s.sessionId)
         continue
       }
       try {
@@ -170,6 +182,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
         } else for (const p of b.periods) items.push({ kind: 'period', s, p, at: Date.parse(p.toTs) || 0 })
         for (const p of b.short) shortChats.push({ ...s, period: p })
         scanned.push({ s, fp, periods: b.periods.length, short: b.short, written: Object.values(manifest.periods).filter(e => e.status === 'ok') })
+        known.add(s.sessionId)
       } catch (e) {
         err({ kind: 'scan', ref: s.sessionId.slice(0, 8), message: errorLine(e) })
       }
@@ -189,7 +202,16 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
     const { days, today, emptied } = pendingDigestDays(shortChats, dm, now, stale)
     const scrubAll = (s: string) => redactSecrets(loadClientRedactor(null).redact(s), { assistant: true })
     if (!o.dry) for (const day of emptied) await removeDigestDay(dDir, day, { scrub: scrubAll, log })
-    for (const [day, chats] of days) items.push({ kind: 'digest', day, chats, at: Math.max(...chats.map(c => Date.parse(c.period.toTs) || 0)) })
+    const onDisk = new Set(stores.map(s => s.sessionId))
+    const sessionOf = (k: string) => k.slice(0, k.lastIndexOf(':'))
+    for (const [day, chats] of days) {
+      const unknown = (dm.days[day]?.chats ?? []).filter(k => onDisk.has(sessionOf(k)) && !known.has(sessionOf(k)))
+      if (unknown.length) {
+        log(`digest ${day}: waits — ${unknown.length} of its chat(s) come from a session not read this run`)
+        continue
+      }
+      items.push({ kind: 'digest', day, chats, at: Math.max(...chats.map(c => Date.parse(c.period.toTs) || 0)) })
+    }
     // Settled = nothing pending for it now; skipped by later scans until its store changes.
     const waiting = new Set([...today, ...[...days.values()].flat()].map(c => c.sessionId))
     for (const x of scanned) if (!x.periods && !waiting.has(x.s.sessionId)) nextCache[x.s.sessionId] = { fp: x.fp, short: x.short }
@@ -199,6 +221,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
 
     // 2. Write, newest first, under the cap. One attempt per period/day per run.
     let periodsDone = 0
+    let emptyDays = 0
     let infraFails = 0
     let calls = 0
     const reserve = (usd: number): Reservation | null | 'cap' => {
@@ -210,6 +233,11 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
         throw e
       }
     }
+    // The guard refuses for the Library's daily cap, or (its deadline) the sweep's time budget.
+    const capStop = () =>
+      guard.capHit === 'time'
+        ? err({ kind: 'time', message: 'time budget reached; the rest waits for the next run' })
+        : err({ kind: 'cap', message: 'Library daily spend cap reached' })
     for (const it of items) {
       if (calls >= maxPages || Date.now() > deadline) {
         st.capHit = true
@@ -224,6 +252,13 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
       if (it.kind === 'period') {
         const sid8 = it.s.sessionId.slice(0, 8)
         const pd = it.s.projectDir
+        // A session that went live since the scan (the agent rewrites the list as it changes) leaves its project alone.
+        const liveNow = readLiveSessions()
+        if (liveNow && stores.some(x => liveNow.includes(x.sessionId) && x.projectDir === pd)) {
+          livePeriods++
+          log(`${sid8}: a session in this project went live — next run`)
+          continue
+        }
         if (!acquireLock(pd)) {
           log(`${sid8}: project busy (another worker holds its lock) — next run`)
           continue
@@ -232,7 +267,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
         if (held === 'cap') {
           releaseLock(pd)
           st.capHit = true
-          err({ kind: 'cap', message: `daily spend cap reached (${guard.capHit})` })
+          capStop()
           break
         }
         let spent = 0
@@ -261,13 +296,14 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
         const held = reserve(DIGEST_CAP_USD)
         if (held === 'cap') {
           st.capHit = true
-          err({ kind: 'cap', message: `daily spend cap reached (${guard.capHit})` })
+          capStop()
           break
         }
         const r = await runDigestDay({ day: it.day, chats: it.chats, dir: o.dry ? join(dryDir, 'digests') : dDir, dry: o.dry, log })
         if (held) guard.settle(held, r.costUsd)
         st.costUsd += r.costUsd
-        if (r.status !== 'failed') calls++
+        if (r.status === 'written' || r.status === 'dry' || r.status === 'model-error') calls++
+        if (r.status === 'empty') emptyDays++
         if (r.status === 'written') st.digestsWritten++
         if (r.status === 'model-error' || r.status === 'failed') err({ kind: 'digest', ref: it.day, message: errorLine(r.errors.join('; ')) })
         infraFails = r.status === 'failed' || isTransportError(r.errors) ? infraFails + 1 : 0
@@ -284,7 +320,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
     }
 
     const pendingPeriods = items.filter(i => i.kind === 'period').length - periodsDone + livePeriods
-    st.backlog = { periods: Math.max(0, pendingPeriods), digestDays: Math.max(0, days.size - st.digestsWritten), todayChats: today.length }
+    st.backlog = { periods: Math.max(0, pendingPeriods), digestDays: Math.max(0, days.size - st.digestsWritten - emptyDays), todayChats: today.length }
     log(`done: ${st.pagesWritten} page(s), ${st.digestsWritten} digest(s), ${calls} call(s), $${st.costUsd.toFixed(4)}; left: ${st.backlog.periods} period(s), ${st.backlog.digestDays} digest day(s)${st.capHit ? ' — cap reached' : ''}`)
     return finish('done')
   } catch (e) {

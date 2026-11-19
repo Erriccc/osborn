@@ -4,7 +4,7 @@
 process.env.TZ = 'America/New_York' // before any Date: local days differ from UTC days
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -43,6 +43,8 @@ let digestCalls = 0
 let failPeriods: 'none' | 'http500' | 'garbage' = 'none'
 const PERIOD_REPLY = JSON.stringify({ high_leverage: [], period_goal: { text: 'Catch up.', quotes: [] }, arc: [], what_worked: { held_up: [], didnt: [] }, stories: [], angles: [] })
 let ingestCalls = 0
+let captureMid = false
+let midStatus: any = null
 globalThis.fetch = (async (url: any, init?: any) => {
   const u = String(url)
   if (u.includes('/rest/v1/rpc/content_ingest')) {
@@ -57,6 +59,7 @@ globalThis.fetch = (async (url: any, init?: any) => {
   let content: string
   if (user.startsWith('DAILY DIGEST')) {
     digestCalls++
+    if (captureMid) midStatus = readSweepStatus()
     const ns = [...user.matchAll(/<chat n="(\d+)">\n([^\n]*)/g)]
     content = JSON.stringify({ chats: ns.map(m => ({ n: Number(m[1]), title: `Title: ${m[2].replace(/^user: /, '').slice(0, 30)}`, summary: `Summary of chat ${m[1]}.` })) })
   } else {
@@ -381,6 +384,48 @@ await t('a gap period whose file name is another page\'s is logged, not silently
   const b = libraryBacklog(dbp, m, H, l => logs.push(l))
   assert.deepEqual(b.periods, [])
   assert.ok(logs.some(l => /period #1–#2 would be 2026-03-01-period-01\.md, which is period #3's page/.test(l)), logs.join('\n'))
+})
+await t('a day whose chats are all injected context costs nothing and publishes nothing', async () => {
+  const tail = '<session_tail>\n2026-03-07T09:00  Assistant: replayed\n</session_tail>'
+  await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW }) // settle what earlier tests left pending
+  makeSession('sweep-empty-0001', [['user', tail, day(7, 9)], ['user', tail, day(7, 9, 5)]], '-zz-empty')
+  const before = { d: digestCalls, i: ingestCalls, spent: daySpentNow() }
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
+  assert.equal(digestCalls, before.d, 'no model call')
+  assert.equal(ingestCalls, before.i, 'no ingest')
+  assert.equal(daySpentNow(), before.spent, 'nothing charged')
+  assert.ok(!existsSync(join(dDir, '2026-03-07-digest.md')), 'no page')
+  assert.equal(readDigestManifest(dDir).days['2026-03-07']?.status, 'empty')
+  assert.equal(s.digestsWritten, 0)
+  assert.equal(s.backlog?.digestDays, 0, 'the day is settled, not pending')
+  await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
+  assert.equal(digestCalls, before.d, 'and it is not reprocessed')
+})
+await t('a day rewrite never drops a chat from a session not read this run; a live session\'s cached chats count', async () => {
+  // s2 (2 Mar) is live but settled in the cache: its chat is kept when a new chat joins its day.
+  makeSession('sweep-s5-0001', [['user', 'Evening question', day(2, 19)], ['assistant', 'answer', day(2, 19, 10)]])
+  await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid, 'sweep-s2-0001'], now: NOW })
+  let md = readFileSync(join(dDir, '2026-03-02-digest.md'), 'utf-8')
+  assert.ok(md.includes('Morning question') && md.includes('Evening question'), md)
+  // With no cache entry for the live s2, the day cannot be rewritten safely: it waits.
+  rmSync(join(home, 'sweep-scan.json'), { force: true })
+  makeSession('sweep-s6-0001', [['user', 'Night question', day(2, 21)], ['assistant', 'answer', day(2, 21, 10)]])
+  const before = digestCalls
+  const s = await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid, 'sweep-s2-0001'], now: NOW })
+  assert.equal(digestCalls, before, 'the day waits')
+  assert.ok(!readFileSync(join(dDir, '2026-03-02-digest.md'), 'utf-8').includes('Night question'))
+  assert.ok(s.backlog!.digestDays >= 1, 'and is still counted')
+  // Once s2 is readable again the day is rewritten with every chat. Meanwhile /health keeps the last backlog.
+  const prevBacklog = readSweepStatus()!.backlog
+  captureMid = true
+  try {
+    await runLibrarySweep({ cooldownMs: 0, trigger: 'test', exclude: [lSid], now: NOW })
+  } finally { captureMid = false }
+  md = readFileSync(join(dDir, '2026-03-02-digest.md'), 'utf-8')
+  assert.ok(md.includes('Morning question') && md.includes('Evening question') && md.includes('Night question'), md)
+  assert.equal(midStatus?.status, 'running')
+  assert.equal(midStatus?.finishedAt, null, 'the previous end is cleared while running')
+  assert.deepEqual(midStatus?.backlog, prevBacklog, 'the backlog is not wiped while a sweep runs')
 })
 await t('never two at once: a held sweep lock → launch returns locked (no spawn)', () => {
   assert.ok(acquireLock(home))

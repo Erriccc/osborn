@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { LOCK_FILE, LOCK_TTL_MS, LOG_FILE, acquireLock, findTranscriptBySessionId, libraryHomeDir, readSweepStatus, releaseLock, resolveProjectDir, slugDir, sweepCoolingDown, writeSweepStatus, type SweepError } from './lens-paths.js'
+import { LOCK_FILE, LOCK_TTL_MS, LOG_FILE, acquireLock, findTranscriptBySessionId, libraryHomeDir, readSweepStatus, releaseLock, resolveProjectDir, slugDir, sweepCoolingDown, writeLiveSessions, writeSweepStatus, type SweepError } from './lens-paths.js'
 
 export interface LensLaunchPayload {
   sessionId: string
@@ -180,8 +180,22 @@ export const lastLibraryRun = () => lastRun
 
 /** Sessions still running on this machine (set by the agent); retries and sweeps never touch them. */
 let liveSessions: () => string[] = () => []
+let liveWriter: ReturnType<typeof setInterval> | null = null
+/** Also keeps <osb-library>/live-sessions.json current (every 30s, written only on change), so a running sweep sees sessions that go live. */
 export function setLibraryLiveSessions(fn: () => string[]): void {
   liveSessions = fn
+  const write = () => {
+    try {
+      writeLiveSessions(liveSessions())
+    } catch {
+      /* best-effort */
+    }
+  }
+  write()
+  if (!liveWriter) {
+    liveWriter = setInterval(write, 30_000)
+    liveWriter.unref?.()
+  }
 }
 
 /** A session end that found its project locked is retried after the lock can have expired (#268). */
@@ -254,6 +268,7 @@ export function launchLibrarySweep(live: string[], trigger: string): LensLaunchR
       lockHeld = false
       return { status: 'cooldown' }
     }
+    writeLiveSessions(live)
     const argFile = writeArgFile({ sweep: { exclude: live.filter(Boolean), trigger }, sweepLockHeld: true })
     const pid = spawnWorker(cmd, argFile, home, err => {
       releaseLock(home)

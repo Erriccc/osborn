@@ -50,7 +50,8 @@ export interface DigestEntry {
   file: string
   /** chatKey() of every chat the page holds. */
   chats: string[]
-  status: 'ok' | 'error' | 'dry'
+  /** 'empty' = every chat that day was injected context only (nothing to summarise): no page, no call. */
+  status: 'ok' | 'error' | 'dry' | 'empty'
   failures?: number
   /** Chats of the last failed attempt. */
   tried?: string[]
@@ -65,7 +66,7 @@ export interface DigestManifest {
   days: Record<string, DigestEntry>
 }
 
-export type DigestStatus = 'written' | 'dry' | 'model-error' | 'failed'
+export type DigestStatus = 'written' | 'dry' | 'empty' | 'model-error' | 'failed'
 export interface DigestResult {
   status: DigestStatus
   page: string | null
@@ -138,7 +139,7 @@ export function pendingDigestDays(
     const gone = e.chats.some(k => stale.has(k))
     // Keeps failing on the same chats: stop until another chat turns up for that day.
     const stuck = (e.failures ?? 0) >= MAX_DIGEST_FAILURES && keys.every(k => e.chats.includes(k) || (e.tried ?? []).includes(k))
-    if ((e.status === 'ok' && !fresh && !gone) || stuck) byDay.delete(day)
+    if (((e.status === 'ok' || e.status === 'empty') && !fresh && !gone) || stuck) byDay.delete(day)
   }
   return { days: byDay, today: waiting, emptied }
 }
@@ -241,20 +242,33 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
     const m = readDigestManifest(dir)
     const prev = m.days[o.day]
     const every = [...o.chats].sort((a, b) => a.period.fromTs.localeCompare(b.period.fromTs))
-    const chats = every.slice(0, MAX_CHATS_PER_DAY)
     const reds = new Map<string, ClientRedactor>()
     const redFor = (pd: string) => reds.get(pd) ?? reds.set(pd, loadClientRedactor(pd)).get(pd)!
-    const items: DigestItem[] = chats.map((c, i) => {
-      const red = redFor(c.projectDir)
-      const recs = loadConversationRows(c.db, c.period.startRowId - 1, red.redact, c.period.endRowId).records
+    // Segmentation counts raw rows; only the sanitised rows count here. A chat with fewer than two
+    // left (a replayed session tail, a lone message) is not a chat: it is left out before numbering.
+    const kept = every
+      .map(c => ({ c, recs: loadConversationRows(c.db, c.period.startRowId - 1, redFor(c.projectDir).redact, c.period.endRowId).records }))
+      .filter(x => x.recs.length >= 2)
+    const items: DigestItem[] = kept.slice(0, MAX_CHATS_PER_DAY).map(({ c, recs }, i) => {
       const all = recs.map(r => `${r.speaker}: ${r.text}`).join('\n')
       const text = all.length > CHAT_HEAD + CHAT_TAIL ? `${all.slice(0, CHAT_HEAD)}\n…\n${all.slice(-CHAT_TAIL)}` : all
       const first = recs.find(r => r.speaker === 'user')?.text ?? recs[0]?.text ?? ''
       return { n: i + 1, chat: c, text, fallbackTitle: clip(oneLine(first), 80) || 'Untitled chat' }
     })
     const scrub = (s: string) => redactSecrets([...reds.values()].reduce((t, r) => r.redact(t), s), { assistant: true })
-    // Every chat of the day is recorded, listed or not, so a busy day is not re-digested each run.
+    // Every chat of the day is recorded, listed, empty or not, so the day is not re-digested each run.
     const keys = every.map(chatKey)
+    if (!items.length) {
+      // Nothing to summarise: no call, no page, no ingest. An earlier page of that day goes (removeDigestDay).
+      if (prev?.status === 'ok') await removeDigestDay(dir, o.day, { scrub, log })
+      const m2 = readDigestManifest(dir)
+      m2.days[o.day] = m2.days[o.day]
+        ? { ...m2.days[o.day], chats: keys }
+        : { day: o.day, file: digestFileName(o.day), chats: keys, status: 'empty', costUsd: 0, errors: [], updatedAt: new Date().toISOString() }
+      writeDigestManifest(dir, m2)
+      log(`digest ${o.day}: ${every.length} chat(s), none with anything to summarise — no page`)
+      return { ...res, status: 'empty' }
+    }
     const fail = (status: DigestStatus): DigestResult => {
       m.days[o.day] = {
         ...(prev ?? { day: o.day, file: digestFileName(o.day), chats: [] }),
@@ -293,7 +307,7 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
       if (!items.some(i => i.summary)) return fail('model-error')
     }
 
-    const markdown = scrub(renderDigestMd(o.day, items, { costUsd: res.costUsd, dry: o.dry, total: every.length }))
+    const markdown = scrub(renderDigestMd(o.day, items, { costUsd: res.costUsd, dry: o.dry, total: kept.length }))
     const file = digestFileName(o.day)
     res.page = join(dir, file)
     writeAtomic(res.page, markdown)
