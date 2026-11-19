@@ -244,7 +244,10 @@ async function main(): Promise<number> {
       logLine(logDir, `session ${sid}: library status=${lib.status} cost=$${lib.costUsd.toFixed(4)}${lib.page ? ` page=${lib.page}` : ''}`)
       if (job.kind === 'library') process.stdout.write(`${JSON.stringify({ status: lib.status, page: lib.page, index: lib.index, period: lib.period, cost: lib.costUsd, errors: lib.errors })}\n`)
       if (lib.status === 'written') libPeriod = lib.period
-      // Make a failed page visible on /health (the worker's own output goes nowhere).
+      // The step's real outcome, on /health (the worker's own output goes nowhere).
+      if (job.kind !== 'library') {
+        writeSweepStatus({ lastStep: { at: new Date().toISOString(), session: sid, status: lib.status, ...(lib.period ? { period: lib.period.index } : {}), costUsd: lib.costUsd } })
+      }
       if (lib.status === 'failed' || lib.status === 'model-error') {
         writeSweepStatus({ workerError: { at: new Date().toISOString(), kind: `library-${lib.status}`, ref: sid, message: lib.errors.join('; ').slice(0, 200) } })
       }

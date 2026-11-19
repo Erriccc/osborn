@@ -54,6 +54,8 @@ export interface Manifest {
   sessionId: string
   /** key = String(startRowId) */
   periods: Record<string, ManifestEntry>
+  /** Keys of malformed entries dropped on read (never written back). */
+  invalid?: string[]
 }
 
 export type LibraryStatus =
@@ -139,10 +141,30 @@ export function libraryDirFor(dbPath: string, sessionId: string): string {
   return join(dirname(dbPath), 'library', sessionId.slice(0, 8))
 }
 
+const posInt = (n: unknown): n is number => Number.isInteger(n) && (n as number) > 0
+
+/** A manifest entry the segmentation can trust: finite row range and index, a page file, its own key. */
+export function isValidEntry(key: string, e: any): e is ManifestEntry {
+  return !!e && typeof e === 'object' && ['ok', 'error', 'dry'].includes(e.status) && posInt(e.startRowId) && posInt(e.endRowId) &&
+    e.endRowId >= e.startRowId && posInt(e.index) && typeof e.file === 'string' && !!e.file && key === String(e.startRowId)
+}
+
+/**
+ * Malformed entries (hand-edited, legacy, partly written) are dropped and their keys listed in
+ * `invalid`, so NaN never reaches segmentation or file names (#271). The next write leaves them out.
+ */
 export function readManifest(dir: string, sessionId: string): Manifest {
   try {
     const o = JSON.parse(readFileSync(join(dir, MANIFEST_FILE), 'utf-8'))
-    if (o && typeof o.periods === 'object' && !Array.isArray(o.periods)) return { version: 1, sessionId, periods: o.periods }
+    if (o && typeof o.periods === 'object' && o.periods && !Array.isArray(o.periods)) {
+      const periods: Record<string, ManifestEntry> = {}
+      const invalid: string[] = []
+      for (const [k, e] of Object.entries(o.periods)) {
+        if (isValidEntry(k, e)) periods[k] = e
+        else invalid.push(k)
+      }
+      return { version: 1, sessionId, periods, ...(invalid.length ? { invalid } : {}) }
+    }
   } catch {
     /* missing / unreadable → empty */
   }
@@ -156,7 +178,8 @@ function writeAtomic(path: string, text: string): void {
 }
 
 export function writeManifest(dir: string, m: Manifest): void {
-  writeAtomic(join(dir, MANIFEST_FILE), JSON.stringify(m, null, 2) + '\n')
+  const { invalid: _invalid, ...out } = m
+  writeAtomic(join(dir, MANIFEST_FILE), JSON.stringify(out, null, 2) + '\n')
 }
 
 const envNum = (k: string): number | undefined => {
@@ -170,16 +193,45 @@ const envNum = (k: string): number | undefined => {
  * written page instead of keeping its start row forever.
  */
 export function librarySegments(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs(), rows: RowStamp[] = rowStamps(db)): Segmentation {
-  // Written pages are frozen: they keep their rows, index and file whatever the period
-  // length is now. Only rows after the last written page are segmented, numbered on.
+  const s = segmentLibrary(db, manifest, minSpanMs, rows)
+  const closed = [...s.frozen, ...s.gapPeriods, ...s.rest.closed].sort((a, b) => a.startRowId - b.startRowId)
+  return { closed, tail: s.rest.tail }
+}
+
+/**
+ * Written pages are frozen: they keep their rows, index and file whatever the period length is
+ * now. Rows after the last written page are segmented and numbered on. Rows BEFORE a written
+ * page that no page covers (a tail written while an earlier closed period was not) are segmented
+ * too, numbered on from the page before them, so that period is never orphaned (#267). A gap's
+ * last stretch is closed by the next written page: a period if it spans the min span, else short.
+ */
+function segmentLibrary(db: string, manifest: Manifest, minSpanMs: number, rows: RowStamp[]) {
+  const seams = readCompactionBoundaries(db)
   const written = Object.values(manifest.periods).filter(e => e.status === 'ok').sort((a, b) => a.startRowId - b.startRowId)
-  const lastEnd = written.length ? Math.max(...written.map(e => e.endRowId)) : 0
-  const lastIndex = written.length ? Math.max(...written.map(e => e.index)) : 0
   const frozen = written.map(e => period(e.index, e.startRowId, e.endRowId, typeof e.closedBy === 'number' ? e.closedBy : null,
     rows.filter(r => r.id >= e.startRowId && r.id <= e.endRowId)))
-  const rest = segmentPeriods(rows.filter(r => r.id > lastEnd), readCompactionBoundaries(db), minSpanMs)
-  const renumber = (p: LibraryPeriod): LibraryPeriod => ({ ...p, index: p.index + lastIndex })
-  return { closed: [...frozen, ...rest.closed.map(renumber)], tail: rest.tail ? renumber(rest.tail) : null }
+  const gapPeriods: LibraryPeriod[] = []
+  const gapShort: LibraryPeriod[] = []
+  let prevEnd = 0
+  let prevIndex = 0
+  for (const e of written) {
+    const gap = rows.filter(r => r.id > prevEnd && r.id < e.startRowId)
+    if (gap.length) {
+      const g = segmentPeriods(gap, seams, minSpanMs)
+      const at = (p: LibraryPeriod): LibraryPeriod => ({ ...p, index: p.index + prevIndex })
+      gapPeriods.push(...g.closed.map(at))
+      if (g.tail) {
+        const t = { ...at(g.tail), closedBy: e.startRowId }
+        if (t.spanMs >= minSpanMs) gapPeriods.push(t)
+        else gapShort.push(t)
+      }
+    }
+    prevEnd = Math.max(prevEnd, e.endRowId)
+    prevIndex = Math.max(prevIndex, e.index)
+  }
+  const after = segmentPeriods(rows.filter(r => r.id > prevEnd), seams, minSpanMs)
+  const renumber = (p: LibraryPeriod): LibraryPeriod => ({ ...p, index: p.index + prevIndex })
+  return { frozen, gapPeriods, gapShort, rest: { closed: after.closed.map(renumber), tail: after.tail ? renumber(after.tail) : null } }
 }
 
 const rowStamps = (db: string): RowStamp[] => loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
@@ -210,30 +262,13 @@ export interface LibraryBacklog {
  * name is already another page's.
  */
 export function libraryBacklog(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs()): LibraryBacklog {
-  const rows = rowStamps(db)
-  const seams = readCompactionBoundaries(db)
-  const written = Object.values(manifest.periods).filter(e => e.status === 'ok').sort((a, b) => a.startRowId - b.startRowId)
-  const periods: LibraryPeriod[] = []
-  const short: LibraryPeriod[] = []
-  const place = (p: LibraryPeriod) => (p.spanMs >= minSpanMs ? periods : short).push(p)
-  let prevEnd = 0
-  let prevIndex = 0
-  for (const e of written) {
-    const gap = rows.filter(r => r.id > prevEnd && r.id < e.startRowId)
-    if (gap.length) {
-      const s = segmentPeriods(gap, seams, minSpanMs)
-      const at = (p: LibraryPeriod): LibraryPeriod => ({ ...p, index: p.index + prevIndex })
-      periods.push(...s.closed.map(at))
-      // The gap's last stretch is closed by the next written page.
-      if (s.tail) place({ ...at(s.tail), closedBy: e.startRowId })
-    }
-    prevEnd = Math.max(prevEnd, e.endRowId)
-    prevIndex = Math.max(prevIndex, e.index)
-  }
-  const seg = librarySegments(db, manifest, minSpanMs, rows)
-  periods.push(...seg.closed.filter(p => p.startRowId > prevEnd))
-  if (seg.tail) place(seg.tail)
-  const owner = new Map(written.map(e => [e.file, e.startRowId]))
+  const s = segmentLibrary(db, manifest, minSpanMs, rowStamps(db))
+  const periods = [...s.gapPeriods, ...s.rest.closed]
+  const short = [...s.gapShort]
+  const tail = s.rest.tail
+  if (tail && tail.spanMs >= minSpanMs) periods.push(tail)
+  else if (tail) short.push(tail)
+  const owner = new Map(Object.values(manifest.periods).filter(e => e.status === 'ok').map(e => [e.file, e.startRowId]))
   return {
     periods: periods.filter(p => {
       const e = manifest.periods[String(p.startRowId)]
@@ -259,6 +294,7 @@ export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStep
     const projectDir = dirname(dirname(dirname(db)))
     const dir = (res.libraryDir = o.outDir ?? libraryDirFor(db, o.sessionId))
     const manifest = readManifest(dir, o.sessionId)
+    if (manifest.invalid?.length) log(`library: dropped ${manifest.invalid.length} malformed manifest entry(ies): ${manifest.invalid.slice(0, 5).join(', ')}`)
     const minSpan = o.minSpanMs ?? libraryMinSpanMs()
     const isDone = (start: number) => manifest.periods[String(start)]?.status === 'ok'
     let target: LibraryPeriod | null

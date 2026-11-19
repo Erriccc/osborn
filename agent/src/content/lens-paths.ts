@@ -215,6 +215,8 @@ export interface SweepStatus {
   errors: SweepError[]
   /** Unwritten work left after this run: eligible periods, past days with undigested short chats, and today's short chats (digested tomorrow). */
   backlog?: { periods: number; digestDays: number; todayChats: number }
+  /** Outcome of the last per-session Library step (session end / compaction), from the worker itself. */
+  lastStep?: { at: string; session: string; status: string; period?: number; costUsd: number }
   /** Last failure of ANY Library worker (crash, or a session-end page that failed). */
   workerError?: { at: string; kind: string; ref?: string; message?: string }
 }

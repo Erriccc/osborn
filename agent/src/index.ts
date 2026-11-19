@@ -58,7 +58,7 @@ import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationIt
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT } from './prompts.js'
 import { MCP_CATALOG } from './config.js'
-import { launchLibraryOnSessionEnd, launchLibrarySweep, lastLibraryRun, librarySweepHealth, isContentLensEnabled } from './content/lens-launch.js'
+import { launchLibraryOnSessionEnd, launchLibrarySweep, lastLibraryRun, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled } from './content/lens-launch.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
@@ -2589,7 +2589,8 @@ async function main() {
 
   // Library catch-up sweep: never touches a session that is still running (focused, parked or background).
   const liveSessionIds = (): string[] =>
-    [(currentLLM as any)?.sessionId, warmSessionId, ...[...slots.values()].map(s => (s.llm as any)?.sessionId)].filter((id): id is string => !!id)
+    [warmParkKey(currentLLM as any), warmSessionId, ...[...slots.values()].map(s => warmParkKey(s.llm as any))].filter((id): id is string => !!id)
+  setLibraryLiveSessions(liveSessionIds)
   setTimeout(() => {
     try {
       launchLibrarySweep(liveSessionIds(), 'startup')
@@ -2875,7 +2876,7 @@ async function main() {
     } catch (err) {
       console.error(`❌ killCurrentLLM(${reason}) failed:`, err instanceof Error ? err.message : err)
     } finally {
-      launchLibraryOnSessionEnd((currentLLM as any)?.sessionId, (currentLLM as any)?.workingDirectory || workingDir, reason, liveSessionIds())
+      launchLibraryOnSessionEnd(warmParkKey(currentLLM as any), (currentLLM as any)?.workingDirectory || workingDir, reason, liveSessionIds())
     }
   }
 
@@ -4179,7 +4180,7 @@ async function main() {
       }
 
       // 4. Close the old query (idle, or forced) and clear its resume state.
-      launchLibraryOnSessionEnd(llmAny.sessionId, llmAny.workingDirectory || workingDir, 'session_switch', [...liveSessionIds(), target])
+      launchLibraryOnSessionEnd(warmParkKey(llmAny), llmAny.workingDirectory || workingDir, 'session_switch', [...liveSessionIds(), target])
       currentLLM.resetForSessionSwitch()
 
       // 5. Cross-project: the SDK cwd, fast brain and session tail move together.
@@ -6324,7 +6325,7 @@ async function main() {
       parkWarm('duplicate_identity')
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
-    } else if (KEEP_WARM && currentLLM && (currentLLM as any).sessionId) {
+    } else if (KEEP_WARM && currentLLM && warmParkKey(currentLLM as any)) {
       // KEEP-WARM network/tab-close drop: park the subprocess instead of killing
       // it so a reconnect within the grace re-attaches with ZERO replay. We
       // STILL run the normal room teardown below — the parked brain is
@@ -6680,7 +6681,7 @@ async function main() {
         // Offered only when the hang-up will park the brain (the KEEP_WARM branch of
         // the disconnect handler) and it is working, not just waiting on an approval.
         const busy = (currentLLM as any)?.busyState?.()
-        const parks = KEEP_WARM && !activeMeetingBotId && !!(currentLLM as any)?.sessionId
+        const parks = KEEP_WARM && !activeMeetingBotId && !!warmParkKey(currentLLM as any)
         await sendToFrontend({ type: 'busy_state', idle: (busy?.idle ?? true) || !!busy?.permissionPending, capMin: parks ? IDLE_EXIT_GRACE_MS / 60000 : 0, phone: isWatchBridgeEnabled() }, participant?.identity)
       }
       else if (data.type === 'keep_working') {

@@ -21,7 +21,7 @@ process.env.OSBORN_LIBRARY_MIN_PERIOD_H = '4' // fixtures are built on 4h period
 delete process.env.OSBORN_SYNC_TOKEN // cloud ingest is covered by library-ingest.test.ts; keep this file offline
 
 const { segmentPeriods, pickLibraryPeriod, pageFileName } = await import('../src/content/lens-library-select.js')
-const { runLibraryStep, readManifest, libraryDirFor, librarySegments, MANIFEST_FILE } = await import('../src/content/lens-library.js')
+const { runLibraryStep, readManifest, writeManifest, libraryDirFor, librarySegments, libraryBacklog, MANIFEST_FILE } = await import('../src/content/lens-library.js')
 const { parsePage } = await import('../src/content/lens-library-index.js')
 const { launchCompactionLens } = await import('../src/content/lens-launch.js')
 const { LOCK_FILE } = await import('../src/content/lens-paths.js')
@@ -245,6 +245,40 @@ await t('parsePage: reads goal / top item / stories from a renderPeriodMd page',
   assert.equal(p.topItem, 'Period library writer shipped [shipped]')
   assert.equal(p.stories.length, 1)
   assert.ok(p.costUsd > 0)
+})
+
+// #267: a written tail must not orphan an earlier closed period that was never written.
+await t('non-contiguous: after a later page is written, an earlier unwritten closed period is still segmented', () => {
+  const m = readManifest(libDir, sid)
+  // Pages 02 and 03 are written; period 01 (#1–#4) never was (the step picked the newer one).
+  assert.ok(!m.periods['1'] && m.periods['5']?.status === 'ok')
+  const seg = librarySegments(dbPath, m, 4 * H)
+  const p1 = seg.closed.find(p => p.startRowId === 1)
+  assert.ok(p1, 'period 01 still reachable')
+  assert.deepEqual([p1!.endRowId, p1!.index, p1!.closedBy], [4, 1, 5])
+  assert.deepEqual(seg.closed.map(p => p.startRowId), [...seg.closed.map(p => p.startRowId)].sort((a, b) => a - b), 'chronological')
+  const b = libraryBacklog(dbPath, m, 4 * H)
+  assert.deepEqual(b.periods.map(p => p.startRowId), [1], 'the backlog (sweep) finds it')
+})
+// #271: malformed manifest entries never poison segmentation with NaN.
+await t('malformed manifest entries are dropped on read, logged, and never written back', async () => {
+  const path = join(libDir, MANIFEST_FILE)
+  const good = JSON.parse(readFileSync(path, 'utf-8'))
+  const bad = { ...good, periods: { ...good.periods, '999': { status: 'ok', startRowId: 999 }, 'x': { status: 'ok', startRowId: 'x', endRowId: null, index: 'n', file: 7 } } }
+  writeFileSync(path, JSON.stringify(bad))
+  const m = readManifest(libDir, sid)
+  assert.deepEqual(m.invalid?.sort(), ['999', 'x'])
+  const seg = librarySegments(dbPath, m, 4 * H)
+  for (const p of [...seg.closed, ...(seg.tail ? [seg.tail] : [])]) {
+    assert.ok(Number.isFinite(p.index) && Number.isFinite(p.startRowId) && Number.isFinite(p.endRowId), JSON.stringify(p))
+    assert.ok(!pageFileName(p).includes('NaN'))
+  }
+  const logs: string[] = []
+  await runLibraryStep({ sessionId: sid, minSpanMs: 4 * H, log: l => logs.push(l) })
+  assert.ok(logs.some(l => /dropped 2 malformed/.test(l)), logs.join('\n'))
+  writeManifest(libDir, m)
+  const back = JSON.parse(readFileSync(path, 'utf-8'))
+  assert.ok(!back.periods['999'] && !back.periods['x'] && !('invalid' in back))
 })
 
 db.close()

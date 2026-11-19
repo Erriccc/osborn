@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
-import { LOCK_FILE, LOG_FILE, acquireLock, findTranscriptBySessionId, libraryHomeDir, readSweepStatus, releaseLock, resolveProjectDir, writeSweepStatus } from './lens-paths.js'
+import { LOCK_FILE, LOCK_TTL_MS, LOG_FILE, acquireLock, findTranscriptBySessionId, libraryHomeDir, readSweepStatus, releaseLock, resolveProjectDir, slugDir, writeSweepStatus } from './lens-paths.js'
 
 export interface LensLaunchPayload {
   sessionId: string
@@ -117,11 +117,11 @@ export function launchCompactionLens(payload: LensLaunchPayload): LensLaunchResu
     const cmd = resolveWorkerCommand()
     if (!cmd) return { status: 'no-worker' }
 
-    projectDir = resolveProjectDir(payload.transcriptPath, payload.cwd)
-    if (!projectDir) {
-      const t = findTranscriptBySessionId(payload.sessionId)
-      projectDir = t ? dirname(t) : null
-    }
+    // The session's own transcript decides the project (session-end launches pass none): a cwd
+    // that slugs to another project would lock the wrong one and let two workers race (#272).
+    const transcriptPath =
+      payload.transcriptPath ?? findTranscriptBySessionId(payload.sessionId, payload.cwd ? slugDir(payload.cwd) : null) ?? undefined
+    projectDir = resolveProjectDir(transcriptPath, payload.cwd)
     if (!projectDir) return { status: 'unlockable', projectDir: null }
     // mkdir then lock; if the dir can't be created or locked, skip the launch entirely
     // (an unlocked worker could race another one on the profile / high-water mark).
@@ -137,7 +137,7 @@ export function launchCompactionLens(payload: LensLaunchPayload): LensLaunchResu
 
     const argFile = writeArgFile({
       sessionId: payload.sessionId,
-      transcriptPath: payload.transcriptPath,
+      transcriptPath,
       cwd: payload.cwd,
       skipLens: !!payload.skipLens,
       lockDir: lockHeld ? projectDir : null,
@@ -166,22 +166,52 @@ export function launchCompactionLens(payload: LensLaunchPayload): LensLaunchResu
 // Session-end Library run. Compaction (the hook trigger) needs ~750k tokens on a
 // 1M window, so it almost never fires; the agent also launches the Library when a
 // session ends (disconnect, switch, cleanup). The worker is idempotent per period.
-type LastRun = { at: string; session: string; reason: string; status: LensLaunchResult['status'] }
+type LastRun = { at: string; session: string; reason: string; status: LensLaunchResult['status']; attempt?: number }
 let lastRun: LastRun | null = null
+// The last launch that actually spawned a worker: a later locked / no-key attempt does not erase it (#270).
+let lastSpawned: LastRun | null = null
 export const lastLibraryRun = () => lastRun
+export const lastSpawnedLibraryRun = () => lastSpawned
+
+/** Sessions still running on this machine (set by the agent); retries and sweeps never touch them. */
+let liveSessions: () => string[] = () => []
+export function setLibraryLiveSessions(fn: () => string[]): void {
+  liveSessions = fn
+}
+
+/** A session end that found its project locked is retried after the lock can have expired (#268). */
+export const sessionEndRetry = { delayMs: LOCK_TTL_MS + 60_000, max: 3 }
+const retries = new Map<string, ReturnType<typeof setTimeout>>()
+/** 8-char ids of sessions waiting for a session-end retry. */
+export const pendingLibraryRetries = (): string[] => [...retries.keys()].map(s => s.slice(0, 8))
 
 /**
  * `live` = sessions still running on this machine (never swept). The worker writes this
  * session's page, then runs the catch-up sweep. When another worker holds this project's
- * lock, a standalone sweep is launched instead (it skips that project while it is busy).
+ * lock, a standalone sweep is launched for the other sessions, and this launch is retried
+ * (up to sessionEndRetry.max times) unless the session is live again by then.
  */
-export function launchLibraryOnSessionEnd(sessionId: string | null | undefined, cwd: string | undefined, reason: string, live: string[] = []): LastRun | null {
+export function launchLibraryOnSessionEnd(
+  sessionId: string | null | undefined, cwd: string | undefined, reason: string, live: string[] = liveSessions(), attempt = 0,
+): LastRun | null {
   if (!sessionId) return null
   const exclude = live.filter(id => id && id !== sessionId)
   const r = launchCompactionLens({ sessionId, cwd, skipLens: true, sweep: { exclude, trigger: `session-end:${reason}` } })
-  lastRun = { at: new Date().toISOString(), session: sessionId.slice(0, 8), reason, status: r.status }
-  console.log(`📚 library on session end (${reason}): ${lastRun.session} → ${r.status}`)
-  if (r.status === 'locked' || r.status === 'unlockable') launchLibrarySweep(exclude, `session-end:${reason}`)
+  lastRun = { at: new Date().toISOString(), session: sessionId.slice(0, 8), reason, status: r.status, ...(attempt ? { attempt } : {}) }
+  console.log(`📚 library on session end (${reason}${attempt ? `, retry ${attempt}` : ''}): ${lastRun.session} → ${r.status}`)
+  if (r.status === 'spawned') lastSpawned = lastRun
+  if (r.status === 'locked' || r.status === 'unlockable') {
+    if (!attempt) launchLibrarySweep(exclude, `session-end:${reason}`)
+    if (attempt < sessionEndRetry.max && !retries.has(sessionId)) {
+      const timer = setTimeout(() => {
+        retries.delete(sessionId)
+        if (liveSessions().includes(sessionId)) return // resumed: its next end launches again
+        launchLibraryOnSessionEnd(sessionId, cwd, reason, liveSessions(), attempt + 1)
+      }, sessionEndRetry.delayMs)
+      timer.unref?.()
+      retries.set(sessionId, timer)
+    }
+  }
   return lastRun
 }
 
@@ -220,16 +250,20 @@ export function launchLibrarySweep(live: string[], trigger: string): LensLaunchR
  * The /health view of the sweep status file (survives restarts). Counts, kinds and 8-char
  * ids or days only: never messages or paths (/health is public).
  */
-export function librarySweepHealth(): { backlog: unknown; lastSweep: unknown; workerError: unknown } {
+export function librarySweepHealth(): Record<string, unknown> {
   const s = readSweepStatus()
-  if (!s) return { backlog: null, lastSweep: null, workerError: null }
   return {
-    backlog: s.backlog ?? null,
-    lastSweep: {
-      status: s.status, trigger: s.trigger, at: s.at, finishedAt: s.finishedAt ?? null,
-      pagesWritten: s.pagesWritten, digestsWritten: s.digestsWritten, modelCalls: s.modelCalls, costUsd: s.costUsd,
-      capHit: !!s.capHit, errors: (s.errors ?? []).map(e => ({ kind: e.kind, ref: e.ref ?? null })),
-    },
-    workerError: s.workerError ? { at: s.workerError.at, kind: s.workerError.kind, ref: s.workerError.ref ?? null } : null,
+    lastSpawned,
+    pendingRetries: pendingLibraryRetries(),
+    lastStep: s?.lastStep ?? null,
+    backlog: s?.backlog ?? null,
+    lastSweep: s?.at
+      ? {
+          status: s.status, trigger: s.trigger, at: s.at, finishedAt: s.finishedAt ?? null,
+          pagesWritten: s.pagesWritten, digestsWritten: s.digestsWritten, modelCalls: s.modelCalls, costUsd: s.costUsd,
+          capHit: !!s.capHit, errors: (s.errors ?? []).map(e => ({ kind: e.kind, ref: e.ref ?? null })),
+        }
+      : null,
+    workerError: s?.workerError ? { at: s.workerError.at, kind: s.workerError.kind, ref: s.workerError.ref ?? null } : null,
   }
 }
