@@ -21,7 +21,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
-import { loadConversationRows, resolveSessionDb } from './lens-db.js'
+import { resolveSessionDb, loadRowStamps } from './lens-db.js'
 import { isContentLensEnabled } from './lens-launch.js'
 import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { loadClientRedactor } from './lens-redact.js'
@@ -207,7 +207,7 @@ export function librarySegments(db: string, manifest: Manifest, minSpanMs = libr
  * last stretch is closed by the next written page: a period if it spans the min span, else short.
  */
 function segmentLibrary(db: string, manifest: Manifest, minSpanMs: number) {
-  const rows = loadConversationRows(db, 0).records.map(r => ({ id: r.id, timestamp: r.timestamp }))
+  const rows = loadRowStamps(db) // ids + timestamps only: no blob is decompressed for segmentation
   const seams = readCompactionBoundaries(db)
   const written = Object.values(manifest.periods).filter(e => e.status === 'ok').sort((a, b) => a.startRowId - b.startRowId)
   const frozen = written.map(e => period(e.index, e.startRowId, e.endRowId, typeof e.closedBy === 'number' ? e.closedBy : null,
@@ -258,7 +258,7 @@ export interface LibraryBacklog {
  * would give it. Excludes written periods, periods that keep failing, and periods whose file
  * name is already another page's.
  */
-export function libraryBacklog(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs()): LibraryBacklog {
+export function libraryBacklog(db: string, manifest: Manifest, minSpanMs = libraryMinSpanMs(), log: (m: string) => void = () => {}): LibraryBacklog {
   const s = segmentLibrary(db, manifest, minSpanMs)
   const periods = [...s.gapPeriods, ...s.rest.closed]
   const short = [...s.gapShort]
@@ -270,8 +270,11 @@ export function libraryBacklog(db: string, manifest: Manifest, minSpanMs = libra
     periods: periods.filter(p => {
       const e = manifest.periods[String(p.startRowId)]
       if (e?.status === 'ok' || (e?.status === 'error' && (e.failures ?? 0) >= MAX_PERIOD_FAILURES)) return false
-      const o = owner.get(pageFileName(p))
-      return o === undefined || o === p.startRowId
+      const file = pageFileName(p)
+      const o = owner.get(file)
+      if (o === undefined || o === p.startRowId) return true
+      log(`library: period #${p.startRowId}–#${p.endRowId} would be ${file}, which is period #${o}'s page — skipped (write it by hand)`)
+      return false
     }),
     short,
   }

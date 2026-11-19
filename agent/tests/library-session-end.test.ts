@@ -10,7 +10,7 @@ process.env.CLAUDE_CONFIG_DIR = join(tmp, 'claude')
 delete process.env.OPENROUTER_API_KEY
 delete process.env.OSBORN_CONTENT_LENS
 delete process.env.OSBORN_SYNC_TOKEN
-const { launchLibraryOnSessionEnd, lastLibraryRun, launchCompactionLens, sessionEndRetry, librarySweepHealth } =
+const { launchLibraryOnSessionEnd, lastLibraryRun, launchCompactionLens, launchCompactionLensWithRetry, sessionEndRetry, librarySweepHealth } =
   await import('../src/content/lens-launch.js')
 const { acquireLock, releaseLock, libraryHomeDir, readSweepStatus, LOCK_FILE } = await import('../src/content/lens-paths.js')
 
@@ -72,6 +72,12 @@ try {
   const h = health()
   assert.equal(h.lastSpawned.status, 'spawned')
   assert.equal(h.lastStep.status, 'no-db')
+  // The PostCompact launch gets the same bounded retry when it finds its project locked.
+  const c = launchCompactionLensWithRetry({ sessionId: sid, transcriptPath: join(realProject, `${sid}.jsonl`), cwd: wrongCwd })
+  assert.equal(c.status, 'locked')
+  assert.equal(health().pendingRetries, 1, 'a compaction retry is pending')
+  await new Promise(res => setTimeout(res, 300))
+  assert.equal(health().pendingRetries, 0, 'retried up to the max, then stops')
 } finally {
   releaseLock(realProject)
   releaseLock(libraryHomeDir())

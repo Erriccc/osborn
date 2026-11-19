@@ -205,17 +205,34 @@ export function launchLibraryOnSessionEnd(
   if (r.status === 'spawned') lastSpawned = lastRun
   if (r.status === 'locked' || r.status === 'unlockable') {
     if (!attempt) launchLibrarySweep(exclude, `session-end:${reason}`)
-    if (attempt < sessionEndRetry.max && !retries.has(sessionId)) {
-      const timer = setTimeout(() => {
-        retries.delete(sessionId)
-        if (liveSessions().includes(sessionId)) return // resumed: its next end launches again
-        launchLibraryOnSessionEnd(sessionId, cwd, reason, liveSessions(), attempt + 1)
-      }, sessionEndRetry.delayMs)
-      timer.unref?.()
-      retries.set(sessionId, timer)
-    }
+    retryLater(`end:${sessionId}`, attempt, () => {
+      if (liveSessions().includes(sessionId)) return // resumed: its next end launches again
+      launchLibraryOnSessionEnd(sessionId, cwd, reason, liveSessions(), attempt + 1)
+    })
   }
   return lastRun
+}
+
+/** One bounded retry chain per key: run `fn` after sessionEndRetry.delayMs, while attempts < max. */
+function retryLater(key: string, attempt: number, fn: () => void): void {
+  if (attempt >= sessionEndRetry.max || retries.has(key)) return
+  const timer = setTimeout(() => {
+    retries.delete(key)
+    fn()
+  }, sessionEndRetry.delayMs)
+  timer.unref?.()
+  retries.set(key, timer)
+}
+
+/**
+ * The PostCompact launch, with the same bounded retry as a session end: a compaction that finds
+ * its project locked (a sweep page or a session-end worker is running there) is launched again
+ * once the lock can have gone, instead of being dropped.
+ */
+export function launchCompactionLensWithRetry(payload: LensLaunchPayload, attempt = 0): LensLaunchResult {
+  const r = launchCompactionLens(payload)
+  if (r.status === 'locked') retryLater(`compact:${payload.sessionId}`, attempt, () => launchCompactionLensWithRetry(payload, attempt + 1))
+  return r
 }
 
 /**

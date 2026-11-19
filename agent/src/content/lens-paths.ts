@@ -243,29 +243,63 @@ export function readSweepStatus(home = libraryHomeDir()): SweepStatus | null {
   }
 }
 
-/** Merge `patch` into the status file (atomic). Never throws. */
+/**
+ * Merge `patch` into the status file (atomic). Only the patch's own fields change: the sweep and a
+ * session-end worker write different fields of the same file, so the read-merge-write runs under a
+ * short exclusive lock (a few ms; a lock older than 5s is taken over) and never loses the other's
+ * fields. Never throws.
+ */
 export function writeSweepStatus(patch: Partial<SweepStatus>, home = libraryHomeDir()): void {
+  const path = join(home, SWEEP_STATUS_FILE)
+  const lock = `${path}.lock`
+  let fd: number | null = null
   try {
     mkdirSync(home, { recursive: true })
+    for (let i = 0; i < 40 && fd === null; i++) {
+      try {
+        fd = openSync(lock, 'wx', 0o600)
+      } catch (e: any) {
+        if (e?.code !== 'EEXIST') break
+        try {
+          if (Date.now() - statSync(lock).mtimeMs > 5_000) rmSync(lock, { force: true })
+        } catch {
+          /* gone already */
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5)
+      }
+    }
     let prev: Partial<SweepStatus> = {}
     try {
-      prev = JSON.parse(readFileSync(join(home, SWEEP_STATUS_FILE), 'utf-8'))
+      prev = JSON.parse(readFileSync(path, 'utf-8'))
     } catch {
       /* first write */
     }
     const next = { ...prev, ...patch, errors: (patch.errors ?? prev.errors ?? []).slice(0, 20) }
-    writePrivateAtomic(join(home, SWEEP_STATUS_FILE), JSON.stringify(next, null, 2) + '\n')
+    writePrivateAtomic(path, JSON.stringify(next, null, 2) + '\n')
   } catch {
     /* status is best-effort */
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+        rmSync(lock, { force: true })
+      } catch {
+        /* ignore */
+      }
+    }
   }
 }
 
 /** A sweep does not start within this long of the last one finishing (agent start and every session end launch one). */
 export const SWEEP_COOLDOWN_MS = 30 * 60_000
 
-/** True while the last sweep finished less than `cooldownMs` ago. */
+/**
+ * True while the last sweep ended (done, timeout, error or died) less than `cooldownMs` ago,
+ * measured from its finishedAt, else its start (a sweep that died never wrote finishedAt).
+ */
 export function sweepCoolingDown(cooldownMs = SWEEP_COOLDOWN_MS, home = libraryHomeDir()): boolean {
   const s = readSweepStatus(home)
-  const at = s?.status === 'done' && s.finishedAt ? Date.parse(s.finishedAt) : NaN
+  if (!s || !['done', 'timeout', 'error', 'died'].includes(s.status)) return false
+  const at = Date.parse(s.finishedAt ?? s.at)
   return Number.isFinite(at) && Date.now() - at < cooldownMs
 }

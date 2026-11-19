@@ -316,13 +316,24 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
 }
 
 /** Remove a digested day none of whose chats is left (they grew into period pages). No model call. */
-export function removeDigestDay(dir: string, day: string, log: (m: string) => void = () => {}): void {
+export async function removeDigestDay(dir: string, day: string, o: IngestOptions = {}): Promise<void> {
+  const log = o.log ?? (() => {})
   const m = readDigestManifest(dir)
   const e = m.days[day]
   if (!e) return
-  rmSync(join(dir, e.file), { force: true })
-  delete m.days[day]
+  if (e.ingest?.status === 'ok') {
+    // Already a cloud draft: rewrite it in place (same day hash) rather than leave a stale copy there.
+    const md = [`<!-- osborn-digest: day=${day} chats=0 -->`, `# Daily digest — ${day}`, '',
+      'The short chats of this day have grown into period pages, so this digest no longer lists any.', '', '- Chats: 0', ''].join('\n')
+    writeAtomic(join(dir, e.file), md)
+    Object.assign(e, { chats: [], errors: [], updatedAt: new Date().toISOString() })
+    await ingestDigest(e, md, o)
+    log(`digest ${day}: emptied in place (its chats are now in period pages)`)
+  } else {
+    rmSync(join(dir, e.file), { force: true })
+    delete m.days[day]
+    log(`digest ${day}: removed (its chats are now in period pages)`)
+  }
   writeDigestManifest(dir, m)
-  rebuildIndex(dir, 'daily digests')
-  log(`digest ${day}: removed (its chats are now in period pages)`)
+  rebuildIndex(dir, 'daily digests', o.scrub)
 }

@@ -14,7 +14,8 @@
  *
  * Locking: the caller holds the machine-wide sweep lock (<claudeDir>/osb-library) and no project
  * lock. Each period takes its project's lock for the length of its write (skipped when another
- * worker has it), so a long sweep never keeps a project's compaction run out. Result + backlog go to library-sweep-status.json there (read by /health), the log to
+ * worker has it), and periods in a project a live session uses wait for a later run, so the sweep
+ * never keeps a live session's compaction run out. A dry run writes only under <home>/dry. Result + backlog go to library-sweep-status.json there (read by /health), the log to
  * content-lens.log there. Never throws.
  */
 
@@ -23,11 +24,11 @@ import { join } from 'node:path'
 import { isContentLensEnabled } from './lens-launch.js'
 import { SWEEP_COOLDOWN_MS, acquireLock, libraryHomeDir, releaseLock, sweepCoolingDown, touchLock, writeSweepStatus, type SweepError, type SweepStatus } from './lens-paths.js'
 import { logLine } from './lens-profile.js'
-import { libraryBacklog, libraryDirFor, libraryMinSpanMs, readManifest, runLibraryStep } from './lens-library.js'
+import { libraryBacklog, libraryDirFor, libraryMinSpanMs, readManifest, runLibraryStep, type ManifestEntry } from './lens-library.js'
 import type { LibraryPeriod } from './lens-library-select.js'
 import { isTransportError } from './lens-model.js'
 import { DIGEST_CAP_USD, chatKey, digestDir, ingestPendingDigests, pendingDigestDays, readDigestManifest, removeDigestDay, runDigestDay, writeDigestManifest, type ShortChat } from './lens-library-digest.js'
-import { CapError, SpendGuard, contentCaps, type Reservation } from './content-llm.js'
+import { CapError, LIBRARY_LEDGER_SCOPE, SpendGuard, libraryDailyUsd, type Reservation } from './content-llm.js'
 import { PERIOD_CAP_USD } from './period-run.js'
 import { loadClientRedactor } from './lens-redact.js'
 import { listSessionDbs, type SessionStore } from './lens-db.js'
@@ -109,11 +110,15 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
     st.errors.push(e)
     log(`${e.kind}${e.ref ? ` ${e.ref}` : ''}: ${e.message ?? ''}`)
   }
+  // A dry run writes nothing real: no status file, scan cache, manifest or digest (pages go to <home>/dry).
+  const save = () => {
+    if (!o.dry) writeSweepStatus(st, home)
+  }
   const finish = (status: SweepStatus['status']): SweepStatus => {
     st.status = status
     st.finishedAt = new Date().toISOString()
     st.costUsd = +st.costUsd.toFixed(4)
-    writeSweepStatus(st, home)
+    save()
     return st
   }
   const alive = () => touchLock(home)
@@ -124,20 +129,30 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
       log(`${st.trigger}: skipped, the last sweep finished under ${Math.round((o.cooldownMs ?? SWEEP_COOLDOWN_MS) / 60_000)} min ago`)
       return { ...st, status: 'cooldown', finishedAt: new Date().toISOString() } // the last result stays on /health
     }
-    writeSweepStatus(st, home)
-    // Every page and digest call is charged to the machine's daily content ledger (shared with
-    // the content step): a worst case is reserved before the call and settled to the actual cost.
-    const guard = new SpendGuard(null, { ...contentCaps(), periodUsd: Number.POSITIVE_INFINITY }, 0, deadline)
+    save()
+    // Every page and digest call is charged to the Library's own daily cap (OSBORN_LIBRARY_DAILY_USD) in
+    // the machine ledger, apart from the content step's: the worst case is reserved before the call
+    // and settled to the actual cost (an unsettled one, from a killed sweep, expires with its day).
+    const guard = new SpendGuard(null, { periodUsd: Number.POSITIVE_INFINITY, dailyUsd: libraryDailyUsd(), maxPieces: 0 }, 0, deadline, LIBRARY_LEDGER_SCOPE)
     const exclude = new Set((o.exclude ?? []).filter(Boolean))
     const minSpan = libraryMinSpanMs()
 
     // 1. Scan: every session's backlog (skipping live ones and those settled since the last scan).
     const cache = readScanCache(home)
     const nextCache: Record<string, ScanEntry> = {}
-    const scanned: { s: SessionStore; fp: string; periods: number; short: LibraryPeriod[] }[] = []
+    const scanned: { s: SessionStore; fp: string; periods: number; short: LibraryPeriod[]; written: ManifestEntry[] }[] = []
     const items: Item[] = []
     const shortChats: ShortChat[] = []
-    for (const s of listSessionDbs()) {
+    const stores = listSessionDbs()
+    // A live session's project is left alone: its compaction run must find the project lock free.
+    const liveProjects = new Set(stores.filter(s => exclude.has(s.sessionId)).map(s => s.projectDir))
+    let livePeriods = 0
+    for (const s of stores) {
+      if (Date.now() > deadline) {
+        st.capHit = true
+        err({ kind: 'scan', message: 'time budget reached while scanning; the rest waits for the next run' })
+        break
+      }
       if (exclude.has(s.sessionId)) continue
       const fp = `${fingerprint(s.db)}|${minSpan}`
       const hit = cache[s.sessionId]
@@ -147,29 +162,38 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
         continue
       }
       try {
-        const b = libraryBacklog(s.db, readManifest(libraryDirFor(s.db, s.sessionId), s.sessionId), minSpan)
-        for (const p of b.periods) items.push({ kind: 'period', s, p, at: Date.parse(p.toTs) || 0 })
+        const manifest = readManifest(libraryDirFor(s.db, s.sessionId), s.sessionId)
+        const b = libraryBacklog(s.db, manifest, minSpan, m => log(`${s.sessionId.slice(0, 8)} ${m}`))
+        if (b.periods.length && liveProjects.has(s.projectDir)) {
+          livePeriods += b.periods.length
+          log(`${s.sessionId.slice(0, 8)}: ${b.periods.length} period(s) wait — a live session uses this project`)
+        } else for (const p of b.periods) items.push({ kind: 'period', s, p, at: Date.parse(p.toTs) || 0 })
         for (const p of b.short) shortChats.push({ ...s, period: p })
-        scanned.push({ s, fp, periods: b.periods.length, short: b.short })
+        scanned.push({ s, fp, periods: b.periods.length, short: b.short, written: Object.values(manifest.periods).filter(e => e.status === 'ok') })
       } catch (e) {
         err({ kind: 'scan', ref: s.sessionId.slice(0, 8), message: errorLine(e) })
       }
       alive()
     }
     const dDir = digestDir(home)
+    const dryDir = join(home, 'dry')
     const dm = readDigestManifest(dDir)
-    // A digested chat that a rescanned session no longer has as a short chat grew into a period page
-    // (or a longer chat): its day is rewritten without it, or removed when nothing is left.
-    const current = new Set(shortChats.map(chatKey))
-    const rescanned = new Set(scanned.map(x => x.s.sessionId))
-    const stale = new Set(Object.values(dm.days).flatMap(e => e.chats).filter(k => rescanned.has(k.slice(0, k.lastIndexOf(':'))) && !current.has(k)))
+    // A digested chat is stale once a written ("ok") page of its session covers its start row: its
+    // day is rewritten without it, or emptied / removed when nothing is left.
+    const pages = new Map(scanned.map(x => [x.s.sessionId, x.written]))
+    const stale = new Set(Object.values(dm.days).flatMap(e => e.chats).filter(k => {
+      const cut = k.lastIndexOf(':')
+      const start = Number(k.slice(cut + 1).split('-')[0])
+      return (pages.get(k.slice(0, cut)) ?? []).some(e => start >= e.startRowId && start <= e.endRowId)
+    }))
     const { days, today, emptied } = pendingDigestDays(shortChats, dm, now, stale)
-    for (const day of emptied) removeDigestDay(dDir, day, log)
+    const scrubAll = (s: string) => redactSecrets(loadClientRedactor(null).redact(s), { assistant: true })
+    if (!o.dry) for (const day of emptied) await removeDigestDay(dDir, day, { scrub: scrubAll, log })
     for (const [day, chats] of days) items.push({ kind: 'digest', day, chats, at: Math.max(...chats.map(c => Date.parse(c.period.toTs) || 0)) })
     // Settled = nothing pending for it now; skipped by later scans until its store changes.
     const waiting = new Set([...today, ...[...days.values()].flat()].map(c => c.sessionId))
     for (const x of scanned) if (!x.periods && !waiting.has(x.s.sessionId)) nextCache[x.s.sessionId] = { fp: x.fp, short: x.short }
-    writeScanCache(home, nextCache)
+    if (!o.dry) writeScanCache(home, nextCache)
     items.sort((a, b) => b.at - a.at)
     log(`${st.trigger}: ${items.filter(i => i.kind === 'period').length} period(s), ${days.size} digest day(s) pending, ${today.length} chat(s) today; cap ${maxPages}`)
 
@@ -215,6 +239,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
         try {
           const r = await runLibraryStep({
             sessionId: it.s.sessionId, projectDir: pd, period: it.p, dry: o.dry,
+            ...(o.dry ? { outDir: join(dryDir, it.s.sessionId.slice(0, 8)) } : {}),
             keepAlive: () => {
               alive()
               touchLock(pd)
@@ -239,7 +264,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
           err({ kind: 'cap', message: `daily spend cap reached (${guard.capHit})` })
           break
         }
-        const r = await runDigestDay({ day: it.day, chats: it.chats, dir: dDir, dry: o.dry, log })
+        const r = await runDigestDay({ day: it.day, chats: it.chats, dir: o.dry ? join(dryDir, 'digests') : dDir, dry: o.dry, log })
         if (held) guard.settle(held, r.costUsd)
         st.costUsd += r.costUsd
         if (r.status !== 'failed') calls++
@@ -248,18 +273,17 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
         infraFails = r.status === 'failed' || isTransportError(r.errors) ? infraFails + 1 : 0
       }
       st.modelCalls = calls
-      writeSweepStatus(st, home)
+      save()
     }
     st.modelCalls = calls
 
     // 3. Digests whose cloud ingest never landed (no model call).
     if (!o.dry) {
       const m = readDigestManifest(dDir)
-      const red = loadClientRedactor(null)
-      if (await ingestPendingDigests(dDir, m, { scrub: s => redactSecrets(red.redact(s), { assistant: true }), log })) writeDigestManifest(dDir, m)
+      if (await ingestPendingDigests(dDir, m, { scrub: scrubAll, log })) writeDigestManifest(dDir, m)
     }
 
-    const pendingPeriods = items.filter(i => i.kind === 'period').length - periodsDone
+    const pendingPeriods = items.filter(i => i.kind === 'period').length - periodsDone + livePeriods
     st.backlog = { periods: Math.max(0, pendingPeriods), digestDays: Math.max(0, days.size - st.digestsWritten), todayChats: today.length }
     log(`done: ${st.pagesWritten} page(s), ${st.digestsWritten} digest(s), ${calls} call(s), $${st.costUsd.toFixed(4)}; left: ${st.backlog.periods} period(s), ${st.backlog.digestDays} digest day(s)${st.capHit ? ' — cap reached' : ''}`)
     return finish('done')

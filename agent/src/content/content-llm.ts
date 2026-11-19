@@ -9,10 +9,14 @@
  *   OSBORN_CONTENT_DAILY_USD   default 2.00 (UTC day, per MACHINE: $OSBORN_HOME or ~/.osborn/content-spend-ledger.json,
  *                              locked read-modify-write so concurrent workers across projects share one cap)
  *   OSBORN_CONTENT_MAX_PIECES  default 4 (1 highlight + up to 3 how-tos)
+ *   OSBORN_LIBRARY_DAILY_USD   default 1.00 (UTC day, per MACHINE): the Library catch-up sweep's own cap
+ *                              (period pages + daily digests), kept in the same ledger file under its
+ *                              own key ("<day>:library"), so the sweep never uses the content step's cap
  * Every call reserves its WORST case (prompt + max output) against both caps up
  * front and writes it to the ledger before the fetch; it is reconciled to the
  * actual cost after. A failed call is charged the worst case, and a hard exit
- * mid-call leaves the worst case in the ledger, so the caps stay hard.
+ * mid-call leaves the worst case in the ledger, so the caps stay hard; such an
+ * unsettled reservation expires with its UTC day (the ledger is keyed by day).
  * All outbound prompt text goes through the caller's scrub() first.
  */
 
@@ -103,9 +107,16 @@ export function readLedger(): Ledger {
   return readLedgerAt(ledgerPath())
 }
 /** Spend recorded (incl. open reservations) on this machine today, across every project. */
-export function daySpent(now = Date.now()): number {
-  return Number(readLedger().days[today(now)]) || 0
+export function daySpent(now = Date.now(), scope?: string): number {
+  return Number(readLedger().days[ledgerKey(today(now), scope)]) || 0
 }
+
+/** The ledger key of a day: the content step's is the bare day; another spender's is "<day>:<scope>" (pruned with its day). */
+const ledgerKey = (day: string, scope?: string): string => (scope ? `${day}:${scope}` : day)
+
+/** The Library sweep's own daily cap (OSBORN_LIBRARY_DAILY_USD, default $1), on ledger scope LIBRARY_LEDGER_SCOPE. */
+export const LIBRARY_LEDGER_SCOPE = 'library'
+export const libraryDailyUsd = (): number => envNum('OSBORN_LIBRARY_DAILY_USD', 1.0)
 
 const LOCK_STALE_MS = 30_000
 const LOCK_TRIES = 40
@@ -272,6 +283,8 @@ export class SpendGuard {
     public periodUsd = 0,
     /** Epoch ms after which reserve() refuses new calls (CapError 'time'). */
     readonly deadline: number | null = null,
+    /** Ledger key scope: none = the content step's daily cap; e.g. LIBRARY_LEDGER_SCOPE for the sweep. */
+    readonly scope?: string,
   ) {}
   /**
    * Reserve a worst-case spend of `usd`: throws CapError if it would cross a cap
@@ -282,7 +295,7 @@ export class SpendGuard {
   reserve(usd: number): Reservation {
     if (this.deadline !== null && Date.now() >= this.deadline) throw this.hit('time', usd)
     if (this.periodUsd + usd > this.caps.periodUsd) throw this.hit('period', usd)
-    const day = today()
+    const day = ledgerKey(today(), this.scope)
     let over = false
     let locked: boolean
     try {

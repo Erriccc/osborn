@@ -125,6 +125,23 @@ export function includeSubagents(): boolean {
 }
 
 /**
+ * Ids and timestamps of the same conversation rows loadConversationRows reads (same source and
+ * msg_type filter), with no blob read, decompression or sanitising: what segmentation needs.
+ * Rows the sanitizer would drop are kept, so a stamp may have no text behind it.
+ */
+export function loadRowStamps(dbPath: string): { id: number; timestamp: string }[] {
+  const db = new Database(dbPath, { readonly: true, fileMustExist: true })
+  try {
+    db.pragma('busy_timeout = 5000')
+    const where = includeSubagents() ? '' : `AND source = 'main'`
+    const rows = db.prepare(`SELECT id, ts FROM content WHERE msg_type IN ('user', 'assistant') ${where} ORDER BY id`).all() as { id: number; ts: string | null }[]
+    return rows.map(r => ({ id: r.id, timestamp: r.ts ?? '' }))
+  } finally {
+    db.close()
+  }
+}
+
+/**
  * Read conversation rows with id > afterRowId, in id order, sanitized.
  * Throws if the DB can't be opened (caller logs + exits).
  */
