@@ -764,7 +764,7 @@ async function main() {
   // logs and audio. Token-holding agents keep the full view: a tester's supervisor reviews
   // the tester's clips and tabs.
   const seesTab = (driver: string, p: Page) => seesTabOf(ownerOf(p), driver)
-  const seesTask = (driver: string, t: any) => !isPersonDriver(driver) || !t?.tab?.owner || t.tab.owner === driver
+  const seesTask = (driver: string, t: any) => eventVisibleTo(t?.tab?.owner ? [t.tab.owner] : [], driver)
   // The driver's current tab only while it is theirs: what their /status, /stream and /audio show.
   const ownedTab = (driver: string): Page | null => { const t = driverTab(driver); return t && ownerOf(t) === driver ? t : null }
   // The tab list and one tab as `viewer` may see them (/status and every /tab reply).

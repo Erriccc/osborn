@@ -123,8 +123,8 @@ card replaced the stream).
 
 The engine's public feed shows ONLY a tab its owner cast, so set the cast up
 once per meeting, always with the same driver id (`x-driver-id: meeting`).
-Tab 0 (the voice room) and other drivers' tabs cannot be cast (409
-`not_your_tab`). Needs `OSBORN_ENGINE_TOKEN` env.
+Tab 0 (the voice room) cannot be cast (409 `room_tab`), nor can other drivers'
+tabs (409 `not_your_tab`). Needs `OSBORN_ENGINE_TOKEN` env.
 ```bash
 E=https://osborn-voice-e2e-n.fly.dev:8781
 H=(-H "x-engine-token: $OSBORN_ENGINE_TOKEN" -H 'Content-Type: application/json' -H 'x-driver-id: meeting')
