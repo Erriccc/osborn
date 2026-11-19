@@ -222,6 +222,7 @@ await t('resolveSessionCwd #181: a hint/current dir that only matches through th
   const d = {
     exists: (id: string, wd: string) => id === B && (wd === '/w/my-app' || wd === '/w/my/app'),
     recordedCwd: async () => '/w/my-app',
+    dirExists: (p: string) => p === '/w/my-app' || p === '/w/my/app',
     lookupCwd: async () => '/w/my-app',
   }
   assert.equal(await resolveSessionCwd(B, '/w/my/app', '/w/x', d), '/w/my-app')
@@ -230,9 +231,19 @@ await t('resolveSessionCwd #181: a hint/current dir that only matches through th
   // Imported session: recorded cwd encodes to another slug, so the hint stands.
   assert.equal(await resolveSessionCwd(B, '/w/my/app', '/w/x', { ...d, recordedCwd: async () => '/Users/bob/proj' }), '/w/my/app')
 })
+await t('resolveSessionCwd #181: a collision whose recorded dir is gone keeps the candidate (no new not_found)', async () => {
+  const d = {
+    exists: (id: string, wd: string) => id === B && wd === '/w/my/app',
+    recordedCwd: async () => '/w/my-app',
+    dirExists: (p: string) => p === '/w/my/app',
+    lookupCwd: async () => null,
+  }
+  assert.equal(await resolveSessionCwd(B, '/w/my/app', '/w/x', d), '/w/my/app')
+  assert.equal(await resolveSessionCwd(B, undefined, '/w/my/app', d), '/w/my/app')
+})
 await t('config.ts: session list routes by the recorded cwd when it encodes to the slug', () => {
   const src = readFileSync(join(import.meta.dirname, '../src/config.ts'), 'utf8')
-  assert.ok(/cwd: \(cwd && projectPathToClaudeFolderName\(cwd\) === c\.slug \? cwd : ''\) \|\| slugPath \|\| cwd/.test(src))
+  assert.ok(/cwd: \(cwd && projectPathToSlug\(cwd\) === c\.slug \? cwd : ''\) \|\| slugPath \|\| cwd/.test(src))
 })
 
 // #183: never create a hint for a session that did not resolve, or a hint that
@@ -241,6 +252,10 @@ const dirs = new Set(['/', '/workspace', '/workspace/old', '/home', '/home/sprit
 const has = (p: string) => dirs.has(p)
 await t('connectWorkingDir #183: resolved dir wins and is never created', () => {
   assert.deepEqual(connectWorkingDir('/workspace/old', '/x/y', B, '/workspace', has), { dir: '/workspace/old', create: false })
+})
+await t('connectWorkingDir #183: a resolved dir that no longer exists is not booted in', () => {
+  assert.deepEqual(connectWorkingDir('/workspace/deleted', '/workspace/old', B, '/workspace', has), { dir: '/workspace/old', create: false })
+  assert.deepEqual(connectWorkingDir('/workspace/deleted', '/workspace/deleted', B, '/workspace', has), { dir: '/workspace', create: false })
 })
 await t('connectWorkingDir #183: an existing hint is used as-is', () => {
   assert.deepEqual(connectWorkingDir(null, '/workspace/old', B, '/workspace', has), { dir: '/workspace/old', create: false })

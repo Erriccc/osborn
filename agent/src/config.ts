@@ -4,6 +4,7 @@ import { dirname, join, resolve } from 'path'
 import { Document, isMap, parse, parseDocument, stringify } from 'yaml'
 import type { McpServerConfig } from './claude-handler.js'
 import { cleanTurnText } from './content/transcript-sanitizer.js'
+import { projectPathToSlug } from './session-access.js'
 import { DEFAULT_APPROVAL_MODE, isApprovalMode, type ApprovalMode } from './approval-policy.js'
 
 // Config file paths
@@ -605,18 +606,10 @@ export function getClaudeProjectsDir(): string {
 }
 
 /**
- * Convert a project path to the .claude folder naming format
- * e.g., /Users/foo/bar -> -Users-foo-bar
- */
-function projectPathToClaudeFolderName(projectPath: string): string {
-  return projectPath.replace(/\//g, '-')
-}
-
-/**
  * Get the session storage directory for a specific project
  */
 export function getSessionDir(projectPath: string): string {
-  const claudeFolderName = projectPathToClaudeFolderName(projectPath)
+  const claudeFolderName = projectPathToSlug(projectPath)
   return join(getClaudeProjectsDir(), claudeFolderName)
 }
 
@@ -920,11 +913,14 @@ const UUID_JSONL_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
  * `assistant` / `system` entry in a Claude JSONL session carries `cwd`, so the
  * scan finishes in the first few KB of any normal session).
  */
+const EXTRACT_CWD_MAX_LINES = 50
+
 export async function extractCwd(filePath: string): Promise<string> {
   return new Promise((resolve) => {
     const fileStream = createReadStream(filePath)
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity })
     let resolved = false
+    let lines = 0
     const done = (value: string) => {
       if (resolved) return
       resolved = true
@@ -934,6 +930,8 @@ export async function extractCwd(filePath: string): Promise<string> {
     }
     rl.on('line', (line) => {
       if (resolved) return
+      // Capped: an old JSONL with no cwd must not stream whole on connect.
+      if (++lines > EXTRACT_CWD_MAX_LINES) return done('')
       if (!line.trim()) return
       try {
         const obj = JSON.parse(line)
@@ -1135,7 +1133,7 @@ export async function listAllClaudeSessions(limit = 1000, includeSubagents = fal
         projectSlug: c.slug,
         projectPath: cwd || slugPath,    // display / group key (original cwd)
         // The recorded cwd when it encodes to this slug: the lossy decode can name another project (#181).
-        cwd: (cwd && projectPathToClaudeFolderName(cwd) === c.slug ? cwd : '') || slugPath || cwd,  // resume routing (file location)
+        cwd: (cwd && projectPathToSlug(cwd) === c.slug ? cwd : '') || slugPath || cwd,  // resume routing (file location)
         timestamp: c.mtime,
         lastMessage: preview.lastMessage,
         title: preview.title,
@@ -1463,7 +1461,7 @@ export async function cleanupOrphanedMetadata(projectPath: string): Promise<numb
  */
 export function getSessionWorkspace(workingDir: string, sessionId: string): string {
   const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
-  const slug = projectPathToClaudeFolderName(workingDir)
+  const slug = projectPathToSlug(workingDir)
   return join(claudeDir, 'projects', slug, 'osb', sessionId)
 }
 

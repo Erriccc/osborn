@@ -4136,6 +4136,7 @@ async function main() {
     return resolveSessionCwd(sessionId, hint, workingDir, {
       exists: (id, wd) => sessionExists(id, wd),
       recordedCwd: (id, wd) => extractCwd(join(getSessionDir(wd), `${id}.jsonl`)),
+      dirExists: (p) => existsSync(p),
       lookupCwd: (id) => scanSlugCwd(id, getClaudeProjectsDir(), {
         readdir: (d) => readdirSync(d), exists: (p) => existsSync(p),
         decodeSlug: (s) => slugToPath(s), readCwd: (p) => extractCwd(p),
@@ -5631,8 +5632,9 @@ async function main() {
       // client's workingDirectory is only a HINT; for a pre-selected session the
       // agent is AUTHORITATIVE about where that session lives, so `--resume`
       // finds its JSONL instead of coming up in the workspace root — or as a
-      // different session — on a stale or empty hint. null = the JSONL is
-      // nowhere yet (fresh sprite / new project), so the hint stands.
+      // different session — on a stale or empty hint. Unresolved: an existing
+      // hint is used; a missing one is created only for a new chat
+      // (connectWorkingDir), else the default.
       const wdHint = (typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0)
         ? metadata.workingDirectory
         : null

@@ -162,6 +162,8 @@ export interface SessionCwdDeps {
   lookupCwd: (sessionId: string) => Promise<string | null | undefined>
   /** extractCwd of the session's JSONL under `cwd`'s slug: the cwd it records. */
   recordedCwd?: (sessionId: string, cwd: string) => Promise<string | null | undefined>
+  /** existsSync: a colliding candidate only loses to a recorded dir that exists. */
+  dirExists?: (path: string) => boolean
 }
 
 /**
@@ -180,12 +182,10 @@ export async function resolveSessionCwd(
   if (!sessionId) return null
   for (const c of [hint, currentDir]) {
     if (!c || !deps.exists(sessionId, c)) continue
-    // exists() only checks the lossy slug: /w/my/app passes for a session
-    // recorded in /w/my-app. A candidate that collides with the recorded cwd
-    // loses; the scan below then picks the recorded dir (#181).
     let rec: string | null | undefined = null
     try { rec = await deps.recordedCwd?.(sessionId, c) } catch { rec = null }
-    if (!rec || rec === c || projectPathToSlug(rec) !== projectPathToSlug(c)) return c
+    const collides = !!rec && rec !== c && projectPathToSlug(rec) === projectPathToSlug(c)
+    if (!collides || !deps.dirExists?.(rec!)) return c
     break
   }
   let c: string | null | undefined = null
@@ -320,7 +320,7 @@ export function connectWorkingDir(
   fallback: string,
   dirExists: (path: string) => boolean,
 ): { dir: string; create: boolean } {
-  if (resolved) return { dir: resolved, create: false }
+  if (resolved && dirExists(resolved)) return { dir: resolved, create: false }
   if (hint && dirExists(hint)) return { dir: hint, create: false }
   const plausible = !!hint && isAbsolute(hint) && !hint.includes('\0')
     && !hint.split('/').some((seg) => seg === '.' || seg === '..')
