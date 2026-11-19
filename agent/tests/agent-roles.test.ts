@@ -37,6 +37,14 @@ assert.deepEqual(parsed.roles, {
 }, 'set role > built-in parent > reader; an unset role is never inferred from tools')
 assert.deepEqual(parsed.dropped.map((d) => d.name), ['writer'])
 assert.ok(parsed.agents.constructor, 'a user agent named constructor is not mistaken for a core agent')
+// Two rows that normalise to one name: the first keeps it, the second is reported, never silently replaces it (#285).
+const clash = parseUserAgents([
+  { name: 'My Agent', description: 'd', prompt: 'first' },
+  { name: 'my-agent', description: 'd', prompt: 'second' },
+  { name: '!!!', description: 'd', prompt: 'p' },
+], NAMED_AGENTS)
+assert.equal(clash.agents['my-agent'].prompt, 'first')
+assert.deepEqual(clash.dropped.map((d) => [d.name, d.reason.split(' (')[0]]), [['my-agent', 'same name as another of your agents'], ['(unnamed)', 'no name']])
 // Forks of grounded built-ins read the recall store too.
 assert.equal(parsed.agents['my-writer'].grounded, (NAMED_AGENTS as any).writer.grounded || undefined)
 assert.equal(parsed.agents['my-researcher'].grounded, true)

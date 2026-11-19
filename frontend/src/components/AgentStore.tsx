@@ -176,7 +176,7 @@ export function AgentStore({ agents, yours, onSave, onDelete, onSetEnabled, stat
   const core = agents.filter((a) => a.core !== false && !a.custom)
   const coreNames = new Set(core.map((a) => a.name))
   const mine = (yours || []).filter((r) => !coreNames.has(r.name))
-  const taken = new Set([...core.map((a) => a.name), ...mine.map((r) => r.name)])
+  const taken = new Set([...core.map((a) => a.name), ...mine.map((r) => agentName(r.name))])  // as saved: 'My Agent' takes my-agent
   const [editing, setEditing] = useState<Editing | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
   const [viewing, setViewing] = useState<string | null>(null)
