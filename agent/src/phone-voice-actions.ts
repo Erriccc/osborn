@@ -1,0 +1,153 @@
+/**
+ * phone-voice-actions.ts — the first voice actions on a phone call (#367).
+ *
+ * A call has no buttons, so a short spoken command ("stop that", "what are
+ * you doing?", "switch to my billing project") is matched here and run as the
+ * app's own action (index.ts dispatchAction, PHONE_ACTION_TYPES) instead of
+ * going to the model. Approvals are answered here too, never by the model.
+ *
+ * Pure: matching and the spoken replies. Conservative on purpose: only a short
+ * utterance that is the whole command matches; anything else is a normal turn.
+ */
+import { approvalModeLabel, type ApprovalMode } from './approval-policy.js'
+
+export type VoiceAction =
+  | { kind: 'answer'; answer: 'allow' | 'deny' }
+  | { kind: 'mode'; mode: ApprovalMode }
+  | { kind: 'status' }
+  | { kind: 'stop'; agent?: string }
+  | { kind: 'sessions' }
+  | { kind: 'switch'; query: string }
+  | { kind: 'outputs' }
+  | { kind: 'keep_working' }
+
+const MAX_WORDS = 10
+
+/** Lower case, no punctuation, without leading fillers ("ok", "hey osborn") or a trailing "please". */
+export function normalizeUtterance(text: string): string {
+  let s = String(text || '').toLowerCase().replace(/[’']/g, '').replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim()
+  for (let prev = ''; prev !== s;) {
+    prev = s
+    s = s.replace(/^(ok|okay|hey|hi|so|um|uh|please|osborn|alright|right|now)\s+/, '')
+  }
+  return s.replace(/\s+(please|thanks|thank you|now)$/, '').trim()
+}
+
+const FOR_CALL = '(?: for (?:this|the) call)?'
+const ANSWER_ALLOW = /^(?:yes|yeah|yep|yup|sure|allow|allow it|approve|approve it|go ahead|do it)$/
+const ANSWER_DENY = /^(?:no|nope|deny|deny it|dont|do not|reject|reject it|dont do it|do not do it)$/
+const MODE_PATTERNS: [RegExp, ApprovalMode][] = [
+  [new RegExp(`^(?:allow|approve|auto approve) (?:everything|all|all actions)${FOR_CALL}$`), 'allow-all'],
+  [new RegExp(`^(?:switch to |use |turn on )?allow all(?: mode)?${FOR_CALL}$`), 'allow-all'],
+  [new RegExp(`^(?:switch to |use |turn on )?auto ?review(?: mode)?${FOR_CALL}$`), 'auto-review'],
+  [new RegExp(`^(?:ask me|ask me first|ask me every time|ask before (?:everything|each action|anything))${FOR_CALL}$`), 'ask'],
+  [new RegExp(`^(?:switch to |use |turn on )?ask me mode${FOR_CALL}$`), 'ask'],
+]
+const STATUS = /^(?:what are you (?:doing|working on|up to)|whats (?:pending|happening|going on|running)|what is (?:pending|happening|going on|running)|are you (?:busy|working|working on anything|still working)|status|status update|give me a status update)$/
+const STOP_MAIN = /^(?:stop|stop that|stop it|stop this|stop everything|stop working|cancel that|cancel it)$/
+const STOP_AGENT = /^stop the ([a-z][a-z0-9 -]*?)(?: agent| sub agent| subagent)?$/
+const SESSIONS = /^(?:what (?:were|are) my (?:recent |last )?(?:sessions|conversations)|(?:list|read me|tell me) my (?:recent |last )?(?:sessions|conversations)|(?:my )?recent (?:sessions|conversations))$/
+const SWITCH = /^(?:switch|go|go back|move|change) to (?:my |the )?(.+?)(?: session| project| conversation| chat)?$/
+const OUTPUTS = /^(?:what did you (?:make|build|create|write|produce)|read me the summary|what (?:are|were) (?:the|your) outputs|what files did you (?:make|create|write))(?: (?:in|for) this session)?$/
+const KEEP_WORKING = /^(?:keep (?:working|going)(?: after i hang up| when i hang up| in the background)?|work in the background|keep working on it)$/
+
+/**
+ * The voice action a caller's utterance asks for, or null (a normal turn for
+ * the model). A yes/no answers an approval only while one is pending.
+ */
+export function matchVoiceAction(text: string, ctx: { permissionPending: boolean }): VoiceAction | null {
+  const s = normalizeUtterance(text)
+  if (!s || s.split(' ').length > MAX_WORDS) return null
+  if (ctx.permissionPending) {
+    if (ANSWER_ALLOW.test(s)) return { kind: 'answer', answer: 'allow' }
+    if (ANSWER_DENY.test(s)) return { kind: 'answer', answer: 'deny' }
+  }
+  for (const [re, mode] of MODE_PATTERNS) if (re.test(s)) return { kind: 'mode', mode }
+  if (STATUS.test(s)) return { kind: 'status' }
+  if (STOP_MAIN.test(s)) return { kind: 'stop' }
+  const agent = STOP_AGENT.exec(s)
+  if (agent) return { kind: 'stop', agent: agent[1].trim() }
+  if (SESSIONS.test(s)) return { kind: 'sessions' }
+  if (OUTPUTS.test(s)) return { kind: 'outputs' }
+  if (KEEP_WORKING.test(s)) return { kind: 'keep_working' }
+  const sw = SWITCH.exec(s)
+  if (sw && sw[1].trim()) return { kind: 'switch', query: sw[1].trim() }
+  return null
+}
+
+const MODE_RANK: Record<ApprovalMode, number> = { 'ask': 0, 'auto-review': 1, 'allow-all': 2 }
+
+/**
+ * May a caller change the saved approval mode? The mode also applies to the
+ * browser, so until the caller is confirmed by a second factor (keypad
+ * approvals on, #362) a call may only make it stricter.
+ */
+export function phoneMayChangeMode(from: ApprovalMode, to: ApprovalMode, approvalsEnabled: boolean): boolean {
+  return approvalsEnabled || MODE_RANK[to] <= MODE_RANK[from]
+}
+
+export interface SessionChoice { sessionId: string; title?: string; cwd?: string; projectPath?: string }
+
+const STOP_WORDS = new Set(['my', 'the', 'a', 'an', 'session', 'project', 'conversation', 'chat', 'one', 'about', 'on', 'for', 'with'])
+const words = (s: string) => normalizeUtterance(s).split(' ').filter((w) => w && !STOP_WORDS.has(w))
+
+/**
+ * The session a spoken name points at: the most words of the query in its
+ * title or project folder name. Ties go to the earlier (most recent) entry;
+ * no word in common → null.
+ */
+export function pickSession<T extends SessionChoice>(query: string, sessions: T[]): T | null {
+  const q = words(query)
+  if (!q.length) return null
+  let best: T | null = null
+  let bestScore = 0
+  for (const s of sessions) {
+    const folder = String(s.cwd || s.projectPath || '').split('/').filter(Boolean).pop() || ''
+    const hay = new Set([...words(s.title || ''), ...words(folder.replace(/[-_.]+/g, ' '))])
+    const score = q.filter((w) => hay.has(w)).length
+    if (score > bestScore) { best = s; bestScore = score }
+  }
+  return best
+}
+
+const list = (items: string[]) => items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+const short = (s: string, n = 60) => { const t = String(s || '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n).replace(/\s+\S*$/, '')}…` : t }
+
+/** "What are you doing?" from busyState, the running tasks and the pending request. */
+export function sayStatus(s: {
+  turnInFlight: boolean; compacting?: boolean
+  tasks: { subagentType?: string; description?: string }[]
+  pending: string | null
+  /** Keypad approvals on: the caller can allow from the phone. */
+  keypad?: boolean
+}): string {
+  const parts: string[] = []
+  if (s.pending) parts.push(`I'm waiting for your OK to ${s.pending}. ${s.keypad ? 'Press 1 to allow or 2 to deny.' : 'Approve it in the app, or say no to deny it.'}`)
+  if (s.tasks.length) {
+    const named = s.tasks.slice(0, 3).map((t) => `the ${t.subagentType || 'helper'} agent${t.description ? ` on ${short(t.description, 50)}` : ''}`)
+    parts.push(`${s.tasks.length === 1 ? 'One agent is' : `${s.tasks.length} agents are`} running: ${list(named)}.`)
+  }
+  if (s.turnInFlight && !s.tasks.length) parts.push("I'm working on your last request.")
+  if (s.compacting) parts.push("I'm tidying up the conversation history.")
+  return parts.length ? parts.join(' ') : "I'm not working on anything right now."
+}
+
+/** "What were my recent sessions?" from a sessions_list reply. */
+export function saySessions(sessions: SessionChoice[], max = 5): string {
+  const named = sessions.map((s) => short(s.title || '', 50)).filter(Boolean).slice(0, max)
+  if (!named.length) return "I couldn't find any sessions."
+  return `Your recent sessions: ${named.map((t, i) => `${i + 1}, ${t}`).join('. ')}. Say "switch to" and a name to open one.`
+}
+
+/** "What did you make?" from a session_artifacts reply. */
+export function sayOutputs(artifacts: { fileName?: string }[], max = 5): string {
+  const names = artifacts.map((a) => String(a.fileName || '')).filter(Boolean)
+  if (!names.length) return "This session hasn't made any files yet."
+  const more = names.length > max ? `, and ${names.length - max} more` : ''
+  return `This session made ${names.length === 1 ? 'one file' : `${names.length} files`}: ${list(names.slice(0, max))}${more}. They are in the app under Outputs.`
+}
+
+/** The spoken confirmation of a mode change. */
+export function sayModeChanged(mode: ApprovalMode): string {
+  return `${approvalModeLabel(mode)} is on. It stays on, in the app too, until you change it.`
+}

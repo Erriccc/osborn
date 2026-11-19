@@ -93,6 +93,22 @@ export const READ_ONLY_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'get_busy',
 ])
 
+/**
+ * App commands a phone caller's voice actions (#367) and POST /action may run
+ * through dispatchAction (index.ts): the same code the app's buttons use.
+ * Anything else is refused there.
+ */
+export const PHONE_ACTION_TYPES: ReadonlySet<string> = new Set([
+  'permission_response',
+  'set_approval_mode',
+  'get_busy',
+  'stop_dispatch',
+  'list_sessions',
+  'switch_session',
+  'get_session_artifacts',
+  'keep_working',
+])
+
 /** Identity prefix /api/token gives every user participant. */
 export const USER_IDENTITY_PREFIX = 'user-'
 
@@ -223,6 +239,14 @@ export function planConnectRoom(s: {
 }
 
 /**
+ * May a phone caller give this answer (keypad or a spoken yes/no, #367)? A
+ * deny always; an allow only once keypad approvals are on.
+ */
+export function phoneAnswerAllowed(answer: PermissionAnswer, approvalsEnabled = PHONE_KEYPAD_APPROVALS_ENABLED): boolean {
+  return answer === 'deny' || approvalsEnabled
+}
+
+/**
  * Handles one keypad press (index.ts DtmfReceived). Only the SIP caller in an
  * authorised phone room counts; with approvals off a 1 or 3 settles nothing
  * (a 2 still denies). The answer goes to the same settle path the browser
@@ -235,7 +259,7 @@ export function handlePhoneKeypad(
 ): 'ignored' | 'approved' | 'always allowed' | 'denied' | 'no pending permission' {
   if (!press.sip || !press.inPhoneRoom) return 'ignored'
   const answer = keypadAnswer(press.digit)
-  if (answer === null || (answer !== 'deny' && !approvalsEnabled)) return 'ignored'
+  if (answer === null || !phoneAnswerAllowed(answer, approvalsEnabled)) return 'ignored'
   if (!settle(answer)) return 'no pending permission'
   return answer === 'allow' ? 'approved' : answer === 'always_allow' ? 'always allowed' : 'denied'
 }

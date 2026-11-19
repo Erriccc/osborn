@@ -74,8 +74,9 @@ import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
-import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phonePermissionPolicy, phoneToolPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
-import { approvalModeAnnouncement, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, recordAlwaysAllow, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
+import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phonePermissionPolicy, phoneToolPolicy, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, recordAlwaysAllow, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
+import { matchVoiceAction, phoneMayChangeMode, pickSession, sayModeChanged, sayOutputs, saySessions, sayStatus, type VoiceAction } from './phone-voice-actions.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -329,6 +330,8 @@ let currentDuck: ReturnType<typeof installDuck> | null = null
 let duckRestoreTimer: ReturnType<typeof setTimeout> | null = null
 // phoneRoom: join this caller's room (a phone call) instead of a fresh one.
 let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null
+// POST /action → main()'s runAppAction (a PHONE_ACTION_TYPES command; returns its replies).
+let actionHook: ((data: Record<string, unknown>) => Promise<object[]>) | null = null
 // Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
 // agent's room and play the agent's REAL TTS audio track — bit-identical to
 // the browser voice experience (2026-08-01 quality architecture; replaces the
@@ -428,7 +431,7 @@ function parseDevSubdomainPort(req: { headers: { host?: string; 'fly-replay-src'
 const AGENT_ROUTE_PREFIXES = [
   '/health', '/sessions', '/skills', '/agents', '/store', '/canvas', '/canvas-token',
   '/canvas-stream', '/events', '/room-code', '/connect-room', '/leave-room',
-  '/report-bug', '/restart', '/tts', '/noise-cancel', '/webhook', '/sessions/export',
+  '/report-bug', '/restart', '/tts', '/noise-cancel', '/action', '/webhook', '/sessions/export',
   '/sessions/import', '/sessions/manifest',
   '/secrets',
   '/editor',
@@ -793,6 +796,24 @@ function startApiServer(workingDir: string, port: number): void {
       })
       if (refusal) reply(refusal.status, { error: refusal.error })
       return !!refusal
+    }
+
+    // POST /action { type, ... } — one app command from this machine (#367): the
+    // same dispatchAction the app's buttons and a call's voice actions use,
+    // limited to PHONE_ACTION_TYPES. Same who-may-ask rules as the store
+    // (sync token, or a JSON request from this machine). Replies { ok, replies }.
+    if (req.method === 'POST' && url.pathname === '/action') {
+      if (unauthorized() || storeRefused()) return
+      const raw = await readBodyCapped(req.iterator({ destroyOnReturn: false }), CONNECT_ROOM_MAX_BODY)
+      let data: Record<string, unknown> | null = null
+      try { data = raw ? JSON.parse(raw) : null } catch {}
+      if (!data || typeof data !== 'object' || !PHONE_ACTION_TYPES.has(String(data.type))) {
+        reply(400, { ok: false, error: `type must be one of: ${[...PHONE_ACTION_TYPES].join(', ')}` })
+        return
+      }
+      if (!actionHook) { reply(503, { ok: false, error: 'agent not ready' }); return }
+      try { reply(200, { ok: true, replies: await actionHook(data) }) } catch (e) { reply(500, { ok: false, error: e instanceof Error ? e.message : String(e) }) }
+      return
     }
 
     if (req.method === 'GET' && url.pathname === '/skills') {
@@ -5606,6 +5627,7 @@ async function main() {
         getAndConsumeInterruptionContext,
         getAndConsumeClientNotes,
         onFastBrainResult: onPipelineFastBrainResult,
+        takeVoiceAction: takePhoneVoiceAction,
       })
       // Pass pipelineLLM to createDirectSession so it uses it instead of creating a new ClaudeLLM
       const result = await createDirectSession(resumeSessionId, pipelineLLM)
@@ -6091,6 +6113,7 @@ async function main() {
                 getAndConsumeInterruptionContext,
                 getAndConsumeClientNotes,
                 onFastBrainResult: onPipelineFastBrainResult,
+                takeVoiceAction: takePhoneVoiceAction,
               })
               result = await createDirectSession(recoverySessionId, pipelineLLM)
             }
@@ -6418,7 +6441,8 @@ async function main() {
       parkWarm('duplicate_identity')
       clearPipelineFastBrainSession()
       clearPipelineFastBrainSession()
-    } else if (KEEP_WARM && currentLLM && (currentLLM as any).sessionId && !phoneCallerLeft) {
+    } else if (KEEP_WARM && currentLLM && (currentLLM as any).sessionId && (!phoneCallerLeft || (keepWorkingRequested && PHONE_TOOLS_ENABLED))) {
+      // (A call parks only for "keep working after I hang up", and only once phone tools are on, #367.)
       // KEEP-WARM network/tab-close drop: park the subprocess instead of killing
       // it so a reconnect within the grace re-attaches with ZERO replay. We
       // STILL run the normal room teardown below — the parked brain is
@@ -6480,7 +6504,23 @@ async function main() {
         }
         return
       }
+      await dispatchAction(data, { sender: participant?.identity })
+    } catch {}
+  }
 
+  // The room publish, under a name dispatchAction's `reply` can shadow.
+  const publishToRoom = sendToFrontend
+
+  /**
+   * Runs one app command (a data-channel message whose sender already passed
+   * checkControlSender). The phone's voice actions (#367) and POST /action run
+   * the same code through here, restricted to PHONE_ACTION_TYPES. `reply`
+   * receives what would go to the frontend (default: the room), so a call can
+   * speak the result.
+   */
+  const dispatchAction = async (data: any, opts: { sender?: string; reply?: typeof sendToFrontend } = {}) => {
+    const sendToFrontend = opts.reply ?? publishToRoom
+    try {
       if (data.type === 'claude_auth_code' && pendingAuthSubmitCode) {
         console.log('🔑 Received auth code from frontend')
         sendToFrontend({ type: 'claude_auth_submitting', message: 'Submitting code to Claude CLI...' })
@@ -6778,7 +6818,7 @@ async function main() {
         // the disconnect handler) and it is working, not just waiting on an approval.
         const busy = (currentLLM as any)?.busyState?.()
         const parks = KEEP_WARM && !activeMeetingBotId && !!(currentLLM as any)?.sessionId
-        await sendToFrontend({ type: 'busy_state', idle: (busy?.idle ?? true) || !!busy?.permissionPending, capMin: parks ? IDLE_EXIT_GRACE_MS / 60000 : 0, phone: isWatchBridgeEnabled() }, participant?.identity)
+        await sendToFrontend({ type: 'busy_state', idle: (busy?.idle ?? true) || !!busy?.permissionPending, capMin: parks ? IDLE_EXIT_GRACE_MS / 60000 : 0, phone: isWatchBridgeEnabled() }, opts.sender)
       }
       else if (data.type === 'keep_working') {
         keepWorkingRequested = true
@@ -7529,7 +7569,111 @@ async function main() {
           console.error('❌ list_processes: failed to read /proc:', err)
         }
       }
-    } catch {}
+    } catch (err) {
+      console.warn(`⚠️ action ${data?.type} failed:`, err instanceof Error ? err.message : err)
+    }
+  }
+
+  /**
+   * Runs one PHONE_ACTION_TYPES command (a call's voice action, POST /action)
+   * and returns what it sent to the frontend; it still reaches the room, so an
+   * open app stays in step.
+   */
+  const runAppAction = async (data: Record<string, unknown>): Promise<any[]> => {
+    if (!PHONE_ACTION_TYPES.has(String(data?.type))) throw new Error(`not an allowed action: ${String(data?.type)}`)
+    const replies: any[] = []
+    await dispatchAction(data, { reply: async (d, to) => { replies.push(d); return publishToRoom(d, to) } })
+    return replies
+  }
+  actionHook = runAppAction
+
+  /** The LLM holding a pending permission (live session first, then a parked warm brain). */
+  const pendingPermissionHolder = (): any =>
+    currentLLM?.hasPendingPermission?.() ? currentLLM : (warmLLM as any)?.hasPendingPermission?.() ? warmLLM : null
+
+  // Phone voice actions (#367): on a call, a short command ("stop that", "what
+  // are you doing?", "switch to my billing project", a yes/no to a pending
+  // approval) runs the app's own action instead of a model turn, and the result
+  // is spoken. The model never answers an approval.
+  function takePhoneVoiceAction(text: string): boolean {
+    if (!inPhoneRoom()) return false
+    const action = matchVoiceAction(text, { permissionPending: !!pendingPermissionHolder() })
+    if (!action) return false
+    console.log(`📞 Voice action: ${JSON.stringify(action)}`)
+    void runPhoneVoiceAction(action)
+      .then((line) => (currentSession as any)?.say?.(line))
+      .catch((e) => console.warn('⚠️ voice action failed:', e instanceof Error ? e.message : e))
+    return true
+  }
+
+  async function runPhoneVoiceAction(action: VoiceAction): Promise<string> {
+    const llmNow: any = currentLLM
+    switch (action.kind) {
+      case 'answer': {
+        if (!phoneAnswerAllowed(action.answer)) return "I can't approve actions on a call yet. Approve it in the app, or say no to deny it."
+        await runAppAction({ type: 'permission_response', response: action.answer })
+        return action.answer === 'allow' ? 'Allowed.' : 'Denied.'
+      }
+      case 'mode': {
+        if (!phoneMayChangeMode(approvalMode, action.mode, PHONE_KEYPAD_APPROVALS_ENABLED)) {
+          return `${approvalModeLabel(approvalMode)} is on. On a call I can only make approvals stricter for now; change it in the app.`
+        }
+        await runAppAction({ type: 'set_approval_mode', mode: action.mode })
+        return sayModeChanged(approvalMode)
+      }
+      case 'status': {
+        const busy = llmNow?.busyState?.() ?? { turnInFlight: false, compacting: false }
+        const pending = pendingPermissionHolder()?.getPendingPermission?.()
+        return sayStatus({
+          turnInFlight: !!busy.turnInFlight, compacting: !!busy.compacting,
+          tasks: llmNow?.getRunningTasks?.() ?? [],
+          pending: pending ? speakablePermission(pending.toolName, pending.input) : null,
+          keypad: PHONE_KEYPAD_APPROVALS_ENABLED,
+        })
+      }
+      case 'stop': {
+        if (action.agent) {
+          const want = action.agent.replace(/\s+/g, '').toLowerCase()
+          const d = statusManager.getActiveDispatches().find((x) => (x.subagentType || '').replace(/[\s_-]+/g, '').toLowerCase().includes(want))
+          if (!d) return `No ${action.agent} agent is running.`
+          const replies = await runAppAction({ type: 'stop_dispatch', agentId: d.id })
+          return replies.find((r) => r.type === 'agent_stopped')?.stopped ? `Stopped the ${d.subagentType} agent.` : `I couldn't stop the ${d.subagentType} agent.`
+        }
+        // The main turn: the same graceful interrupt the fast brain uses (the subprocess stays up).
+        const stopped = await (llmNow?.interruptAgent?.() ?? llmNow?.interruptQuery?.())
+        return stopped === false ? "I wasn't doing anything to stop." : 'Stopped.'
+      }
+      case 'sessions': {
+        const replies = await runAppAction({ type: 'list_sessions' })
+        return saySessions(replies.find((r) => r.type === 'sessions_list')?.sessions ?? [])
+      }
+      case 'switch': {
+        const replies = await runAppAction({ type: 'list_sessions' })
+        const target = pickSession(action.query, replies.find((r) => r.type === 'sessions_list')?.sessions ?? [])
+        if (!target) return `I couldn't find a session called ${action.query}.`
+        const name = target.title || action.query
+        if (target.sessionId === llmNow?.sessionId) return `You're already in ${name}.`
+        const busy = llmNow?.busyState?.()
+        await runAppAction({ type: 'switch_session', sessionId: target.sessionId, workingDirectory: target.cwd })
+        return busy && !busy.idle ? `I'll switch to ${name} as soon as I finish the current step.` : `Switching to ${name}.`
+      }
+      case 'outputs': {
+        const sessionId = llmNow?.sessionId
+        if (!sessionId) return "This session hasn't made any files yet."
+        const replies = await runAppAction({ type: 'get_session_artifacts', sessionId })
+        return sayOutputs(replies.find((r) => r.type === 'session_artifacts')?.artifacts ?? [])
+      }
+      case 'keep_working': {
+        // A hang-up kills the call's brain unless phone tools are on (#362):
+        // work started on a call must not run on with tools after it ends.
+        if (!PHONE_TOOLS_ENABLED) return "On a call I can't keep working after you hang up yet. Use the app for that."
+        const busy = (await runAppAction({ type: 'get_busy' })).find((r) => r.type === 'busy_state')
+        if (!busy || busy.idle) return "I'm not working on anything, so there's nothing to keep going."
+        if (!busy.capMin) return "I can't keep working after this call on this machine."
+        await runAppAction({ type: 'keep_working' })
+        return `OK. Hang up whenever you like. I'll keep working for up to ${busy.capMin} minutes${busy.phone ? " and let you know when I'm done" : ''}.`
+      }
+    }
   }
 
   // ============================================================
