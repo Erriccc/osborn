@@ -30,22 +30,12 @@ const CORPUS = [
   `OPENAI_API_KEY=${B.repeat(2)}`, `DB_PASSWORD="${B}"`, `AWS_SECRET_ACCESS_KEY='${B.repeat(4)}'`, `GH_TOKEN=\`${B.repeat(2)}\``,
 ]
 
-// Text both sanitizers must leave alone (the gate spares more; that list is in
-// activity-redaction.test.ts).
+// Text both sanitizers must leave alone (the gate also spares code the agent
+// masks; that list is in activity-redaction.test.ts).
 const BENIGN = [
   'color=red', 'mode=dark', 'token count = 5', 'max_tokens=4096', 'the task-budgets doc',
   'fo1_/sbp_/xox/Bearer patterns', 'run `npm test` first',
   'Bearer token expired', 'const token = getToken()',
-]
-
-// Code the gate must also leave alone. The agent's broader ENV-SECRET rule masks
-// some of these on its own surfaces (over-masking there, not a leak).
-const CODE = [
-  'OpenAI(api_key=os.environ["OPENAI_API_KEY"])', 'login(username=user, password=password)',
-  'gh.auth(token=token, base_url=url)', 'stripe.api_key=settings.STRIPE_KEY',
-  'API_KEY=process.env.API_KEY', 'apiKey=config.apiKey',
-  'cache_key=user:123:profile', 'sort_key=lambda r: r[1]',
-  'idempotency_key=order-123', 'partition_key=customer_id',
 ]
 
 const survivors = (text: string) => detectSecrets(text).filter((h) => !h.match.includes('••••'))
@@ -64,7 +54,7 @@ for (const s of CORPUS) {
     assert.ok(!out.includes(B), `the gate printed a secret body: ${out.slice(0, 60)}`)
   }
 }
-for (const s of BENIGN.concat(CODE)) assert.equal(redactSecrets(s), s, `the gate rewrote: ${s}`)
+for (const s of BENIGN) assert.equal(redactSecrets(s), s, `the gate rewrote: ${s}`)
 for (const s of BENIGN) assert.equal(agentRedact(s), s, `the agent rewrote: ${s}`)
 // Both PEM rules are bounded: 20k BEGIN lines with no END once took over 600ms.
 const headers = '-----BEGIN PRIVATE KEY-----\n'.repeat(20000)
@@ -73,4 +63,4 @@ for (const [name, redact] of [['gate', redactSecrets], ['agent', agentRedact]] a
   redact(headers)
   assert.ok(Date.now() - start < 200, `the ${name}'s PEM rules rescan the text: ${Date.now() - start}ms`)
 }
-console.log(`redaction-parity: ${kinds.size} agent rule kinds, ${CORPUS.length} samples, ${BENIGN.length + CODE.length} benign lines`)
+console.log(`redaction-parity: ${kinds.size} agent rule kinds, ${CORPUS.length} samples, ${BENIGN.length} benign lines`)
