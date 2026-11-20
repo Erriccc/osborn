@@ -20,7 +20,6 @@ export interface StewardVerdict {
   history: string[]
   /** HISTORY sorted into the card's four rows, always in this order; a row with a warning is shown open. */
   historyRows: StewardHistoryRow[]
-  /** HISTORY entries naming a coupled file missing from the diff: a warning row of their own. */
   /** Issue numbers of the chain the ROOT CAUSE line cites (#A → #B → this), in order. */
   chain: number[]
   /** `https://github.com/<owner>/<repo>/issues/` for the working repo, so the card can link chain numbers. */
@@ -47,7 +46,7 @@ const WARN_RE = /\b(repeat|missing|undo(?:es)?|reverts? (?:a|the|an earlier)|cou
 const CLEAR_RE = /(?::|—|-|\b)\s*(none|0|no(?:ne)? found|nothing)\.?\s*$/i
 const warns = (e: string) => WARN_RE.test(e) && !CLEAR_RE.test(e)
 
-export function historyRows(history: string[]): StewardHistoryRow[] {
+function historyRows(history: string[]): StewardHistoryRow[] {
   const rows: StewardHistoryRow[] = (['churn', 'retouched', 'coupled', 'decisions'] as const).map((key) => ({ key, items: [], warn: false }))
   for (const e of history) {
     const head = e.split(/[:—]/)[0]
