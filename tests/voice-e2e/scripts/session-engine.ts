@@ -68,7 +68,7 @@ import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
-import { actWithCache, fencedCall, forgetCached, withTimeout } from '../lib/step-cache'
+import { actWithCache, BRAIN_GONE, fencedCall, forgetCached, withTimeout, zombieGate } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
 import { attachDevtools, redactDiagnostics, redactJson, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
@@ -440,11 +440,29 @@ async function main() {
   // out the 20s is not a failure: the revive keeps going and its own result counts.
   let reviveFailedAt = 0
   let reviving: Promise<boolean> | null = null
+  // One stuck command (a mouth whose voice services all hang, a page that never
+  // settles) must not freeze every driver: after LOCK_MAX_MS the next command
+  // may start, while the caller still waits for its own result.
+  const LOCK_MAX_MS = Number(process.env.OSBORN_LOCK_MAX_MS) > 0 ? Number(process.env.OSBORN_LOCK_MAX_MS) : 240000
+  // A timed-out brain call is waited for up to SETTLE_MS inside its own command;
+  // one still running after that (its brain not yet closed) is a zombie the next
+  // brain call or re-init waits out, for what is left of its command's action
+  // lock (#421). One older than two lock spans is dropped, so it cannot wedge the brain.
+  const SETTLE_MS = 15000
+  const zombies = zombieGate({
+    maxAgeMs: 2 * LOCK_MAX_MS,
+    onDrop: (age) => mark(`brain: no longer waiting for a timed-out act still unsettled after ${Math.round(age / 1000)}s — it may still act`),
+  })
+  let lockDeadline = 0  // when the command holding the action lock may be overtaken; 0 outside the lock
+  const zombieBudget = () => lockDeadline ? lockDeadline - Date.now() : SETTLE_MS
   const reviveBrain = async (auto = false): Promise<boolean> => {
     if (reviving && auto) return false  // another request is reviving: fail fast, keep the lock free
     if (!reviving) {
       if (auto && Date.now() - reviveFailedAt < 60000) return false
       reviving = (async () => {
+        // A new brain must not start on a page a timed-out call may still act on (#421).
+        try { await zombies.wait(zombieBudget(), 'brain re-init') }
+        catch (e) { brainError = (e as Error).message; reviveFailedAt = Date.now(); mark(brainError); reviving = null; return false }
         if (stagehand) await withTimeout(stagehand.close(), 10000, 'close').catch(() => {})  // a hung close must not stall the revive
         try { await initBrain(); reviveFailedAt = 0; mark('brain re-initialized'); return true }
         catch { reviveFailedAt = Date.now(); mark(`brain re-init failed — ${brainError}`); return false }
@@ -454,29 +472,45 @@ async function main() {
     if (!auto) return reviving
     return withTimeout(reviving, 20000, 'still reviving').catch(() => false)
   }
-  const brainDownMsg = () => reviving ? 'the brain is re-initializing — retry in a few seconds; /eval, /tab and /shot still work'
+  const brainDownMsg = () => reviving && zombies.pending ? 'a timed-out brain call is still running; the brain re-init is waiting for it to stop — retry shortly; /eval, /tab and /shot still work'
+    : reviving ? 'the brain is re-initializing — retry in a few seconds; /eval, /tab and /shot still work'
     : `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   const brain = async (i: string, p: Page = active) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
+    await zombies.wait(zombieBudget(), 'act')
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
     // A value below 10s (say "120", meant as seconds) would time every act out at once.
     const BRAIN_TIMEOUT_MS = Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) >= 10000 ? Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) : 120000
-    // A timed-out call is fenced (#174): the abort stops it starting any action, only ITS brain
-    // is closed (never a replacement), the lock stays held until the call has stopped (up to
-    // SETTLE_MS), and a late finish or a call that would not stop is logged.
+    // A timed-out call is fenced (#174, #421): the abort stops it starting any action or writing
+    // the action cache, its brain is closed and the lock held until both the call and the close
+    // have finished (up to SETTLE_MS), and a call still running then is a zombie the next brain
+    // call waits out. Stagehand 3.7's act/observe take no abort signal, so closing is the stop.
     const sh = stagehand
-    const SETTLE_MS = 15000
     const why = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`
+    const q = `"${i.slice(0, 60)}"`
     try {
       return await fencedCall((signal) => actWithCache(sh, p, i, signal), {
         timeoutMs: BRAIN_TIMEOUT_MS, settleMs: SETTLE_MS, why,
-        onTimeout: () => { if (stagehand === sh) { brainAlive = false; brainError = why }; void sh.close().catch(() => {}) },
-        stopped: (ok) => { if (!ok) mark(`brain: a timed-out act was still running ${SETTLE_MS / 1000}s after its brain closed — the next action may overlap it: "${i.slice(0, 60)}"`) },
-        onLate: (r) => { if (!r.noop) mark(`brain: a timed-out act finished late and acted (${r.did ?? 'unknown action'}): "${i.slice(0, 60)}"`) },
+        onTimeout: (call) => {
+          // A replacement brain has its own CDP connection; the revive that made it closed this one.
+          if (stagehand !== sh) { zombies.track(call); return }
+          brainAlive = false; brainError = why
+          const closing = sh.close()
+          zombies.track(call, closing)  // once closed, its connection is gone and it cannot act
+          return closing
+        },
+        settled: (end, closed) => {
+          if (end === 'running') mark(`brain: a timed-out act was still running ${SETTLE_MS / 1000}s after the deadline — the next brain call waits for it and is refused if it does not stop: ${q}`)
+          if (!closed) mark(`brain: closing the timed-out brain did not finish within ${SETTLE_MS / 1000}s: ${q}`)
+        },
+        onLate: (l) => {
+          if ('error' in l) mark(`brain: a timed-out act failed late, possibly after acting (${String((l.error as Error)?.message ?? l.error).slice(0, 100)}): ${q}`)
+          else if (!l.value.noop) mark(`brain: a timed-out act finished late and acted (${l.value.did ?? 'unknown action'}), not cached: ${q}`)
+        },
       })
     }
     catch (e) {
-      if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
+      if (BRAIN_GONE.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
       throw e
     }
   }
@@ -784,10 +818,6 @@ async function main() {
   const isWorking = (d: string) => seenRecently(d) && !!driverActive.get(d) && !driverActive.get(d)!.isClosed()
   let actionChain: Promise<unknown> = Promise.resolve()
   let inflight = 0  // commands running or queued; capture never pauses under one
-  // One stuck command (a mouth whose voice services all hang, a page that never
-  // settles) must not freeze every driver: after LOCK_MAX_MS the next command
-  // may start, while the caller still waits for its own result.
-  const LOCK_MAX_MS = Number(process.env.OSBORN_LOCK_MAX_MS) > 0 ? Number(process.env.OSBORN_LOCK_MAX_MS) : 240000
   // A plain page scroll is done by the engine itself (mouse wheel), never the brain.
   const PLAIN_SCROLL = /^\s*(?:please\s+)?scroll\s+(?:(?:the\s+)?(?:page|window)\s+)?(?:(down|up)|(?:back\s+)?to\s+the\s+(?:very\s+)?(top|bottom|beginning|end|start))(?:\s+(?:of\s+)?(?:the\s+)?(?:page|window))?(?:\s+(?:by\s+)?(?:about\s+|roughly\s+)?(?:(\d+)\s*(?:px|pixels?)|(a|one|two|three|half\s+a)\s+(?:screen|page|viewport)s?|a\s+(?:bit|little)))?\s*\.?\s*$/i
   const withLock = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -795,12 +825,14 @@ async function main() {
     // commands waiting behind a stuck one are released one at a time.
     let timer: NodeJS.Timeout | undefined
     let release!: () => void
+    let deadline = 0
     const released = new Promise<void>((done) => { release = done })
-    const start = () => { timer = setTimeout(() => { mark(`a command held the action lock past ${LOCK_MAX_MS / 1000}s — letting the next one run`); release() }, LOCK_MAX_MS); return fn() }
+    const start = () => { lockDeadline = deadline = Date.now() + LOCK_MAX_MS; timer = setTimeout(() => { mark(`a command held the action lock past ${LOCK_MAX_MS / 1000}s — letting the next one run`); release() }, LOCK_MAX_MS); return fn() }
     const run = actionChain.then(start, start)
     inflight++
     actionChain = released
-    run.then(() => { inflight--; clearTimeout(timer); release() }, () => { inflight--; clearTimeout(timer); release() })
+    const done = () => { inflight--; clearTimeout(timer); if (lockDeadline === deadline) lockDeadline = 0; release() }
+    run.then(done, done)
     return run as Promise<T>
   }
   // Point the module-level `active` at the driver's tab + bring it to front.

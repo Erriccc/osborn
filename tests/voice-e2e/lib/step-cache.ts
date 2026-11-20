@@ -90,7 +90,8 @@ async function brainPageFor(stagehand: BrainLike, page: Page): Promise<{ targetI
  * Cached natural-language action. Drop-in for `stagehand.act(instruction)`.
  * `stagehand` needs `.observe(instruction)` and `.act(actionOrInstruction)`.
  * It acts on `page`; if Stagehand cannot find that page it acts on its own active page.
- * Once `signal` is aborted (the caller timed out) it never starts an action (#174).
+ * Once `signal` is aborted (the caller timed out) it never starts an action (#174),
+ * and an action that finishes after that writes nothing to the cache (#421).
  */
 export async function actWithCache(
   stagehand: BrainLike,
@@ -104,6 +105,8 @@ export async function actWithCache(
   const key = `${url.pathname} :: ${instruction}`
   const store = loadStore(url.hostname)
   const hit = store[key]
+  // A late finish is not a trusted recipe: its store snapshot is stale and its result unverified.
+  const fenced = () => !!signal?.aborted
 
   const describeTarget = async (sel: string): Promise<string | null> => {
     try {
@@ -132,6 +135,7 @@ export async function actWithCache(
       signal?.throwIfAborted()
       try {
         await stagehand.act(hit.action, on)
+        if (fenced()) return { cached: true, healed: false, did: describeAction(hit.action) }
         hit.hits += 1
         hit.lastUsedAt = new Date().toISOString()
         saveStore(url.hostname, store)
@@ -155,6 +159,7 @@ export async function actWithCache(
   }
   signal?.throwIfAborted()
   await stagehand.act(action, on)
+  if (fenced()) return { cached: false, healed: false, did: describeAction(action) }
   // A step carrying a secret is never written into the shareable cache.
   if (holdsSecret({ key, action })) {
     if (hit) { delete store[key]; saveStore(url.hostname, store) }
@@ -181,18 +186,33 @@ export const withTimeout = <T,>(p: Promise<T>, ms: number, why: string | Error):
   return Promise.race([p, new Promise<never>((_, rej) => { t = setTimeout(() => rej(typeof why === 'string' ? new Error(why) : why), ms) })]).finally(() => clearTimeout(t))
 }
 
+/** How a timed-out call ended: `stopped` (at a fence check before acting, or cut
+ *  off by its brain closing), `late` (it settled after the deadline some other
+ *  way and may have acted, whether it returned or threw), or still `running`
+ *  when the settle wait ran out. */
+export type FencedEnd = 'stopped' | 'late' | 'running'
+
+/** An error a brain call throws when its brain or browser connection is gone. */
+export const BRAIN_GONE = /uninitialized|detached|closed|Target/i
+
 /**
- * Runs `run` with a deadline, and fences it when the deadline passes (#174).
+ * Runs `run` with a deadline, and fences it when the deadline passes (#174, #421).
  * On timeout the signal aborts (no new observe or act starts) and `onTimeout`
  * runs (the engine closes that call's brain, which ends a call in flight). The
- * rejection then waits up to `settleMs` for the call to stop, so the caller's
- * action lock is held until the timed-out action has stopped, not just its
- * deadline. `stopped(false)` means it was still running when the wait ran out;
- * `onLate` hears what a timed-out call returned if it finished anyway.
+ * rejection then waits up to `settleMs` for the call AND `onTimeout`'s promise,
+ * so the caller's action lock is held until the timed-out action has stopped.
+ * `settled` says how it ended and whether `onTimeout` finished; `onLate` hears a
+ * late result or error. A call still `running` is the next caller's to wait out
+ * (`zombieGate`).
  */
 export async function fencedCall<T>(
   run: (signal: AbortSignal) => Promise<T>,
-  o: { timeoutMs: number; settleMs: number; why: string; onTimeout?: () => void; stopped?: (stopped: boolean) => void; onLate?: (r: T) => void },
+  o: {
+    timeoutMs: number; settleMs: number; why: string
+    onTimeout?: (call: Promise<T>) => unknown
+    settled?: (end: FencedEnd, closed: boolean) => void
+    onLate?: (late: { ok: true; value: T } | { ok: false; error: unknown }) => void
+  },
 ): Promise<T> {
   const fence = new AbortController()
   const call = run(fence.signal)
@@ -200,11 +220,56 @@ export async function fencedCall<T>(
   try { return await withTimeout(call, o.timeoutMs, timedOut) }
   catch (e) { if (e !== timedOut) throw e }
   fence.abort(timedOut)
-  call.then((r) => o.onLate?.(r), () => {})
-  try { o.onTimeout?.() } catch { /* closing the brain must not mask the timeout */ }
-  const stopped = await withTimeout(call.then(() => true, () => true), o.settleMs, 'still running').catch(() => false)
-  o.stopped?.(stopped)
+  let end: FencedEnd = 'running'
+  let closed = false
+  let cutOff = false  // onTimeout's close finished: the call can no longer act
+  const callDone = call.then(
+    (value) => { end = 'late'; o.onLate?.({ ok: true, value }) },
+    (error) => {
+      // The fence's own abort, or the brain close cutting the call off.
+      if (error === timedOut || cutOff || BRAIN_GONE.test(String((error as Error)?.message ?? error))) end = 'stopped'
+      else { end = 'late'; o.onLate?.({ ok: false, error }) }
+    },
+  )
+  let ran: unknown
+  try { ran = o.onTimeout?.(call) } catch (e) { ran = Promise.reject(e) }  // must not mask the timeout
+  const closes = typeof (ran as Promise<unknown>)?.then === 'function'  // only a returned close can cut the call off
+  const closing = Promise.resolve(ran).then(() => { closed = true; cutOff = closes }, () => { closed = true })
+  await withTimeout(Promise.all([callDone, closing]), o.settleMs, 'still running').catch(() => {})
+  o.settled?.(end, closed)
   throw timedOut
+}
+
+/**
+ * Timed-out calls still running past their settle wait (#421). The next brain
+ * call, or a brain re-init, `wait`s for them before touching the page, and is
+ * refused with a clear error if they have not settled within its budget, so it
+ * never runs alongside one. A zombie is gone once its call settles or its brain
+ * has closed (`closed` resolves: its CDP connection is gone, it cannot act), and
+ * one older than `maxAgeMs` is dropped (`onDrop`), so a call that never settles
+ * cannot block the brain for good.
+ */
+export function zombieGate(o: { maxAgeMs?: number; onDrop?: (ageMs: number) => void } = {}) {
+  const zombies = new Set<{ gone: Promise<void>; since: number }>()
+  return {
+    track(call: Promise<unknown>, closed?: Promise<unknown>): void {
+      const closeDone = closed?.then(() => {}, () => new Promise<void>(() => {}))  // a failed close leaves it able to act
+      const z = { gone: (closeDone ? Promise.race([call, closeDone]) : call).then(() => {}, () => {}), since: Date.now() }
+      zombies.add(z)
+      void z.gone.then(() => zombies.delete(z))
+    },
+    get pending(): boolean { return zombies.size > 0 },
+    async wait(budgetMs: number, what: string): Promise<void> {
+      for (const z of zombies) {
+        const age = Date.now() - z.since
+        if (o.maxAgeMs && age > o.maxAgeMs) { zombies.delete(z); o.onDrop?.(age) }
+      }
+      if (!zombies.size) return
+      const ms = Math.max(0, budgetMs)
+      if (!(await withTimeout(Promise.all([...zombies].map((z) => z.gone)).then(() => true), ms, 'zombie').catch(() => false)))
+        throw new Error(`${what} refused: a timed-out brain call was still running after another ${Math.round(ms / 1000)}s and could still act on the page — retry shortly`)
+    },
+  }
 }
 
 /** True when redaction would change it, or it types into a password field:

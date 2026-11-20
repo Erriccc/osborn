@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 59
+Version: 60
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v60
+- **A timed-out act no longer overlaps the next one or writes the action cache.** One still running 15s after its deadline is waited for by the next brain action (for what is left of the action lock) and refused with a clear error if it never stops; a late finish is never cached, and the marks now say "finished late" or "failed late" apart from a clean stop.
 
 ## What's new in v59
 - **A timed-out act holds the action lock until it has stopped.** Past `OSBORN_BRAIN_TIMEOUT_MS` the engine cancels the call and waits up to 15s for it to stop before the next action runs; a call still running after that is logged in the run's marks.
