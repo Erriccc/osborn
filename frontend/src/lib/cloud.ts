@@ -39,7 +39,7 @@ if (typeof process !== 'undefined' && process.env.CLOUD_PROVIDER) {
   console.log(`[cloud] CLOUD_PROVIDER=${process.env.CLOUD_PROVIDER} → using lib/${process.env.CLOUD_PROVIDER === 'machines' ? 'machines' : 'sprites'}`)
 }
 
-// ─── Re-exports — only the 16 functions /api/sandbox/route.ts actually calls ──
+// ─── Re-exports — only the functions /api/sandbox/route.ts actually calls ──
 export const assignFromPoolOrCreate = provider.assignFromPoolOrCreate
 export const checkOsbornHealth = provider.checkOsbornHealth
 export const checkSessionLayerConsistency = provider.checkSessionLayerConsistency
@@ -49,7 +49,6 @@ export const execInSprite = provider.execInSprite
 export const findUserSandbox = provider.findUserSandbox
 export const isSpritesConfigured = provider.isSpritesConfigured
 export const keepAliveSandbox = provider.keepAliveSandbox
-export const readInstalledOsbornVersion = provider.readInstalledOsbornVersion
 export const resolveOsbornLatest = provider.resolveOsbornLatest
 export const restartService = provider.restartService
 export const startSandbox = provider.startSandbox
