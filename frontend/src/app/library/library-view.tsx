@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import { REFINE_PLATFORMS, buildSeededChatUrl, refineSeed } from '@/lib/seed-chat'
 import type { User } from '@supabase/supabase-js'
@@ -76,6 +76,9 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
   const supabase = useMemo(() => createSupabaseBrowser(), [])
   const [user, setUser] = useState<User | null>(null)
   const [authChecked, setAuthChecked] = useState(false)
+  const pathname = usePathname()
+  // Signed out: the gate withholds the library, so its filters and counts go too.
+  const guest = authChecked && !user
   const [items, setItems] = useState<ContentItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -486,8 +489,8 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
           </p>
         </div>
 
-        {/* Toolbar: filter segments + search */}
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 mb-5">
+        {/* Toolbar: filter segments + search — nothing to filter while signed out */}
+        {!guest && <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 mb-5">
           <div className="inline-flex rounded-xl bg-[var(--surface)] border border-[var(--border-subtle)] p-1 gap-1">
             {(['all', 'published', 'draft'] as StatusFilter[]).map(f => (
               <button key={f} onClick={() => setFilter(f)}
@@ -509,7 +512,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
               className="w-full bg-[var(--surface)] border border-[var(--border-subtle)] rounded-xl pl-9 pr-3 py-2 max-sm:py-2.5 text-[13px] max-sm:text-base text-[var(--text-primary)] placeholder-[var(--text-muted)] focus:outline-none focus:border-accent/50"
             />
           </div>
-        </div>
+        </div>}
 
         {/* States */}
         {!authChecked || loading ? (
@@ -518,9 +521,20 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
             <p className="text-[var(--text-muted)] text-sm">Loading your library…</p>
           </div>
         ) : !user ? (
-          <div className="text-center py-24">
-            <p className="text-[var(--text-secondary)] text-sm mb-3">Sign in to view your library.</p>
-            <Link href="/dashboard" className="text-[var(--accent)] text-sm hover:underline">Go to dashboard →</Link>
+          // Signed-out card, same shape as FastBrainChat's: one primary Sign in that
+          // comes back here (/login honours same-site ?next=).
+          <div className="max-w-md mx-auto mt-10 rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-6 text-center">
+            <div className="mx-auto mb-3 w-12 h-12 rounded-2xl bg-[var(--surface-2)] border border-[var(--border-subtle)] flex items-center justify-center">
+              <DocIcon className="w-6 h-6 text-[var(--text-muted)]" />
+            </div>
+            <p className="text-[14px] text-[var(--text-primary)] font-medium">Sign in to view your library</p>
+            <p className="mt-1 text-[13px] text-[var(--text-secondary)]">
+              Your library is private to your account.
+            </p>
+            <a href={`/login?next=${encodeURIComponent(pathname || '/library')}`}
+              className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2.5 text-[13px] font-semibold hover:opacity-90 active:scale-[0.98] transition-all">
+              Sign in
+            </a>
           </div>
         ) : error ? (
           <div className="rounded-lg border border-red-400/30 bg-red-400/[0.06] px-3 py-2.5 text-[12.5px] text-red-200">{error}</div>
