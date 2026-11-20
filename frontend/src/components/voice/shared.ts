@@ -220,7 +220,6 @@ export interface StewardVerdict {
   history?: string[]
   /** HISTORY in four rows (churn, retouched, coupled, decisions); a row with a warning renders open. */
   historyRows?: Array<{ key: 'churn' | 'retouched' | 'coupled' | 'decisions'; items: string[]; warn: boolean }>
-  missingCoupled?: string[]
   /** Chain issue numbers from ROOT CAUSE; linked when issueBase is served. */
   chain?: number[]
   issueBase?: string

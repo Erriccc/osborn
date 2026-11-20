@@ -21,7 +21,6 @@ export interface StewardVerdict {
   /** HISTORY sorted into the card's four rows, always in this order; a row with a warning is shown open. */
   historyRows: StewardHistoryRow[]
   /** HISTORY entries naming a coupled file missing from the diff: a warning row of their own. */
-  missingCoupled: string[]
   /** Issue numbers of the chain the ROOT CAUSE line cites (#A → #B → this), in order. */
   chain: number[]
   /** `https://github.com/<owner>/<repo>/issues/` for the working repo, so the card can link chain numbers. */
@@ -44,7 +43,7 @@ const ROW_OF: Array<[StewardHistoryKey, RegExp]> = [
   ['churn', /churn|revert/i],
 ]
 // An entry warns when it reports a finding, unless it ends by saying there is none.
-const WARN_RE = /\b(repeat|missing|undo(?:es)?|reverts? (?:a|the|an earlier)|could not|unavailable|unauthenticated|not run)\b|\b[1-9]\d* found\b/i
+const WARN_RE = /\b(repeat|missing|undo(?:es)?|reverts? (?:a|the|an earlier)|could not|unavailable|unauthenticated|not run)\b|\b[1-9]\d* found\b|\bre-?touched:\s*\d+\s*\/\s*0*[1-9]\d*\b/i
 const CLEAR_RE = /(?::|—|-|\b)\s*(none|0|no(?:ne)? found|nothing)\.?\s*$/i
 const warns = (e: string) => WARN_RE.test(e) && !CLEAR_RE.test(e)
 
@@ -61,11 +60,22 @@ export function historyRows(history: string[]): StewardHistoryRow[] {
 }
 
 /** Issue links for chain numbers: the working repo's GitHub issues URL, or undefined off GitHub. */
+const issueBaseByCwd = new Map<string, string | undefined>()
 export function githubIssueBase(cwd: string): string | undefined {
+  if (!issueBaseByCwd.has(cwd)) issueBaseByCwd.set(cwd, readIssueBase(cwd))
+  return issueBaseByCwd.get(cwd)
+}
+
+/** Exported for tests: the issues URL for a remote URL, or undefined when it is not github.com. */
+export function issueBaseFromRemote(url: string): string | undefined {
+  const m = url.match(/(?:^|[@/])github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/)
+  return m ? `https://github.com/${m[1]}/${m[2]}/issues/` : undefined
+}
+
+function readIssueBase(cwd: string): string | undefined {
   try {
     const url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd, encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
-    const m = url.match(/github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/)
-    return m ? `https://github.com/${m[1]}/${m[2]}/issues/` : undefined
+    return issueBaseFromRemote(url)
   } catch { return undefined }
 }
 
@@ -139,8 +149,8 @@ export function parseStewardVerdict(text: string, at: string = new Date().toISOS
   const history = bounded('history')
   const rows = historyRows(history)
   const rootCause = joined('rootCause')
-  // The written chain (#A → #B → this) when there is one, else every issue the line cites.
-  const chainText = rootCause?.match(/#\d+(?:\s*(?:→|->)\s*#\d+)*\s*(?:→|->)\s*this\b/i)?.[0] ?? rootCause ?? ''
+  // Only an explicit chain (#A → #B → this) counts; a bare #n elsewhere in the line is not one.
+  const chainText = rootCause?.match(/(?:^|\W)#\d+(?:\s*(?:→|->)\s*#\d+)*\s*(?:→|->)\s*this\b/i)?.[0] ?? ''
   const chain = [...new Set([...chainText.matchAll(/#(\d+)\b/g)].map((m) => Number(m[1])))]
   const decision = verdict === 'BLOCK' ? joined('decision') ?? (loose.join(' ') || undefined) : undefined
   return {
@@ -153,7 +163,6 @@ export function parseStewardVerdict(text: string, at: string = new Date().toISOS
     ...(joined('lines') ? { lines: joined('lines') } : {}),
     history,
     historyRows: rows,
-    missingCoupled: rows.find((r) => r.key === 'coupled')!.items.filter((e) => /\bmissing\b/i.test(e) && warns(e)),
     chain,
     ...(issueBase ? { issueBase } : {}),
     ...(impact.length ? { impact } : {}),

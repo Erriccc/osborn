@@ -110,9 +110,8 @@ function StewardVerdictCard({ data }: { data: StewardVerdict }) {
       </div>
       {block && data.decision && <StewardRow label="Your call"><span className="text-rose-200">{data.decision}</span></StewardRow>}
       <StewardRow label="Root cause">{data.rootCause || <span className="text-gray-500">not given</span>}</StewardRow>
-      {data.chain && (
+      {data.chain?.length ? (
         <StewardRow label="Chain">
-          {data.chain.length === 0 ? <span className="text-gray-500">none</span> : (
             <span>
               {data.chain.map((n) => (
                 <span key={n}>
@@ -124,12 +123,8 @@ function StewardVerdictCard({ data }: { data: StewardVerdict }) {
               ))}
               this
             </span>
-          )}
         </StewardRow>
-      )}
-      {data.missingCoupled && data.missingCoupled.length > 0 && (
-        <StewardRow label="Missing"><span className="text-amber-300">{listOrNone(data.missingCoupled)}</span></StewardRow>
-      )}
+      ) : null}
       <StewardRow label="Net-new">{listOrNone(data.netNew)}</StewardRow>
       <StewardRow label="Removed">{listOrNone(data.removed)}</StewardRow>
       {data.lines && <StewardRow label="Lines">{data.lines}</StewardRow>}
