@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath, stewardPushRecords, agentResultRecord, stewardServedRecords } = await import('../src/steward-verdict.js')
+const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath, stewardPushRecords, githubIssueBase, issueBaseFromRemote, agentResultRecord, stewardServedRecords } = await import('../src/steward-verdict.js')
 
 let pass = 0
 const t = (name: string, fn: () => unknown) => {
@@ -160,6 +160,56 @@ t('prior_messages push: last 10 verdicts and last 10 gates kept apart, raw and i
   assert.ok(out.every((r) => r.raw === undefined && r.impact === undefined))
   assert.ok(!JSON.stringify(out).includes('"raw"') && !JSON.stringify(out).includes('getStorePath'))
   assert.ok(recs[0].raw && recs[0].impact, 'source records untouched')
+})
+
+
+t('#224: HISTORY sorted into four rows; a warning row is flagged, a benign one is not', () => {
+  const v = parseStewardVerdict(`VERDICT: CLEAN — ok
+HISTORY:
+- churn: x.ts 4 commits / 60 days
+- re-touched: 2 hunks checked / 1 found (#212 changed L40-60)
+- coupled: index.ts, missing: VoiceRoom.tsx
+- decisions: #210, #212
+ROOT CAUSE: retry storm in pushMessage, log in #212 (#210 → #212 → this)`, 'x', 'https://github.com/o/r/issues/')!
+  assert.deepEqual(v.historyRows.map((r) => r.key), ['churn', 'retouched', 'coupled', 'decisions'])
+  assert.deepEqual(v.historyRows.map((r) => r.warn), [false, true, true, false])
+  assert.deepEqual(v.chain, [210, 212])
+  assert.equal(v.issueBase, 'https://github.com/o/r/issues/')
+})
+
+t('#224: none / 0 found do not warn; a feature has an empty chain', () => {
+  const v = parseStewardVerdict(REFACTORED, 'x')!
+  assert.ok(v.historyRows.every((r) => !r.warn))
+  assert.deepEqual(v.chain, [])
+  assert.equal(v.issueBase, undefined)
+  const w = parseStewardVerdict(`VERDICT: CLEAN — ok\nHISTORY:\n- coupled: missing: none\n- decisions: gh unavailable (unauthenticated)`, 'x')!
+  assert.equal(w.historyRows[3].warn, true)
+})
+
+t('#224: githubIssueBase is undefined outside a git repo', () => {
+  assert.equal(githubIssueBase('/nonexistent-dir-xyz'), undefined)
+})
+
+
+t('#224: the prompt\'s re-touched format warns when found is 1 or more, not 0', () => {
+  const row = (line: string) => parseStewardVerdict(`VERDICT: CLEAN — ok\nHISTORY: ${line}`, 'x')!.historyRows.find((r) => r.key === 'retouched')!
+  assert.equal(row('re-touched: 4 / 2').warn, true)
+  assert.equal(row('re-touched: 4 / 1').warn, true)
+  assert.equal(row('re-touched: 4 / 0').warn, false)
+})
+
+t('#224: only an explicit #A → #B → this chain counts', () => {
+  const chain = (rc: string) => parseStewardVerdict(`VERDICT: CLEAN — ok\nROOT CAUSE: ${rc}`, 'x')!.chain
+  assert.deepEqual(chain('colour #123456 broke, see #7'), [])
+  assert.deepEqual(chain('see #7 (#5 → #7 → this)'), [5, 7])
+  assert.deepEqual(chain('#5 → this'), [5])
+  assert.deepEqual(chain('a#5 → this'), [])
+})
+
+t('#224: the issue base is anchored to the github.com host', () => {
+  assert.equal(issueBaseFromRemote('git@github.com:o/r.git'), 'https://github.com/o/r/issues/')
+  assert.equal(issueBaseFromRemote('https://github.com/o/r'), 'https://github.com/o/r/issues/')
+  assert.equal(issueBaseFromRemote('https://notgithub.com/o/r.git'), undefined)
 })
 
 t('#212: a sub-agent result is recorded in the same sidecar, capped, and replayed', () => {

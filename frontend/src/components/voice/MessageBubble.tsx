@@ -82,12 +82,13 @@ function CompactionMarkerCard({ data }: { data: CompactionMarker }) {
 }
 
 // The steward's verdict (#221, #224): pill + one-line summary, then compact rows.
-// History and the full return stay collapsed; BLOCK is red and shows the decision.
+// History is four rows, open when a row warns; the full return stays collapsed. BLOCK is red and shows the decision.
 const VERDICT_STYLE: Record<StewardVerdict['verdict'], string> = {
   CLEAN: 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30',
   REFACTORED: 'bg-sky-500/15 text-sky-300 border-sky-500/30',
   BLOCK: 'bg-rose-500/20 text-rose-200 border-rose-500/50',
 }
+const HISTORY_LABEL = { churn: 'Churn', retouched: 'Re-touched', coupled: 'Coupled', decisions: 'Decisions' } as const
 function StewardRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex gap-2">
@@ -109,6 +110,21 @@ function StewardVerdictCard({ data }: { data: StewardVerdict }) {
       </div>
       {block && data.decision && <StewardRow label="Your call"><span className="text-rose-200">{data.decision}</span></StewardRow>}
       <StewardRow label="Root cause">{data.rootCause || <span className="text-gray-500">not given</span>}</StewardRow>
+      {data.chain?.length ? (
+        <StewardRow label="Chain">
+            <span>
+              {data.chain.map((n) => (
+                <span key={n}>
+                  {data.issueBase
+                    ? <a href={`${data.issueBase}${n}`} target="_blank" rel="noreferrer" className="text-sky-300 hover:underline">#{n}</a>
+                    : `#${n}`}
+                  {' → '}
+                </span>
+              ))}
+              this
+            </span>
+        </StewardRow>
+      ) : null}
       <StewardRow label="Net-new">{listOrNone(data.netNew)}</StewardRow>
       <StewardRow label="Removed">{listOrNone(data.removed)}</StewardRow>
       {data.lines && <StewardRow label="Lines">{data.lines}</StewardRow>}
@@ -118,7 +134,15 @@ function StewardVerdictCard({ data }: { data: StewardVerdict }) {
           <div className="mt-1 pl-[5.5rem]">{listOrNone(data.impact)}</div>
         </details>
       )}
-      {data.history && data.history.length > 0 && (
+      {(data.historyRows ?? []).map((row) => (
+        <details key={row.key} open={row.warn}>
+          <summary className={`cursor-pointer ${row.warn ? 'text-amber-300' : 'text-gray-500 hover:text-gray-300'}`}>
+            {HISTORY_LABEL[row.key]}{row.warn ? ' — check' : ''} ({row.items.length})
+          </summary>
+          <div className="mt-1 pl-[5.5rem]">{listOrNone(row.items)}</div>
+        </details>
+      ))}
+      {!data.historyRows && data.history && data.history.length > 0 && (
         <details>
           <summary className="cursor-pointer text-gray-500 hover:text-gray-300">History ({data.history.length})</summary>
           <div className="mt-1 pl-[5.5rem]">{listOrNone(data.history)}</div>

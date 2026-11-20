@@ -91,8 +91,10 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
    delay, a guard, a raised limit, a swallowed error, a silenced alert), alone or with cosmetic edits, needs the
    root cause: which mechanism in the touched code fails, with evidence (a measurement, log or reproduction)
    from the task, the linked issue or the commit. No evidence: BLOCK and ask for it. For a repeat (History found a
-   recent fix in the same code, or the task follows up an issue), also write the chain (#A → #B → this), checked
-   against the issues, and why this ends it. In a high-churn file, recommend moving the touched part as a separate change.
+   recent fix in the same code, or the task follows up an issue), also write the chain (#A → #B → this) and why
+   this ends it. Look up every issue you cite (`gh issue view <n>`, and the PR or commit that closed it) and confirm
+   it fixed the same code (the same file and function, or a caller/copy History found); drop a number you cannot
+   confirm and say so in HISTORY. A chain you did not check cannot be CLEAN. In a high-churn file, recommend moving the touched part as a separate change.
 7a. Whole functions: for every hunk, read the entire enclosing function, handler chain or switch, not only the
    changed lines. Confirm an if/else-if chain, switch or handler list still runs from its first branch to its
    last (an inserted `}` or a new `if` that splits a chain is a regression), early returns still come after every
@@ -107,8 +109,10 @@ files are hotspots, they move over time. HISTORY says which checks ran and which
    that repeats a code rule needs a test that compares them.
 7e. Dead code: every new export has an importer outside its own file and tests; every served field has a reader;
    every new handler has a sender. Remove what has none.
-8. Budget: per existing file, aim for lines added ≤ lines removed (test files excluded); growth needs a NET-NEW
-   reason in the return (no reason: REFACTORED to cut it, or BLOCK). Do not cut untouched code to meet it.
+8. Budget: per existing file, lines added ≤ lines removed (test files excluded). Growth over budget is never
+   CLEAN on its own: each growing file needs a NET-NEW reason naming that file and why nothing existing could take
+   the lines. Without one, cut it yourself (REFACTORED); if it cannot be cut without changing behaviour, BLOCK and
+   ask. Do not cut untouched code to meet it.
 9. New dependencies: a new package needs a reason and a check that no existing dependency already does it.
 10. Attack your own verdict: for each claim you are about to make (no duplicate, every caller still works,
    behaviour kept, nothing coupled is missing, old data is safe), run at least one command that could prove it
@@ -144,10 +148,11 @@ REMOVED: <what you cut and why> (or none)
 IMPACT: <changed symbol> → <every usage found> → <updated / ok / broken + why>; SIBLINGS: <other copies of the logic> → <updated / out of scope>
 TESTS: <suite> → pass/fail/could not run (why), for each one you ran, or the tester's result you are citing
 LINES: +<added> -<removed> before → after, excluding test files (*.test.*, *.spec.*, tests/), then tests separately
-HISTORY: churn, re-touched lines (hunks checked / found), fix chains followed, missing coupled files, related issues/PRs, and any check that could not run
+HISTORY: one line each, starting with its row name — churn: …; re-touched: <hunks checked> / <found>; fix chains: …;
+  coupled: <partners>, missing: <files> (or none); decisions: related issues/PRs; and any check that could not run
 CHALLENGED: <claim> → <command run to break it> → held / broke (fixed) / could not run (why)
 SETTLED: <item dropped> → <file:line that refuted it> (or none)
 USER TIME: saves / costs the user time because … (flag added waiting, clicks or questions with no reason)
 STEPS: <what you read or ran → how long>, in order, then the total
-ROOT CAUSE: for a fix, the cause, its evidence and the chain it ends; for a feature, "new feature, no earlier fault"
+ROOT CAUSE: for a fix, the cause, its evidence and the chain it ends (#A → #B → this, each looked up); for a feature, "new feature, no earlier fault"
 For BLOCK, name the decision a human has to make.

@@ -15,4 +15,5 @@ Differences in this repo (Claude Code dev environment):
 - No tester agent runs in this repo, so there is no result to cite: run the touched packages' tests yourself before signing off, with the commands under "Run the relevant tests" in CONTRIBUTING.md, plus `npx tsc --noEmit`.
 - "Bounded rounds" does not apply here. Every run is a fresh agent on the whole range, per CLAUDE.md — a resumed agent reviewing only its delta would be anchored on its own earlier verdicts.
 - Your USER TIME line goes into the PR's "User time" section; if the change adds waiting, clicks or questions without saying why, ask for that line.
-- Your NET-NEW and REMOVED lists go into the PR description verbatim. "None" only when it is true: new state, functions, options, files and helpers all count.
+- Chain issues you cite are in this repo (owner Erriccc, repo osborn): look each up as step 7 says before citing it.
+- Your NET-NEW and REMOVED lists go into the PR description verbatim. Your HISTORY lines go under "History", your ROOT CAUSE and chain under "Why". "None" only when it is true: new state, functions, options, files and helpers all count.
