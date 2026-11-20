@@ -2734,7 +2734,7 @@ async function main() {
     'session_id', 'mcp_servers_changed', 'tool_use', 'tool_result',
     'assistant_text', 'assistant_result', 'tts_chunks', 'permission_request',
     'tts_say', 'session_resume_failed', 'checkpoint_captured',
-    'dispatch_rejected', 'task_completed', 'agent_started', 'steward_verdict', 'steward_gate', 'tool_blocked',
+    'dispatch_rejected', 'task_completed', 'agent_started', 'steward_verdict', 'steward_gate', 'agent_result', 'tool_blocked',
   ] as const
 
   // ── KEEP WORKING AFTER HANG-UP ──
@@ -3019,6 +3019,8 @@ async function main() {
     events.on('steward_gate', (d: any) => {
       sendToFrontend({ type: slotId ? 'background_steward' : 'steward_gate', ...(slotId ? { slotId, gate: d.decision } : { decision: d.decision }), message: d.message }).catch(() => {})
     })
+    // A named sub-agent's return (#212): the focused chat only; a background slot keeps it in its own sidecar.
+    if (!slotId) events.on('agent_result', (r: any) => { sendToFrontend({ type: 'agent_result', ...r }).catch(() => {}) })
   }
 
   // ============================================================
