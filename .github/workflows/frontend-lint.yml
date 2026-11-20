@@ -12,6 +12,7 @@ on:
       - 'agent/.claude/skills/**'
       - '.claude/skills/**'
       - 'agent/tests/skill-secrets.test.ts'
+      - 'agent/src/content/secret-rules.ts'
       - '.github/workflows/frontend-lint.yml'
   push:
     branches: [main]
@@ -21,6 +22,7 @@ on:
       - 'agent/.claude/skills/**'
       - '.claude/skills/**'
       - 'agent/tests/skill-secrets.test.ts'
+      - 'agent/src/content/secret-rules.ts'
 
 concurrency:
   group: frontend-lint-${{ github.ref }}
