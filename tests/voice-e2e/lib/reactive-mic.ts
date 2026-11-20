@@ -143,7 +143,7 @@ export async function speakText(page: Page, text: string, opts?: { keepWav?: str
   const base = join(tmpdir(), `osborn-utt-${Date.now()}-${Math.floor(Math.random() * 1e6)}`)
   const wav = `${base}.wav`
   try {
-    if (!(await page.evaluate(micReady))) throw noMicError()  // before the paid TTS call
+    await waitForMicOpen(page, 2000).catch(() => { throw noMicError() })  // short grace for the page to open the mic, still before the paid TTS call
     const t = Date.now()
     const provider = await synthesize(text, base)
     const synthMs = Date.now() - t

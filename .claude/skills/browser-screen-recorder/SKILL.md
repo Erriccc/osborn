@@ -204,7 +204,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v64
-- A `/say` on a page with no microphone now fails before any speech synthesis runs, so it no longer waits on a text-to-speech call first. `no_mic` is reported by an explicit error code rather than by matching the word "mic" in the message.
+- A `/say` on a page with no microphone now fails after a short wait for the mic (up to about 2 s), before any speech synthesis runs, so it no longer waits on a text-to-speech call first. `no_mic` is reported by an explicit error code rather than by matching the word "mic" in the message.
 
 ## What's new in v63
 - `/say` and `/act` take `clip: false` to skip the clip entirely (no frames cut, nothing encoded; `clipUrl` is null). A `/say` transcript (`heard`) runs until hearing began, so it may run a little past the clip's end; the task's `hearSpan` gives that span.
