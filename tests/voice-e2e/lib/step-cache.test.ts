@@ -1,0 +1,46 @@
+/**
+ * The #174 fence: once a brain call has timed out, its late completion never acts.
+ *   npx tsx --test lib/step-cache.test.ts
+ */
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { mkdtempSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+
+process.env.OSBORN_KNOWLEDGE_DIR = mkdtempSync(join(tmpdir(), 'step-cache-test-'))
+const { actWithCache } = await import('./step-cache.ts')
+
+const page = { url: () => 'https://example.com/form', locator: () => ({ first: () => ({ count: async () => 0 }) }) } as any
+
+test('#174: an act whose observe finishes after the timeout does not act', async () => {
+  const fence = new AbortController()
+  let acted = 0
+  let finishObserve!: () => void
+  const brain = {
+    observe: () => new Promise((done) => { finishObserve = () => done([{ method: 'click', description: 'Submit' }]) }),
+    act: async () => { acted++ },
+  }
+  const call = actWithCache(brain, page, 'submit the form', fence.signal)
+  await new Promise((r) => setTimeout(r, 10))
+  fence.abort(new Error('brain call timed out'))  // the engine's timeout fires, the lock frees
+  finishObserve()                                 // ...then the hung model call wakes up
+  await assert.rejects(call, /timed out/)
+  assert.equal(acted, 0)
+})
+
+test('#174: an already-aborted call starts nothing', async () => {
+  const fence = new AbortController(); fence.abort(new Error('timed out'))
+  let calls = 0
+  const brain = { observe: async () => { calls++; return [] }, act: async () => { calls++ } }
+  await assert.rejects(actWithCache(brain, page, 'submit the form', fence.signal), /timed out/)
+  assert.equal(calls, 0)
+})
+
+test('without a signal the act goes through as before', async () => {
+  let acted = 0
+  const brain = { observe: async () => [{ method: 'click', description: 'Go' }], act: async () => { acted++ } }
+  const r = await actWithCache(brain, page, 'press go')
+  assert.equal(acted, 1)
+  assert.equal(r.cached, false)
+})
