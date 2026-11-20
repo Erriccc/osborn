@@ -68,7 +68,7 @@ import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
-import { actWithCache, fencedCall, forgetCached, withTimeout, zombieGate } from '../lib/step-cache'
+import { actWithCache, BRAIN_GONE, fencedCall, forgetCached, withTimeout, zombieGate } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
 import { attachDevtools, redactDiagnostics, redactJson, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
@@ -440,11 +440,19 @@ async function main() {
   // out the 20s is not a failure: the revive keeps going and its own result counts.
   let reviveFailedAt = 0
   let reviving: Promise<boolean> | null = null
+  // One stuck command (a mouth whose voice services all hang, a page that never
+  // settles) must not freeze every driver: after LOCK_MAX_MS the next command
+  // may start, while the caller still waits for its own result.
+  const LOCK_MAX_MS = Number(process.env.OSBORN_LOCK_MAX_MS) > 0 ? Number(process.env.OSBORN_LOCK_MAX_MS) : 240000
   // A timed-out brain call is waited for up to SETTLE_MS inside its own command;
-  // one still running after that is a zombie the next brain call or re-init waits
-  // out, for what is left of its command's action lock (#421).
+  // one still running after that (its brain not yet closed) is a zombie the next
+  // brain call or re-init waits out, for what is left of its command's action
+  // lock (#421). One older than two lock spans is dropped, so it cannot wedge the brain.
   const SETTLE_MS = 15000
-  const zombies = zombieGate()
+  const zombies = zombieGate({
+    maxAgeMs: 2 * LOCK_MAX_MS,
+    onDrop: (age) => mark(`brain: no longer waiting for a timed-out act still unsettled after ${Math.round(age / 1000)}s — it may still act`),
+  })
   let lockDeadline = 0  // when the command holding the action lock may be overtaken; 0 outside the lock
   const zombieBudget = () => lockDeadline ? lockDeadline - Date.now() : SETTLE_MS
   const reviveBrain = async (auto = false): Promise<boolean> => {
@@ -454,7 +462,7 @@ async function main() {
       reviving = (async () => {
         // A new brain must not start on a page a timed-out call may still act on (#421).
         try { await zombies.wait(zombieBudget(), 'brain re-init') }
-        catch (e) { brainError = (e as Error).message; mark(brainError); reviving = null; return false }
+        catch (e) { brainError = (e as Error).message; reviveFailedAt = Date.now(); mark(brainError); reviving = null; return false }
         if (stagehand) await withTimeout(stagehand.close(), 10000, 'close').catch(() => {})  // a hung close must not stall the revive
         try { await initBrain(); reviveFailedAt = 0; mark('brain re-initialized'); return true }
         catch { reviveFailedAt = Date.now(); mark(`brain re-init failed — ${brainError}`); return false }
@@ -464,7 +472,8 @@ async function main() {
     if (!auto) return reviving
     return withTimeout(reviving, 20000, 'still reviving').catch(() => false)
   }
-  const brainDownMsg = () => reviving ? 'the brain is re-initializing — retry in a few seconds; /eval, /tab and /shot still work'
+  const brainDownMsg = () => reviving && zombies.pending ? 'a timed-out brain call is still running; the brain re-init is waiting for it to stop — retry shortly; /eval, /tab and /shot still work'
+    : reviving ? 'the brain is re-initializing — retry in a few seconds; /eval, /tab and /shot still work'
     : `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   const brain = async (i: string, p: Page = active) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
@@ -483,11 +492,12 @@ async function main() {
       return await fencedCall((signal) => actWithCache(sh, p, i, signal), {
         timeoutMs: BRAIN_TIMEOUT_MS, settleMs: SETTLE_MS, why,
         onTimeout: (call) => {
-          zombies.track(call)
           // A replacement brain has its own CDP connection; the revive that made it closed this one.
-          if (stagehand !== sh) return
+          if (stagehand !== sh) { zombies.track(call); return }
           brainAlive = false; brainError = why
-          return sh.close()
+          const closing = sh.close()
+          zombies.track(call, closing)  // once closed, its connection is gone and it cannot act
+          return closing
         },
         settled: (end, closed) => {
           if (end === 'running') mark(`brain: a timed-out act was still running ${SETTLE_MS / 1000}s after the deadline — the next brain call waits for it and is refused if it does not stop: ${q}`)
@@ -500,7 +510,7 @@ async function main() {
       })
     }
     catch (e) {
-      if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
+      if (BRAIN_GONE.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
       throw e
     }
   }
@@ -808,10 +818,6 @@ async function main() {
   const isWorking = (d: string) => seenRecently(d) && !!driverActive.get(d) && !driverActive.get(d)!.isClosed()
   let actionChain: Promise<unknown> = Promise.resolve()
   let inflight = 0  // commands running or queued; capture never pauses under one
-  // One stuck command (a mouth whose voice services all hang, a page that never
-  // settles) must not freeze every driver: after LOCK_MAX_MS the next command
-  // may start, while the caller still waits for its own result.
-  const LOCK_MAX_MS = Number(process.env.OSBORN_LOCK_MAX_MS) > 0 ? Number(process.env.OSBORN_LOCK_MAX_MS) : 240000
   // A plain page scroll is done by the engine itself (mouse wheel), never the brain.
   const PLAIN_SCROLL = /^\s*(?:please\s+)?scroll\s+(?:(?:the\s+)?(?:page|window)\s+)?(?:(down|up)|(?:back\s+)?to\s+the\s+(?:very\s+)?(top|bottom|beginning|end|start))(?:\s+(?:of\s+)?(?:the\s+)?(?:page|window))?(?:\s+(?:by\s+)?(?:about\s+|roughly\s+)?(?:(\d+)\s*(?:px|pixels?)|(a|one|two|three|half\s+a)\s+(?:screen|page|viewport)s?|a\s+(?:bit|little)))?\s*\.?\s*$/i
   const withLock = <T>(fn: () => Promise<T>): Promise<T> => {

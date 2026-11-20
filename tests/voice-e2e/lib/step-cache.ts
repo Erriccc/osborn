@@ -186,10 +186,14 @@ export const withTimeout = <T,>(p: Promise<T>, ms: number, why: string | Error):
   return Promise.race([p, new Promise<never>((_, rej) => { t = setTimeout(() => rej(typeof why === 'string' ? new Error(why) : why), ms) })]).finally(() => clearTimeout(t))
 }
 
-/** How a timed-out call ended: `stopped` at a fence check before acting, `late`
- *  (it settled after the deadline and may have acted, whether it returned or
- *  threw), or still `running` when the settle wait ran out. */
+/** How a timed-out call ended: `stopped` (at a fence check before acting, or cut
+ *  off by its brain closing), `late` (it settled after the deadline some other
+ *  way and may have acted, whether it returned or threw), or still `running`
+ *  when the settle wait ran out. */
 export type FencedEnd = 'stopped' | 'late' | 'running'
+
+/** An error a brain call throws when its brain or browser connection is gone. */
+export const BRAIN_GONE = /uninitialized|detached|closed|Target/i
 
 /**
  * Runs `run` with a deadline, and fences it when the deadline passes (#174, #421).
@@ -217,14 +221,20 @@ export async function fencedCall<T>(
   catch (e) { if (e !== timedOut) throw e }
   fence.abort(timedOut)
   let end: FencedEnd = 'running'
+  let closed = false
+  let cutOff = false  // onTimeout's close finished: the call can no longer act
   const callDone = call.then(
     (value) => { end = 'late'; o.onLate?.({ ok: true, value }) },
-    (error) => { if (error === timedOut) end = 'stopped'; else { end = 'late'; o.onLate?.({ ok: false, error }) } },
+    (error) => {
+      // The fence's own abort, or the brain close cutting the call off.
+      if (error === timedOut || cutOff || BRAIN_GONE.test(String((error as Error)?.message ?? error))) end = 'stopped'
+      else { end = 'late'; o.onLate?.({ ok: false, error }) }
+    },
   )
-  let closed = false
-  let closing: Promise<unknown>
-  try { closing = Promise.resolve(o.onTimeout?.(call)) } catch (e) { closing = Promise.reject(e) }  // must not mask the timeout
-  closing = closing.then(() => { closed = true }, () => { closed = true })
+  let ran: unknown
+  try { ran = o.onTimeout?.(call) } catch (e) { ran = Promise.reject(e) }  // must not mask the timeout
+  const closes = typeof (ran as Promise<unknown>)?.then === 'function'  // only a returned close can cut the call off
+  const closing = Promise.resolve(ran).then(() => { closed = true; cutOff = closes }, () => { closed = true })
   await withTimeout(Promise.all([callDone, closing]), o.settleMs, 'still running').catch(() => {})
   o.settled?.(end, closed)
   throw timedOut
@@ -234,22 +244,29 @@ export async function fencedCall<T>(
  * Timed-out calls still running past their settle wait (#421). The next brain
  * call, or a brain re-init, `wait`s for them before touching the page, and is
  * refused with a clear error if they have not settled within its budget, so it
- * never runs alongside one.
+ * never runs alongside one. A zombie is gone once its call settles or its brain
+ * has closed (`closed` resolves: its CDP connection is gone, it cannot act), and
+ * one older than `maxAgeMs` is dropped (`onDrop`), so a call that never settles
+ * cannot block the brain for good.
  */
-export function zombieGate() {
-  let zombie: Promise<void> | null = null
+export function zombieGate(o: { maxAgeMs?: number; onDrop?: (ageMs: number) => void } = {}) {
+  const zombies = new Set<{ gone: Promise<void>; since: number }>()
   return {
-    track(call: Promise<unknown>): void {
-      const z: Promise<void> = Promise.all([zombie, call.catch(() => {})]).then(() => {})
-      zombie = z
-      void z.then(() => { if (zombie === z) zombie = null })
+    track(call: Promise<unknown>, closed?: Promise<unknown>): void {
+      const closeDone = closed?.then(() => {}, () => new Promise<void>(() => {}))  // a failed close leaves it able to act
+      const z = { gone: (closeDone ? Promise.race([call, closeDone]) : call).then(() => {}, () => {}), since: Date.now() }
+      zombies.add(z)
+      void z.gone.then(() => zombies.delete(z))
     },
-    get pending(): boolean { return zombie !== null },
+    get pending(): boolean { return zombies.size > 0 },
     async wait(budgetMs: number, what: string): Promise<void> {
-      const z = zombie
-      if (!z) return
+      for (const z of zombies) {
+        const age = Date.now() - z.since
+        if (o.maxAgeMs && age > o.maxAgeMs) { zombies.delete(z); o.onDrop?.(age) }
+      }
+      if (!zombies.size) return
       const ms = Math.max(0, budgetMs)
-      if (!(await withTimeout(z.then(() => true), ms, 'zombie').catch(() => false)))
+      if (!(await withTimeout(Promise.all([...zombies].map((z) => z.gone)).then(() => true), ms, 'zombie').catch(() => false)))
         throw new Error(`${what} refused: a timed-out brain call was still running after another ${Math.round(ms / 1000)}s and could still act on the page — retry shortly`)
     },
   }

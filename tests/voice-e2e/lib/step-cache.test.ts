@@ -108,14 +108,28 @@ test('#421: a late rejection is reported, and only a stop at the fence counts as
   const late: any[] = []
   let end: string | undefined
   let fail!: () => void
-  await assert.rejects(fencedCall(() => new Promise((_, rej) => { fail = () => rej(new Error('target closed')) }), {
+  await assert.rejects(fencedCall(() => new Promise((_, rej) => { fail = () => rej(new Error('selector matched nothing')) }), {
     timeoutMs: 10, settleMs: 500, why: 'timed out', onTimeout: () => { setTimeout(() => fail(), 10) },
     settled: (e) => { end = e }, onLate: (l) => late.push(l),
   }), /timed out/)
   assert.equal(end, 'late')
   assert.equal(late.length, 1)
   assert.equal(late[0].ok, false)
-  assert.match(String(late[0].error), /target closed/)
+  assert.match(String(late[0].error), /matched nothing/)
+
+  // the brain close cutting the call off is a stop, not a late failure
+  late.length = 0
+  for (const [msg, closeFirst] of [['CDP connection closed', false], ['some other error', true]] as const) {
+    let cut!: () => void
+    let closeDone!: () => void
+    await assert.rejects(fencedCall(() => new Promise((_, rej) => { cut = () => rej(new Error(msg)) }), {
+      timeoutMs: 10, settleMs: 500, why: 'timed out',
+      onTimeout: () => { setTimeout(() => { if (closeFirst) { closeDone(); setTimeout(cut, 5) } else { cut(); closeDone() } }, 10); return new Promise((done) => { closeDone = () => done(null) }) },
+      settled: (e) => { end = e }, onLate: (l) => late.push(l),
+    }), /timed out/)
+    assert.equal(end, 'stopped', msg)
+  }
+  assert.equal(late.length, 0)
 
   // a call that stops at its own fence check never started an action after the deadline
   let release!: () => void
@@ -165,6 +179,32 @@ test('#421: the next brain call waits for a zombie, and is refused if it will no
   finishB()
   await gate.wait(1000, 'act')
   assert.equal(gate.pending, false)
+})
+
+test('#421: a zombie whose brain has closed no longer blocks, even if its call never settles', async () => {
+  const gate = zombieGate()
+  let closeDone!: () => void
+  gate.track(new Promise(() => {}), new Promise((done) => { closeDone = () => done(null) }))
+  await assert.rejects(gate.wait(20, 'act'), /act refused/)
+  closeDone()
+  await gate.wait(1000, 'act')
+  assert.equal(gate.pending, false)
+  // a close that failed leaves the call able to act: still waited for
+  gate.track(new Promise(() => {}), Promise.reject(new Error('close failed')))
+  await new Promise((r) => setTimeout(r, 5))
+  await assert.rejects(gate.wait(20, 'act'), /act refused/)
+})
+
+test('#421: a zombie older than the cap is dropped, and the drop is reported', async () => {
+  const drops: number[] = []
+  const gate = zombieGate({ maxAgeMs: 30, onDrop: (age) => drops.push(age) })
+  gate.track(new Promise(() => {}))
+  await assert.rejects(gate.wait(10, 'brain re-init'), /brain re-init refused: a timed-out brain call was still running/)
+  await new Promise((r) => setTimeout(r, 30))
+  await gate.wait(0, 'brain re-init')
+  assert.equal(gate.pending, false)
+  assert.equal(drops.length, 1)
+  assert.ok(drops[0] > 30)
 })
 
 test('fencedCall: a call within the deadline returns, and its own error passes through unfenced', async () => {
