@@ -422,7 +422,7 @@ t('index.ts: the spoken permission prompt stays commented out', () => {
 t('index.ts: gateway not adopted returns before the session teardown', () => {
   const start = src.indexOf('const join = resolveJoin(')
   const bail = src.indexOf('if (!join.adoptSession)', start)
-  const teardown = src.indexOf('currentSession.close()', start)
+  const teardown = src.indexOf('closeSessionBounded(currentSession)', start)
   const uid = src.indexOf("currentUserId = ''", start)
   assert.ok(start > 0 && bail > start && bail < teardown && bail < uid, 'adoptSession=false must return before teardown and currentUserId reset')
 })
