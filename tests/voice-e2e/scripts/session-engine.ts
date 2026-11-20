@@ -1704,20 +1704,19 @@ async function main() {
           // under 15s left, and a decode that runs out of time skips hearing rather
           // than copying the whole recording a second time for the raw fallback.
           const decodeMs = nothingToHear ? null : decodeBudgetMs(left(0))
-          // Hearing covers speaking until this moment, just before the copy: a reply
-          // that runs past the clip's cut (tClip) is still transcribed, and hearSpan
-          // says exactly what the transcript covers.
+          // The decoded recording is copied right after this moment, so hearing covers
+          // speaking until then, past the clip's cut (tClip) when the reply runs on.
           const tHear = Date.now()
           const decoding = decodeMs == null ? null : peekAudioToWav(page)
           const decoded = !decoding ? null : await withTimeout(decoding, decodeMs!, `decoding the recording ran out of time (${Math.round(decodeMs! / 1000)}s)`)
             .catch((e) => { hearError = (e as Error).message; void decoding.then((a) => { if (a) rmSync(a.wav, { force: true }) }); return null })
           lap('decode')
           const hearing = !nothingToHear && !hearError
-          const hearSpan = hearing ? [t0, tHear] : null
-          const earsAt = ears.startedAt ?? tCapture
-          const hearRaw = () => hearSince(page, Math.max(0, t0 - earsAt), Math.max(0, tHear - earsAt))
+          // null when hearing has to copy the recording again itself (no decode).
+          const hearSpan = hearing && decoded ? [t0, tHear] : null
+          const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
           const budget = left(5000)
-          const heard = !hearing ? '' : await withTimeout(decoded ? hearFromWav(decoded.wav, recordingMsAt(decoded.clock, t0), recordingMsAt(decoded.clock, tHear)).catch(hearRaw) : hearRaw(),
+          const heard = !hearing ? '' : await withTimeout(decoded ? hearFromWav(decoded.wav, recordingMsAt(decoded.clock, t0)).catch(hearRaw) : hearRaw(),
             budget, `hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           lap('hear')
@@ -1728,7 +1727,7 @@ async function main() {
               timings.clip = Date.now() - tClip
               const encodeMs = live?.lastEncodeMs?.(); if (encodeMs != null) timings.encode = encodeMs  // part of clip
             }
-            if (!wantClip) { /* clip:false: nothing to report or mix */ }
+            if (!wantClip) { /* no clip to report or mix */ }
             else if (!range) clipError = live ? (clipWhy ?? 'clip failed') : 'live stream unavailable — no clips this session'
             else {
               clip = range.path; clipSpan = [range.startMs, range.endMs]

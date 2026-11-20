@@ -93,7 +93,7 @@ export async function screenTail(page: Page): Promise<string> {
  * (capture-relative). Uses the provider's word timestamps (Soniox, then Deepgram). Works on ANY app —
  * even ones with no text transcript in the UI.
  */
-export async function hearSince(page: Page, sinceMs: number, untilMs?: number): Promise<string> {
+export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   const { peekCapture, recordingMsAt } = await import('./audio-capture')
   const { bytes: raw, captureStartedAt, clock } = await peekCapture(page)
   // word.start is file-relative; the file runs on the page's audio clock, not the
@@ -105,17 +105,16 @@ export async function hearSince(page: Page, sinceMs: number, untilMs?: number): 
   try {
     writeFileSync(join(dir, 'in.webm'), raw)
     const fileSinceMs = Math.max(0, recordingMsAt(clock, captureStartedAt + sinceMs))
-    const fileUntilMs = untilMs == null ? undefined : recordingMsAt(clock, captureStartedAt + untilMs)
-    const cut = await cutTurn(join(dir, 'in.webm'), fileSinceMs, false, fileUntilMs)
+    const cut = await cutTurn(join(dir, 'in.webm'), fileSinceMs, false)
     // Nothing decodable and next to nothing recorded: the page played nothing.
     if (!cut && raw.length < 16000) return ''
     return await transcribeTurn(cut ?? { audio: raw, fileSinceMs, wav: false })
   } finally { rmSync(dir, { recursive: true, force: true }) }
 }
 
-/** hearSince for a recording the caller already decoded to a wav (`fileSinceMs`/`fileUntilMs` are relative to its start). */
-export async function hearFromWav(wavPath: string, fileSinceMs: number, fileUntilMs?: number): Promise<string> {
-  const cut = await cutTurn(wavPath, Math.max(0, fileSinceMs), true, fileUntilMs)
+/** hearSince for a recording the caller already decoded to a wav (`fileSinceMs` is relative to its start). */
+export async function hearFromWav(wavPath: string, fileSinceMs: number): Promise<string> {
+  const cut = await cutTurn(wavPath, Math.max(0, fileSinceMs), true)
   if (!cut) throw new Error('could not cut the turn from the decoded recording')
   return transcribeTurn(cut)
 }
@@ -160,29 +159,18 @@ export function peakLevel(wav: Buffer): number {
 }
 
 /**
- * ffmpeg window for a turn: start 1s before `sinceMs` (word timestamps are
- * filtered at sinceMs), and stop at `untilMs` when given, so the transcript ends
- * where the turn's clip ends (#185) instead of at the end of the recording.
- */
-export function turnCutWindow(sinceMs: number, untilMs?: number): { cutMs: number; durationMs: number | null } {
-  const cutMs = Math.max(0, sinceMs - 1000)
-  return { cutMs, durationMs: untilMs == null ? null : Math.max(0, untilMs - cutMs) }
-}
-
-/**
  * Only the current turn goes to STT, as a 16 kHz mono wav cut from just before
  * `sinceMs`. A raw MediaRecorder webm can't be seeked, so it is decoded up to
  * the cut (-ss after -i); a decoded wav is seeked directly. null if ffmpeg fails.
  */
-async function cutTurn(input: string, sinceMs: number, seekable: boolean, untilMs?: number): Promise<{ audio: Buffer; fileSinceMs: number; wav: true } | null> {
+async function cutTurn(input: string, sinceMs: number, seekable: boolean): Promise<{ audio: Buffer; fileSinceMs: number; wav: true } | null> {
   const { execFile } = await import('node:child_process')
   const { readFileSync, rmSync } = await import('node:fs')
-  const { cutMs: cut, durationMs } = turnCutWindow(sinceMs, untilMs)
+  const cut = Math.max(0, sinceMs - 1000)
   const out = `${input}.turn-${process.pid}-${Date.now()}.wav`
   const ss = ['-ss', String(cut / 1000)]
-  const t = durationMs == null ? [] : ['-t', String(durationMs / 1000)]
   try {
-    await new Promise<void>((ok, fail) => execFile('ffmpeg', ['-y', '-loglevel', 'error', ...(seekable ? ss : []), '-i', input, ...(seekable ? [] : ss), ...t,
+    await new Promise<void>((ok, fail) => execFile('ffmpeg', ['-y', '-loglevel', 'error', ...(seekable ? ss : []), '-i', input, ...(seekable ? [] : ss),
       '-ac', '1', '-ar', '16000', '-c:a', 'pcm_s16le', out], { timeout: 60000 }, (e) => (e ? fail(e) : ok())))
     return { audio: readFileSync(out), fileSinceMs: sinceMs - cut, wav: true }
   } catch (e) {
