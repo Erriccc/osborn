@@ -143,7 +143,8 @@ export async function speakText(page: Page, text: string, opts?: { keepWav?: str
   const base = join(tmpdir(), `osborn-utt-${Date.now()}-${Math.floor(Math.random() * 1e6)}`)
   const wav = `${base}.wav`
   try {
-    await waitForMicOpen(page, 2000).catch(() => { throw noMicError() })  // short grace for the page to open the mic, still before the paid TTS call
+    // short grace for the page to open the mic, still before the paid TTS call; only the timeout is no_mic (a closed page keeps its own error)
+    await waitForMicOpen(page, 2000).catch((e) => { throw e?.name === 'TimeoutError' ? noMicError() : e })
     const t = Date.now()
     const provider = await synthesize(text, base)
     const synthMs = Date.now() - t
