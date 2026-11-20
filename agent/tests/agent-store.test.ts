@@ -3,7 +3,7 @@ import assert from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { storeWriteRefusal, storeWriteOriginAllowed, parseUserAgents, mergeAgents, describeAgents, forkSkill, removeUserSkill, addUserSkill, readUserSkill, skillForkedFrom, coreSkillNames, parseFrontMatter } from '../src/agent-store.js'
+import { storeWriteRefusal, storeWriteOriginAllowed, parseUserAgents, mergeAgents, describeAgents, forkSkill, removeUserSkill, addUserSkill, readUserSkill, skillForkedFrom, coreSkillNames, parseFrontMatter, skillHeading } from '../src/agent-store.js'
 
 const core = {
   writer: { description: 'core writer', prompt: 'WRITER PROMPT', model: 'opus', tools: ['Edit'] },
@@ -123,6 +123,18 @@ assert.equal(parseFrontMatter('no front matter').body, 'no front matter')
   assert.equal(storeWriteRefusal({ ...local, read: true, contentType: '' }), null)
   assert.equal(storeWriteRefusal({ ...local, read: true, remote: '192.168.1.9' })?.status, 403, 'a LAN device cannot read prompts or skills')
   assert.equal(storeWriteRefusal({ ...local, read: true, origin: 'https://evil.example' })?.status, 403, 'another site cannot read them')
+}
+
+// A skill's display title is its first H1 outside fenced code, never a template heading inside a fence.
+{
+  const fenced = '## What to capture\n\n```md\n# User Context — {user name or handle}\n\nNotes.\n```\n\n## Rules\n'
+  assert.deepEqual(skillHeading(fenced), {}, 'an H1 only inside a fence is no title')
+  assert.deepEqual(skillHeading('~~~\n# Not this\n~~~\n# Skill: Meetings\n\nTakes notes.\n'), { title: 'Meetings', paragraph: 'Takes notes.' })
+  assert.deepEqual(skillHeading('````md\n```\n# Still fenced\n```\n````\n# Real\n## Next\n'), { title: 'Real' }, 'a shorter inner fence does not close the outer one')
+  assert.deepEqual(skillHeading('```js title\n# x\n```\n# Real\n'), { title: 'Real' })
+  assert.deepEqual(skillHeading('#hashtag\n# Title\n'), { title: 'Title' }, '`#word` is not a heading')
+  const userContext = readFileSync(join(import.meta.dirname, '..', '.claude', 'skills', 'user-context', 'SKILL.md'), 'utf-8')
+  assert.equal(skillHeading(parseFrontMatter(userContext).body).title, undefined, 'the shipped user-context skill falls back to its folder name')
 }
 
 console.log('agent-store: all assertions passed')

@@ -73,6 +73,7 @@ export default function LandingNav() {
   }, [lockScroll])
 
   return (
+    <>
     <header
       className="fixed top-0 inset-x-0 z-50 transition-colors duration-300"
       style={{
@@ -165,8 +166,11 @@ export default function LandingNav() {
           />
         </button>
       </nav>
+    </header>
 
-      {/* Mobile sheet */}
+      {/* Mobile sheet: a sibling of the header, not a child. Once scrolled the
+          header gets a backdrop-filter, which makes it the containing block for
+          fixed descendants and collapses the sheet to the header's height. */}
       {open && (
         <div
           className="lg:hidden fixed inset-0 top-16 z-40 overflow-y-auto overscroll-contain"
@@ -224,7 +228,7 @@ export default function LandingNav() {
           </div>
         </div>
       )}
-    </header>
+    </>
   )
 }
 

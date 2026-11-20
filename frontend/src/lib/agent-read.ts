@@ -13,11 +13,20 @@
  */
 export function agentReadUrl(agentUrl: string | null | undefined, path: string): string {
   const p = path.replace(/^\//, '')
-  if (!agentUrl || agentUrl.startsWith('http://localhost') || agentUrl.startsWith('http://127.')) {
+  if (isLocalAgentUrl(agentUrl)) {
     return `${(agentUrl ?? '').replace(/\/$/, '')}/${p}`
   }
   return `/api/agent/${p}`
 }
+
+/** No URL, or an agent on this computer. */
+export const isLocalAgentUrl = (agentUrl: string | null | undefined): boolean =>
+  !agentUrl || agentUrl.startsWith('http://localhost') || agentUrl.startsWith('http://127.')
+
+/** Cloud mode before the machine's URL has arrived: agentUrl still holds the localhost
+ *  default, and a request to it is refused (ERR_CONNECTION_REFUSED) every time. */
+export const awaitingCloudUrl = (agentUrl: string | null | undefined, mode: 'local' | 'cloud'): boolean =>
+  mode === 'cloud' && isLocalAgentUrl(agentUrl)
 
 /** JSON request to a proxied agent route: resolves { ok, status, d } (d = parsed body). */
 export type AgentRequest = (path: string, init?: { method?: 'GET' | 'POST'; body?: unknown }) => Promise<{ ok: boolean; status: number; d: any }>

@@ -150,7 +150,10 @@ export function ChatPanel({
         className={`h-full overflow-y-auto overflow-x-hidden ${corner ? 'px-3 sm:px-4 lg:pr-16 pt-3 pb-20 lg:pb-3' : 'px-3 sm:px-4 py-3'} scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent`}
       >
       {messages.length === 0 && !activeResearch && (
-        <div className="flex flex-col items-center justify-center h-full text-center px-4">
+        // min-h-full, not h-full: on a short phone the welcome is taller than the panel,
+        // and a centred fixed-height box spills above the scroll top (out of reach) and
+        // into the bottom padding the call pill floats over.
+        <div className="flex flex-col items-center justify-center min-h-full text-center px-4 py-6">
           {/* Logo / Icon */}
           <div className="relative mb-6">
             <div className="absolute inset-0 rounded-full bg-amber-500/20 blur-xl" />

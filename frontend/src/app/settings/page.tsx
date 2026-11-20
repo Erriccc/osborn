@@ -13,7 +13,8 @@ import { AgentStore, ListState, SkillStore, SkillViewer, pill, rolesData, type N
 import { StoreBrowse } from '@/components/StoreBrowse'
 import { useUserAgents } from '@/lib/user-agents'
 import { useSkillStore, httpSkills } from '@/lib/skill-store'
-import { agentRequest, agentError, listError, UNREACHABLE } from '@/lib/agent-read'
+import { agentRequest, agentError, awaitingCloudUrl, isLocalAgentUrl, listError, UNREACHABLE } from '@/lib/agent-read'
+import { applySandboxPoll, machineIssueText, pollSandbox } from '@/lib/sandbox-poll'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import { useThemePref } from '@/lib/use-theme'
@@ -54,6 +55,9 @@ const NAV_GROUPS: { group: string; items: { id: SectionId; label: string }[] }[]
     ],
   },
 ]
+
+const START_MACHINE = 'Start your machine to see its skills and agents.'
+const SET_UP_MACHINE = 'Set up your cloud machine to see its skills and agents.'
 
 export default function SettingsPage() {
   useDocumentTitle('Settings')
@@ -118,6 +122,10 @@ export default function SettingsPage() {
   const restarting = operation?.kind === 'restart'
   const updating = operation?.kind === 'update'
   const [sandboxAvailable, setSandboxAvailable] = useState(false)
+  // Whether the one-time /api/sandbox discovery has answered (cloud on or off).
+  const [sandboxKnown, setSandboxKnown] = useState(false)
+  // Status of a failed discovery (409 claimed, 503 unverifiable); 0 = the request itself failed.
+  const [sandboxIssue, setSandboxIssue] = useState<number | null>(null)
   const [sandboxStatus, setSandboxStatus] = useState<string | null>(null)
   const [sandboxId, setSandboxId] = useState<string | null>(null)
   const [provisioning, setProvisioning] = useState(false)
@@ -164,7 +172,14 @@ export default function SettingsPage() {
     if (m) setConnectionMode(m)
   }, [])
 
-  // The built-in list; the latest request wins (the first goes to the default URL).
+  // Cloud mode with no machine URL yet: until discovery answers, wait (lists keep
+  // loading); with cloud on, say why there is nothing to list (no machine, or not
+  // started) until the URL lands; with cloud off (self-hosted), read localhost as before.
+  const awaitingMachine = awaitingCloudUrl(agentUrl, connectionMode) && (!sandboxKnown || sandboxAvailable)
+  const machineMessage = !awaitingMachine || !sandboxKnown ? null
+    : sandboxId ? START_MACHINE : sandboxIssue !== null ? machineIssueText(sandboxIssue) : SET_UP_MACHINE
+
+  // The built-in list; the latest request wins (the URL can change while one is in flight).
   const agentsLoad = useRef(0)
   const loadAgents = useCallback(() => {
     const run = ++agentsLoad.current
@@ -172,36 +187,41 @@ export default function SettingsPage() {
       if (run !== agentsLoad.current) return
       setDashAgents(agents); setDashRoles(roles); setAgentsError(error); setAgentsLoading(false)
     }
+    if (awaitingMachine) { if (machineMessage) done([], null, machineMessage); return }
     setAgentsLoading(true)
     storeRequest('agents').then(({ ok, status, d }) => {
       if (ok && Array.isArray(d?.agents)) done(d.agents, rolesData(d), null)
       else done([], null, listError(ok, status, d, 'agent list'))
     }).catch(() => done([], null, UNREACHABLE))
-  }, [storeRequest])
+  }, [storeRequest, awaitingMachine, machineMessage])
 
   // The machine's skills, the same way; the previous machine's list is cleared while loading.
   const skillsLoad = useRef(0)
   const loadSkills = useCallback(() => {
     const run = ++skillsLoad.current
+    if (awaitingMachine) {
+      if (machineMessage) { skillStore.setSkills([]); setSkillsError(machineMessage); setSkillsLoading(false) }
+      return
+    }
     setSkillsLoading(true); skillStore.setSkills([])
     skillHttp.list().then((r) => {
       if (run !== skillsLoad.current) return
       skillStore.setSkills(r.skills ?? []); setSkillsError(r.error ?? null); setSkillsLoading(false)
     })
-  }, [skillHttp]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [skillHttp, awaitingMachine, machineMessage]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch skills + named agents + secrets from the agent's HTTP API on load.
   useEffect(() => {
-    if (!agentUrl) return
+    if (!agentUrl && !awaitingMachine) return
     loadSkills()
     loadAgents()
-    refreshSecrets()
-  }, [agentUrl, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
+    if (!awaitingMachine) refreshSecrets()
+  }, [agentUrl, awaitingMachine, machineMessage, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Machine location (agent /health region).
   useEffect(() => {
     if (connectionMode === 'local') { setMachineRegion(null); return }
-    if (!agentUrl || agentUrl.startsWith('http://localhost')) return
+    if (isLocalAgentUrl(agentUrl)) return
     fetch(`${agentUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(8000) })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
@@ -226,7 +246,7 @@ export default function SettingsPage() {
     if (typeof window === 'undefined') return false
     if (!agentUrl) return false
     if (window.location.protocol === 'https:' && agentUrl.startsWith('http://')) return false
-    if (connectionMode === 'cloud' && agentUrl.startsWith('http://localhost')) return false
+    if (awaitingCloudUrl(agentUrl, connectionMode)) return false
     return true
   }, [agentUrl, connectionMode])
 
@@ -238,25 +258,9 @@ export default function SettingsPage() {
     const check = async () => {
       if (cancelled) return
       if (connectionMode === 'cloud') {
-        try {
-          const r = await fetch('/api/sandbox')
-          const d = await r.json()
-          if (cancelled) return
-          setSandboxAvailable(d.available || false)
-          if (d.sandbox) {
-            setSandboxId(d.sandbox.id)
-            setSandboxStatus(d.sandbox.status)
-            if (d.sandbox.previewUrl) setAgentUrl(d.sandbox.previewUrl)
-            setAgentOnline(d.sandbox.status === 'running')
-          } else {
-            setSandboxStatus(null)
-            setAgentOnline(false)
-          }
-        } catch {
-          if (cancelled) return
-          setSandboxAvailable(false)
-          setAgentOnline(false)
-        }
+        // A poll that tells nothing (lib/sandbox-poll) keeps the last state.
+        const d = await pollSandbox()
+        if (!cancelled && d) applySandboxPoll(d, { setSandboxAvailable, setSandboxId, setSandboxStatus, setAgentUrl, setAgentOnline })
         return
       }
       if (!canFetchAgent()) { setAgentOnline(false); return }
@@ -275,19 +279,24 @@ export default function SettingsPage() {
   // One-time sandbox discovery + instance load (sync token + turbo).
   useEffect(() => {
     if (loading || !user) return
-    fetch('/api/sandbox').then(r => r.json())
-      .then(d => {
-        setSandboxAvailable(d.available || false)
+    // Unconfigured cloud answers 200 {available:false}; an error reply means cloud is on.
+    fetch('/api/sandbox').then(async r => ({ ok: r.ok, status: r.status, d: await r.json().catch(() => ({})) }))
+      .then(({ ok, status, d }) => {
+        setSandboxAvailable(ok ? !!d.available : true)
+        if (!ok) setSandboxIssue(status)
+        setSandboxKnown(true)
         if (d.sandbox) {
           setSandboxId(d.sandbox.id)
-          setSandboxStatus(d.sandbox.status)
+          // A cached reply carries the DB's last status, not the machine's: the poll sets it.
+          if (!d.cached) setSandboxStatus(d.sandbox.status)
           if (d.sandbox.previewUrl) {
             setConnectionMode('cloud')
             setAgentUrl(d.sandbox.previewUrl)
           }
         }
       })
-      .catch(() => setSandboxAvailable(false))
+      // A failed request says nothing about cloud: keep waiting for the machine, not localhost.
+      .catch(() => { setSandboxAvailable(true); setSandboxIssue(0); setSandboxKnown(true) })
     fetch('/api/instance')
       .then(r => (r.ok ? r.json() : Promise.reject()))
       .then(d => {
@@ -1042,9 +1051,9 @@ export default function SettingsPage() {
 
         {/* Version + Update / Restart */}
         {isCloud && sandboxId && (
-          <SettingsRow label="Voice Native version" sublabel="Keep the agent on the latest release">
+          <SettingsRow stacked label="Voice Native version" sublabel="Keep the agent on the latest release">
             {!operation && (
-              <>
+              <div className="flex flex-wrap items-center gap-2">
                 {installedVersion && (
                   <span className={`inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-mono text-[11px] ${
                     latestVersion && installedVersion !== latestVersion
@@ -1067,7 +1076,7 @@ export default function SettingsPage() {
                   className="rounded-lg px-2 py-1 text-[12px] text-[var(--text-muted)] transition-colors hover:text-red-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-400">
                   Restart agent
                 </button>
-              </>
+              </div>
             )}
             {updating && operation && (
               <div className="flex items-center gap-2">
