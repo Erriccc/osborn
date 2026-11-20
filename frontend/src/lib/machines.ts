@@ -314,6 +314,33 @@ async function waitForReplacementComplete(
 }
 
 /**
+ * After a config POST: wait up to 300s for the replacement to settle, then
+ * start the machine (or, when it came back started, wait for /health).
+ * 'unsettled' when it did not settle in time.
+ */
+async function startAfterReplace(
+  appName: string,
+  machine: FlyMachine,
+  userId: string,
+  what: string,
+): Promise<SandboxInfo | null | 'unsettled'> {
+  const settled = await waitForReplacementComplete(appName, machine.id, 300)
+  if (!settled) return 'unsettled'
+  console.log(`[machines] ${what}: replacement settled in state=${settled}`)
+  if (settled !== 'started') return startSandbox(appName, userId)
+  const previewUrl = `https://${appName}.fly.dev`
+  const healthy = await waitForHealth(previewUrl, 30)
+  return {
+    id: appName,
+    status: healthy ? 'running' : 'error',
+    previewUrl,
+    userId,
+    createdAt: machine.created_at,
+    ...(healthy ? {} : { error: `Agent did not pass health check after ${what}` }),
+  }
+}
+
+/**
  * Poll the agent's /health endpoint until it returns 200.
  */
 export async function waitForHealth(previewUrl: string, maxAttempts = 30): Promise<boolean> {
@@ -854,22 +881,8 @@ export async function repointAndStartSandbox(
       config: { ...existingConfig, image, env: cleanedEnv },
     })
 
-    const settled = await waitForReplacementComplete(appName, machine.id, 300)
-    if (!settled) return null
-
-    if (settled === 'started') {
-      const previewUrl = `https://${appName}.fly.dev`
-      const healthy = await waitForHealth(previewUrl, 30)
-      return {
-        id: appName,
-        status: healthy ? 'running' : 'error',
-        previewUrl,
-        userId,
-        createdAt: machine.created_at,
-        ...(healthy ? {} : { error: 'Agent did not pass health check after repoint' }),
-      }
-    }
-    return startSandbox(appName, userId)
+    const info = await startAfterReplace(appName, machine, userId, 'repoint')
+    return info === 'unsettled' ? null : info
   } catch (err) {
     console.error(`[machines] repointAndStartSandbox(${appName}) failed: ${(err as Error).message}`)
     return null
@@ -1216,10 +1229,6 @@ async function updateOsbornImpl(
   // re-extract (~5s) = ~1-2 min total, same as legacy image-swap, but with
   // volume-as-truth architecture in place.
   //
-  // The `updateOsbornInChroot()` helper below is kept as a private function
-  // for ops scenarios (e.g. manual recovery from corrupted /opt/npm-global)
-  // but is NOT wired into the active update path.
-  //
   // Clear any stale manifest file from the abandoned manifest-flow (best-
   // effort, fire-and-forget).
   execInMachine(appName, machine.id, ['rm', '-f', '/workspace/.osborn-want-version'], 5).catch(() => {})
@@ -1315,34 +1324,12 @@ async function updateOsbornImpl(
   // gives ~5x headroom over the typical replace so a transient spike is absorbed
   // instead of bricking the update.
   console.log(`[machines] updateOsborn: waiting for replacement to settle`)
-  const settledState = await waitForReplacementComplete(appName, machine.id, 300)
-  if (!settledState) {
+  const info = await startAfterReplace(appName, machine, userId, 'update')
+  if (info === 'unsettled') {
     return finish(
       { success: false, version: null, log: 'Machine replacement did not settle within 300s' },
       targetVersion,
     )
-  }
-  console.log(`[machines] updateOsborn: replacement settled in state=${settledState}`)
-
-  let info: SandboxInfo | null = null
-  if (settledState === 'started') {
-    // Replacement auto-started (rare in our flow, since we stopped first — but
-    // possible if Fly's behavior changes). Just poll health.
-    const previewUrl = `https://${appName}.fly.dev`
-    console.log(`[machines] updateOsborn: machine already started post-replace, polling health`)
-    const healthy = await waitForHealth(previewUrl, 30)
-    info = {
-      id: appName,
-      status: healthy ? 'running' : 'error',
-      previewUrl,
-      userId,
-      createdAt: machine.created_at,
-      ...(healthy ? {} : { error: 'Agent did not pass health check after update' }),
-    }
-  } else {
-    // Normal post-stop replace path: machine is now in "stopped" — start it.
-    console.log(`[machines] updateOsborn: starting machine after replacement`)
-    info = await startSandbox(sandboxId, userId)
   }
 
   if (!info || info.status !== 'running') {
@@ -1384,147 +1371,149 @@ async function updateOsbornImpl(
   )
 }
 
+const IMAGE_OSBORN_PKG = '/usr/local/lib/node_modules/osborn/package.json'
+const VOLUME_PREFIX = '/workspace/.npm-global'
+const VOLUME_MODULES = `${VOLUME_PREFIX}/lib/node_modules`
+const STAGE_PREFIX = '/workspace/.osborn-stage'
+// base64 text per exec argument, under Linux's 128 KB single-argument limit.
+const TARBALL_CHUNK_CHARS = 96 * 1024
+/** Fly exec timeout for the staged npm install (the install keeps running past it). */
+export const DEV_INSTALL_TIMEOUT_SEC = 600
+
+/** The osborn version baked into the machine's image (what the entrypoint compares against). */
+export async function readImageOsbornVersion(appName: string): Promise<string | null> {
+  const machine = await getFirstMachine(appName)
+  if (!machine) return null
+  const r = await execInMachine(appName, machine.id, ['node', '-p', `require('${IMAGE_OSBORN_PKG}').version`], 15)
+  return r.exitCode === 0 && r.stdOut.trim() ? r.stdOut.trim() : null
+}
+
+/** Stop, replace the machine's config, start it and wait for /health. Throws when the config POST fails. */
+async function bootWithConfig(appName: string, machine: FlyMachine, config: Record<string, unknown>, userId: string): Promise<boolean> {
+  await stopMachineCold(appName)
+  await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, { config })
+  const info = await startAfterReplace(appName, machine, userId, 'rollback')
+  return info !== 'unsettled' && info?.status === 'running'
+}
+
 /**
- * In-place osborn update via chroot npm install.
- *
- * NOT WIRED INTO THE ACTIVE UPDATE PATH as of 0.9.47 — see updateOsbornImpl
- * step 2 for rationale (image-swap is faster and more reliable than in-place
- * npm install on 2GB machines due to onnxruntime-node OOM risk during
- * postinstall). Kept as a manual recovery helper for corrupted volumes.
- *
- * Runs `chroot /workspace/root-chroot npm install -g osborn@<version>` against
- * a running Fly Machine. The new binary lands in /opt/npm-global on the
- * persistent volume (because NPM_CONFIG_PREFIX is set inside the chroot), then
- * we restart the machine so the entrypoint re-exec's osborn from the updated
- * /opt/npm-global/bin/osborn path.
- *
- * Why this is faster than image-swap: no PATCH config, no Fly machine
- * replacement, no image pull, no /usr re-seed. Just an npm install (~15-25s)
- * + a stop/start cycle (~10-15s) = ~30-45s vs ~55-95s for image-swap.
- *
- * Why we still need a restart: the running osborn process holds the OLD code
- * in memory. The new binary on disk only becomes effective when osborn
- * re-execs from the volume-backed path — that happens via the entrypoint
- * after the machine restarts. We can't `kill -HUP` the running process
- * because osborn doesn't have a self-restart handler (yet).
- *
- * If anything fails, caller falls back to image-swap.
+ * Put the pre-dev-build copy (.osborn-prev) back on a machine that will not
+ * come up, without exec: boot once with an init override that moves it back
+ * before the machine's own init, then restore the original config. The bin
+ * links are relative into lib/node_modules/osborn, so they resolve again.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function updateOsbornInChroot(
+async function rollbackDevBuild(appName: string, userId: string, devSha: string): Promise<string> {
+  const machine = await getFirstMachine(appName)
+  if (!machine?.config) return 'Rollback failed: could not read the machine config; the machine may be stopped with the dev build on it'
+  const original = machine.config as Record<string, unknown>
+  const init = (original.init ?? {}) as Record<string, unknown>
+  const origExec = (init.exec as string[] | undefined) ?? ['/entrypoint.sh']
+  const M = VOLUME_MODULES
+  const restore = `if [ -d ${M}/.osborn-prev ]; then rm -rf ${M}/osborn && mv ${M}/.osborn-prev ${M}/osborn; fi; exec "$@"`
+  const override = { ...original, init: { ...init, exec: ['sh', '-c', restore, 'sh', ...origExec] } }
+  // Printed first so an interrupted run still says what to put back.
+  console.warn(`[machines] rollbackDevBuild: booting ${appName} with a rollback init override; until the original config is restored, its init.exec should be ${JSON.stringify(origExec)}`)
+  let overrideOk = false
+  try {
+    overrideOk = await bootWithConfig(appName, machine, override, userId)
+  } catch (err) {
+    console.warn(`[machines] rollbackDevBuild: override boot failed: ${(err as Error).message}`)
+  }
+  let restoredConfig = false
+  let healthy = false
+  try {
+    healthy = await bootWithConfig(appName, machine, original, userId)
+    restoredConfig = true
+  } catch (err) {
+    console.warn(`[machines] rollbackDevBuild: config restore failed: ${(err as Error).message}`)
+  }
+  if (!restoredConfig) {
+    return `Rollback INCOMPLETE: the machine config still carries the rollback init override (${overrideOk ? 'previous build was moved back' : 'override boot also failed'}); restore init.exec to ${JSON.stringify(origExec)} by hand`
+  }
+  if (!healthy) return `Rollback failed: original config restored but the machine is not healthy (${overrideOk ? 'override boot was healthy' : 'override boot was not healthy either'})`
+  const r = await execInMachine(appName, machine.id, ['node', '-p', `require('${M}/osborn/package.json').osbornDevSha`], 15)
+  if (r.exitCode !== 0) return 'Rollback uncertain: machine is healthy but the installed package could not be read'
+  if (r.stdOut.trim() === devSha) return 'Rollback failed: machine is healthy but still runs the dev build (no .osborn-prev to restore)'
+  return 'Rolled back: the previous build is restored and the machine is healthy'
+}
+
+/**
+ * Install a packed osborn tarball (frontend/scripts/fly-dev-install.ts) on a
+ * running machine's volume, without npm publish or an image swap: send it in
+ * base64 chunks over exec, verify its sha256, npm install it into a staging
+ * prefix while the agent keeps running, swap it into /workspace/.npm-global
+ * with the skills it ships, restart, and confirm the machine runs it
+ * (/health version, package.json osbornDevSha, `osborn` on the volume).
+ *
+ * The tarball MUST carry the image's version: the entrypoint reinstalls osborn
+ * from npm at boot when the volume copy's version differs from the image's.
+ * No lock: do not press Update on the dashboard while this runs.
+ */
+export async function installOsbornSpec(
   appName: string,
-  machineId: string,
-  targetVersion: string,
+  spec: { tarball: Buffer; sha256: string; devSha: string },
   userId: string,
+  expectVersion: string,
 ): Promise<{ success: boolean; version: string | null; log: string }> {
-  // 1. npm install inside chroot — this is the actual update.
-  //    Timeout 180s: npm install on slow connections can take a while.
-  console.log(`[machines] in-chroot: running npm install -g osborn@${targetVersion}`)
-  const install = await execInMachine(
-    appName,
-    machineId,
-    [
-      'chroot', '/workspace/root-chroot',
-      'env',
-      'NPM_CONFIG_PREFIX=/opt/npm-global',
-      'PATH=/opt/npm-global/bin:/usr/local/bin:/usr/bin:/bin',
-      'npm', 'install', '-g', `osborn@${targetVersion}`,
-    ],
-    180,
-  )
-  if (install.exitCode !== 0) {
-    return {
-      success: false,
-      version: null,
-      log: `chroot npm install failed (exit ${install.exitCode}): ${(install.stdErr || install.stdOut).substring(0, 400)}`,
+  const machine = await getFirstMachine(appName)
+  if (!machine) return { success: false, version: null, log: `No machine found for app ${appName}` }
+  const tgz = '/tmp/osborn-dev.tgz'
+  const run = async (step: string, cmd: string[], timeoutSec: number) => {
+    const r = await execInMachine(appName, machine.id, cmd, timeoutSec)
+    if (r.exitCode !== 0) throw new Error(`${step} failed (exit ${r.exitCode}): ${(r.stdErr || r.stdOut).substring(0, 400)}`)
+    return r.stdOut.trim()
+  }
+  const fail = (log: string, version: string | null = null) => ({ success: false, version, log })
+  const onVolume = 'installed on the volume; goes live on next restart, and survives only while the image version is unchanged'
+  let swapped = false
+
+  try {
+    await run('reset', ['rm', '-rf', `${tgz}.b64`, tgz, STAGE_PREFIX], 30)
+    const b64 = spec.tarball.toString('base64')
+    for (let i = 0; i < b64.length; i += TARBALL_CHUNK_CHARS) {
+      await run('upload', ['sh', '-c', `printf %s "$1" >> ${tgz}.b64`, 'sh', b64.slice(i, i + TARBALL_CHUNK_CHARS)], 30)
     }
+    await run('decode', ['sh', '-c', `base64 -d ${tgz}.b64 > ${tgz} && rm -f ${tgz}.b64`], 30)
+    const sum = (await run('sha256sum', ['sha256sum', tgz], 30)).split(/\s+/)[0]
+    if (sum !== spec.sha256) throw new Error(`sha256 mismatch: got ${sum}, expected ${spec.sha256}`)
+    console.log(`[machines] installOsbornSpec: staging npm install of v${expectVersion} on ${appName}`)
+    await run('npm install', ['npm', 'install', '-g', '--prefix', STAGE_PREFIX, tgz, '--no-audit', '--no-fund'], DEV_INSTALL_TIMEOUT_SEC)
+    // Swap right before the restart. The old copy goes to .osborn-prev (a name
+    // the entrypoint's own `.osborn-*` cleanup covers); bin links are recreated
+    // relative, as npm writes them; skills are copied over the same names, as
+    // the entrypoint's seeding does from the image package.
+    await run('swap', ['sh', '-c', [
+      'set -e',
+      `M=${VOLUME_MODULES}`,
+      `test -f ${STAGE_PREFIX}/lib/node_modules/osborn/package.json`,
+      'rm -rf "$M/.osborn-prev"',
+      'if [ -d "$M/osborn" ]; then mv "$M/osborn" "$M/.osborn-prev"; fi',
+      `mv ${STAGE_PREFIX}/lib/node_modules/osborn "$M/osborn" || { mv "$M/.osborn-prev" "$M/osborn"; exit 1; }`,
+    ].join('\n')], 60)
+    swapped = true
+    await run('links and skills', ['sh', '-c', [
+      'set -e',
+      `mkdir -p ${VOLUME_PREFIX}/bin && cd ${VOLUME_PREFIX}/bin`,
+      `node -e 'const b=require("../lib/node_modules/osborn/package.json").bin||{};for(const[k,v]of Object.entries(typeof b==="string"?{osborn:b}:b))console.log(k+" "+v)' | while read n p; do ln -sfn "../lib/node_modules/osborn/$p" "$n"; chmod +x "$n"; done`,
+      'mkdir -p /workspace/.claude/skills',
+      `for d in ${VOLUME_MODULES}/osborn/.claude/skills/*/; do [ -d "$d" ] || continue; n=$(basename "$d"); rm -rf "/workspace/.claude/skills/$n"; cp -r "$d" "/workspace/.claude/skills/$n"; done`,
+    ].join('\n')], 60)
+  } catch (err) {
+    return fail(`${(err as Error).message}${swapped ? `; ${onVolume}` : ''}`)
   }
 
-  // 2. Verify the install landed by reading the binary's --version inside chroot.
-  const verify = await execInMachine(
-    appName,
-    machineId,
-    [
-      'chroot', '/workspace/root-chroot',
-      'env',
-      'PATH=/opt/npm-global/bin:/usr/local/bin:/usr/bin:/bin',
-      '/opt/npm-global/bin/osborn', '--version',
-    ],
-    15,
-  )
-  // osborn --version output format: "osborn vX.Y.Z" or just "X.Y.Z" — extract last token
-  const installedRaw = verify.stdOut.trim().split(/\s+/).pop() ?? ''
-  const installedVersion = installedRaw.replace(/^v/, '')
-  if (verify.exitCode !== 0 || !installedVersion) {
-    return {
-      success: false,
-      version: null,
-      log: `chroot osborn --version failed: exit=${verify.exitCode} stdout="${verify.stdOut.substring(0, 200)}" stderr="${verify.stdErr.substring(0, 200)}"`,
-    }
+  const installed = (await restartService(appName, userId)) ? await readInstalledOsbornVersion(appName) : null
+  if (!installed) {
+    console.warn(`[machines] installOsbornSpec: ${appName} not healthy after restart; rolling back without exec`)
+    return fail(`Dev build did not come up healthy after restart. ${await rollbackDevBuild(appName, userId, spec.devSha)}`)
   }
-  if (installedVersion !== targetVersion) {
-    return {
-      success: false,
-      version: installedVersion,
-      log: `chroot install reports v${installedVersion} but expected v${targetVersion}`,
-    }
+  const devSha = await run('verify', ['node', '-p', `require('${VOLUME_MODULES}/osborn/package.json').osbornDevSha`], 15).catch(() => '')
+  const bin = await run('verify', ['sh', '-c', 'readlink -f "$(command -v osborn)"'], 15).catch(() => '')
+  if (installed !== expectVersion || devSha !== spec.devSha || !bin.startsWith(`${VOLUME_PREFIX}/`)) {
+    return fail(`Machine is not running the dev build after restart (version ${installed ?? 'unknown'}, osbornDevSha ${devSha || 'none'}, osborn at ${bin || 'unknown'}); it was replaced or not loaded`, installed)
   }
-
-  // 3. Write the manifest marker so the entrypoint's version-sync block on
-  //    subsequent boots is a no-op (it'll see WANT===CURRENT and skip).
-  //    Fire-and-forget — non-fatal if it fails.
-  execInMachine(
-    appName,
-    machineId,
-    ['sh', '-c', `echo ${targetVersion} > /workspace/.osborn-want-version`],
-    5,
-  ).catch(() => {})
-
-  // 4. Restart the machine so the entrypoint re-exec's osborn from the new
-  //    /opt/npm-global/bin/osborn (the running osborn still holds the old
-  //    code in memory; we need a process restart for the update to take
-  //    effect). The volume persists — credentials, sessions, skills stay put.
-  console.log(`[machines] in-chroot: restarting machine to load updated osborn binary`)
-  const restarted = await restartService(appName, userId)
-  if (!restarted) {
-    return {
-      success: false,
-      version: installedVersion,
-      log: `npm install succeeded (osborn@${installedVersion} on volume) but machine restart failed; next boot will pick up the new version automatically`,
-    }
-  }
-
-  // 5. Wait for /health, then confirm reported version matches target.
-  const previewUrl = `https://${appName}.fly.dev`
-  const healthy = await waitForHealth(previewUrl, 30)
-  if (!healthy) {
-    return {
-      success: false,
-      version: installedVersion,
-      log: `osborn@${installedVersion} installed on volume but /health did not respond within 30s post-restart`,
-    }
-  }
-  const reported = await readInstalledOsbornVersion(appName)
-  if (!reported) {
-    return {
-      success: false,
-      version: installedVersion,
-      log: 'Machine running but /health did not return a version after in-place update',
-    }
-  }
-  if (reported !== targetVersion) {
-    return {
-      success: false,
-      version: reported,
-      log: `agent reports v${reported} after restart, expected v${targetVersion} — in-place install may have been overridden`,
-    }
-  }
-
-  return {
-    success: true,
-    version: reported,
-    log: `In-place chroot update OK — osborn@${reported} on volume, no image swap needed`,
-  }
+  await run('cleanup', ['rm', '-rf', `${VOLUME_MODULES}/.osborn-prev`, STAGE_PREFIX, tgz], 60).catch(() => {})
+  return { success: true, version: installed, log: `Installed dev build ${spec.devSha} as osborn@${installed}` }
 }
 
 // REMOVED 2026-05-22: updateViaManifest function.
