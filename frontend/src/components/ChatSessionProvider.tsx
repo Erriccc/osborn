@@ -28,12 +28,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { liveSessionKey, sessionParamsFromSearch, takeoverSessionUrl } from '@/lib/chat-url'
-import { LiveKitRoom, RoomAudioRenderer, useRoomContext } from '@livekit/components-react'
-import { DisconnectReason, RoomEvent, type Room } from 'livekit-client'
+import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
+import { DisconnectReason, type Room } from 'livekit-client'
 import '@livekit/components-styles'
 import { MIC_DENIED_EVENT, isMicDenied, reconcileMicDenied, type MicPermissionState } from '@/lib/mic-permission'
 import { TAB_LOCK_NAME, TAB_LOCK_RETRY_MS, controlsEnabled, lockOutcomeAfterRestore, shouldConnectOnTransition, shouldRetryLockProbe, tabGuardCopy, tabGuardReducer, type TabRole } from '@/lib/tab-guard'
-import { CONNECT_WATCHDOG_MS, connectProgressText, connectTimeoutMessage, isAwaitingAgent, nextAuthRequired, roomVerdict, type AgentHealthProbe, type ConnectStage } from '@/lib/connect-gate'
+import { CONNECT_WATCHDOG_MS, connectProgressText, connectTimeoutMessage, isAwaitingAgent, nextAuthRequired, flushQueue, isAgentIdentity, rejoinMode, roomHasAgent, roomVerdict, sendOrQueue, unsentNotice, type AgentHealthProbe, type ConnectStage, type QueuedText } from '@/lib/connect-gate'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { isLocalAgentUrl } from '@/lib/agent-read'
 
@@ -74,9 +74,20 @@ interface ChatSessionContextValue {
   // thinking/speaking). Resets the idle-stop timer — voice is the primary
   // activity signal; DOM events are removed as they're unreliable on mobile.
   markVoiceActivity: () => void
-  // Re-check that the page is in a room the agent is in, and rejoin if not
-  // (VoiceRoom calls it when a typed message finds no agent to send to).
-  checkRoom: () => void
+  // A rejoin is under way with the chat still mounted: the page covers the
+  // call controls with its "Reconnecting…" overlay (the composer keeps its text).
+  rejoining: boolean
+  // Re-check that the page is in a room the agent is in, and rejoin if not.
+  // VoiceRoom calls it from its room events with the mounted Room.
+  checkRoom: (room: Room, why: string) => void
+  // VoiceRoom registers the mounted Room, its data-channel sender and a way to
+  // add a system line; returns the unregister.
+  registerChat: (chat: ChatHandle) => () => void
+  // Sends a typed user_text, or queues it here (outliving a remount) until the
+  // agent is back.
+  sendUserText: (text: string, payload: Uint8Array) => void
+  // The composer's unsent text, kept across a remount of the chat.
+  composerDraft: React.MutableRefObject<string>
   // True while THIS tab controls the session (bug 619af155). A second tab
   // stays out of the room until the user takes over.
   isController: boolean
@@ -113,15 +124,14 @@ function currentNavigationType(): string | null {
   return null
 }
 
-// Hands the mounted LiveKit Room up to the provider, which sits outside <LiveKitRoom>.
-function RoomHandle({ onRoom }: { onRoom: (room: Room | null) => void }) {
-  const room = useRoomContext()
-  useEffect(() => {
-    onRoom(room)
-    return () => onRoom(null)
-  }, [room, onRoom])
-  return null
+export interface ChatHandle {
+  room: Room
+  send: (payload: Uint8Array) => void
+  notify: (text: string) => void
 }
+
+const agentInRoom = (room: Room): boolean =>
+  Array.from(room.remoteParticipants.keys()).some(isAgentIdentity)
 
 export function ChatSessionProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter()
@@ -188,6 +198,35 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // Sign-in modal open on an active OAuth step (reported by VoiceRoom).
   const [authInProgress, setAuthInProgress] = useState(false)
   const [idleStopped, setIdleStopped] = useState(false)
+  const [rejoining, setRejoining] = useState(false)
+
+  // The mounted chat (VoiceRoom) and the typed messages waiting for the agent.
+  // Both live here so a remount of the room and the chat loses neither.
+  const chatRef = useRef<ChatHandle | null>(null)
+  const queuedTextRef = useRef<QueuedText[]>([])
+  const composerDraft = useRef('')
+  const pendingNoticeRef = useRef<string | null>(null)
+  const notifyChat = useCallback((text: string) => {
+    if (chatRef.current) chatRef.current.notify(text)
+    else pendingNoticeRef.current = text
+  }, [])
+  const flushQueuedText = useCallback(() => {
+    const chat = chatRef.current
+    const { send, queue } = flushQueue(queuedTextRef.current, !!chat)
+    queuedTextRef.current = queue
+    if (send.length) console.log(`📤 Sending ${send.length} queued message(s)`)
+    for (const m of send) chat!.send(m.payload)
+  }, [])
+  // The agent could not be reached (watchdog, idle stop, rejoin budget spent):
+  // never drop a queued message silently. Say so and put the text back.
+  const giveUpQueuedText = useCallback(() => {
+    const notice = unsentNotice(queuedTextRef.current)
+    if (!notice) return
+    const texts = queuedTextRef.current.map((m) => m.text).join('\n')
+    composerDraft.current = composerDraft.current ? `${composerDraft.current}\n${texts}` : texts
+    queuedTextRef.current = []
+    notifyChat(notice)
+  }, [notifyChat])
 
   // Connect-attempt generation. Each connect() run captures the value it was
   // started with; Cancel/disconnect bumps it. An in-flight connect() whose
@@ -201,6 +240,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     connectGenRef.current++
     setConnecting(false)
     setStatusMsg(null)
+    setRejoining(false)
   }, [])
 
   // Unmount the LiveKit room (idle stop, takeover, failed connect). On a failed
@@ -213,6 +253,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     setRoomCode(null)
     setConnected(false)
     setAgentReady(false)
+    setRejoining(false)
   }, [])
 
   // ── One controlling tab per browser (bug 619af155, frontend minimum) ──────
@@ -426,6 +467,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
         cancelConnect()
         setIdleStopped(true)
         dropRoom()
+        giveUpQueuedText()
       }
     }, 60 * 1000)
     return () => clearInterval(checkIdle)
@@ -861,17 +903,22 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const connectingRef = useRef(connecting)
   connectingRef.current = connecting
 
-  // One rejoin path for every "the room is gone" signal. `connected` goes false
-  // so the page shows its "Reconnecting…" overlay over the call controls and
-  // composer instead of a live call; agent_ready (markAgentReady) restores it.
-  const rejoin = useCallback((why: string) => {
+  // One rejoin path for every "the room is gone" signal. A disconnected Room
+  // takes the new token in place: the chat stays mounted under the page's
+  // "Reconnecting…" overlay (`rejoining`) and keeps the composer's text. A Room
+  // still connected to a room the agent left ignores a new token, and
+  // connect-room returns a new room, so that one is dropped and remounted.
+  // agent_ready (markAgentReady) ends it.
+  const rejoin = useCallback((roomState: string | null, why: string) => {
     reconnectAttemptsRef.current += 1
     connectingRef.current = true // a second signal in the same tick must not rejoin twice
-    console.log(`🔁 ${why} — rejoin attempt ${reconnectAttemptsRef.current}/${MAX_AUTO_RECONNECTS}`)
-    setConnected(false)
+    const mode = rejoinMode(roomState)
+    console.log(`🔁 ${why} — rejoin attempt ${reconnectAttemptsRef.current}/${MAX_AUTO_RECONNECTS} (${mode})`)
+    if (mode === 'remount') dropRoom()
+    else setRejoining(true)
     setStatusMsg('Reconnecting…')
     void connect()
-  }, [connect])
+  }, [connect, dropRoom])
 
   // LiveKit lifecycle disconnect — now REASON-GATED (reconnect-survival Phase 0b).
   // `onDisconnected` hands us a DisconnectReason; the old code bounced to the
@@ -908,7 +955,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
     // Network-class drop → try to rejoin the same room (bounded), don't bounce.
     if (reconnectAttemptsRef.current < MAX_AUTO_RECONNECTS) {
-      rejoin(`Network disconnect (reason=${reason ?? 'unknown'})`)
+      rejoin('disconnected', `Network disconnect (reason=${reason ?? 'unknown'})`)
       return
     }
     console.log('🔁 Auto-rejoin attempts exhausted — returning to dashboard')
@@ -930,9 +977,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     setConnected(true)
     setAgentReady(true)
     setStatusMsg(null)
+    setRejoining(false)
     // A clean ready = reconnect succeeded → reset the auto-rejoin budget.
     reconnectAttemptsRef.current = 0
-  }, [])
+    flushQueuedText()
+  }, [flushQueuedText])
 
   const markAuthRequired = useCallback(() => {
     setAuthRequired(true)
@@ -972,9 +1021,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       setStatusMsg(null)
       setConnecting(false)
       dropRoom()
+      giveUpQueuedText()
     }, CONNECT_WATCHDOG_MS)
     return () => clearTimeout(t)
-  }, [connecting, agentReady, token, error, authRequired, authInProgress, statusMsg, dropRoom])
+  }, [connecting, agentReady, token, error, authRequired, authInProgress, statusMsg, dropRoom, giveUpQueuedText])
 
   // ── P1.8 (2026-10-24): foreground fast-rejoin + screen wake lock ──────────
   const idleStoppedRef = useRef(idleStopped)
@@ -987,18 +1037,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   useEffect(() => {
     if (connected) everConnectedRef.current = true
   }, [connected])
-  const [liveRoom, setLiveRoom] = useState<Room | null>(null)
-  const liveRoomRef = useRef<Room | null>(null)
-  liveRoomRef.current = liveRoom
-
   // Is the page still in a room the agent is in? Asked on foreground and on
-  // room events. `connected` is NOT the answer: it only means agent_ready fired
-  // once, and nothing clears it when the tab is suspended. A suspended iPad tab
-  // comes back to a Room that reconnected into an empty room (the agent left
-  // after 20s alone), still `connected`, so this used to see a live session and
-  // never rejoin while typed messages went nowhere.
-  const checkRoom = useCallback((why: string) => {
-    const room = liveRoomRef.current
+  // VoiceRoom's room events. `connected` is NOT the answer: it only means
+  // agent_ready fired once, and nothing clears it when the tab is suspended. A
+  // suspended iPad tab came back to a Room connected to a room the agent had
+  // left (after 20s alone), so the old `connected` gate never rejoined while
+  // typed messages went nowhere.
+  const checkRoom = useCallback((room: Room | null, why: string) => {
     const verdict = roomVerdict({
       tabActive: tabRoleRef.current === 'active',
       everConnected: everConnectedRef.current,
@@ -1006,44 +1051,50 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       connecting: connectingRef.current,
       agentReady: agentReadyRef.current,
       roomState: room ? room.state : null,
-      remoteCount: room ? room.remoteParticipants.size : 0,
+      agentInRoom: room ? agentInRoom(room) : false,
       attempts: reconnectAttemptsRef.current,
       maxAttempts: MAX_AUTO_RECONNECTS,
     })
-    if (verdict === 'rejoin') rejoin(why)
+    if (verdict === 'live') flushQueuedText()
+    else if (verdict === 'rejoin') rejoin(room ? room.state : null, why)
     else if (verdict === 'lost' && room) {
       // Budget spent: land on the page's "Session paused" screen (Reconnect),
       // never a live-looking call with no agent behind it.
       console.log(`🔁 ${why} — rejoin attempts exhausted, showing the paused screen`)
       dropRoom()
       setStatusMsg(null)
+      giveUpQueuedText()
     }
-  }, [rejoin, dropRoom])
+  }, [rejoin, dropRoom, flushQueuedText, giveUpQueuedText])
 
   // Foreground fast-rejoin: iOS suspends JS while backgrounded, so a drop
   // that happened mid-background may never have fired its auto-rejoin — and
-  // LiveKit can surface a zombie or empty `connected` room after resume.
+  // LiveKit can surface a zombie or agent-less `connected` room after resume.
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState === 'visible') checkRoom('[foreground] session dropped while backgrounded')
+      if (document.visibilityState === 'visible') checkRoom(chatRef.current?.room ?? null, '[foreground] session dropped while backgrounded')
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
   }, [checkRoom])
 
-  // LiveKit settles a resumed tab after the visibility event: a reconnect that
-  // lands in a room without the agent, or the agent leaving, asks again.
-  useEffect(() => {
-    if (!liveRoom) return
-    const onReconnected = () => checkRoom('room reconnected')
-    const onParticipantLeft = () => checkRoom('agent left the room')
-    liveRoom.on(RoomEvent.Reconnected, onReconnected).on(RoomEvent.ParticipantDisconnected, onParticipantLeft)
-    return () => {
-      liveRoom.off(RoomEvent.Reconnected, onReconnected).off(RoomEvent.ParticipantDisconnected, onParticipantLeft)
-    }
-  }, [liveRoom, checkRoom])
+  const registerChat = useCallback((chat: ChatHandle) => {
+    chatRef.current = chat
+    if (pendingNoticeRef.current) { chat.notify(pendingNoticeRef.current); pendingNoticeRef.current = null }
+    return () => { if (chatRef.current === chat) chatRef.current = null }
+  }, [])
 
-  const checkRoomForSend = useCallback(() => checkRoom('message with no agent in the room'), [checkRoom])
+  const sendUserText = useCallback((text: string, payload: Uint8Array) => {
+    const room = chatRef.current?.room ?? null
+    const live = !!room && roomHasAgent(room.state, agentInRoom(room))
+    const r = sendOrQueue(queuedTextRef.current, { text, payload }, live)
+    queuedTextRef.current = r.queue
+    for (const m of r.send) chatRef.current!.send(m.payload)
+    if (!r.queued) return
+    if (r.queue.length === 1) notifyChat('Reconnecting to your agent. Your message will send when it is back.')
+    console.log(`📥 No agent in the room — message queued (${r.queue.length})`)
+    checkRoom(room, 'message with no agent in the room')
+  }, [checkRoom, notifyChat])
 
   // Screen wake lock while a session is live: a phone that sleeps mid-voice-
   // session suspends WebRTC + SSE and burns a full reconnect cycle. Held for
@@ -1102,7 +1153,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     markAuthResolved,
     markAuthInProgress,
     markVoiceActivity,
-    checkRoom: checkRoomForSend,
+    rejoining,
+    checkRoom,
+    registerChat,
+    sendUserText,
+    composerDraft,
     isController: controlsEnabled(tabRole),
   }
 
@@ -1234,7 +1289,6 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           className="w-full flex justify-center"
         >
           <RoomAudioRenderer />
-          <RoomHandle onRoom={setLiveRoom} />
           {children}
         </LiveKitRoom>
       ) : (

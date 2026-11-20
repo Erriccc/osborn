@@ -12,17 +12,24 @@ export interface AttachedFile {
 }
 
 export function TextInput({
+  draft,
   onSend,
   attachedFiles,
   onAttachFile,
   onRemoveFile,
 }: {
+  /** Holds the unsent text outside this component, so a remount keeps it. */
+  draft?: React.MutableRefObject<string>
   onSend: (text: string, files?: AttachedFile[]) => void
   attachedFiles: AttachedFile[]
   onAttachFile: (files: FileList) => void
   onRemoveFile: (index: number) => void
 }) {
-  const [text, setText] = useState('')
+  const [text, setTextState] = useState(() => draft?.current ?? '')
+  const setText = (v: string) => {
+    setTextState(v)
+    if (draft) draft.current = v
+  }
   const fileInputRef = useRef<HTMLInputElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 

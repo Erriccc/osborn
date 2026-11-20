@@ -26,7 +26,7 @@ import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd,
 import { cacheTranscript, readCachedTranscript, reconcileReplay } from '@/lib/transcript-cache'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
-import { useChatSession } from './ChatSessionProvider'
+import { useChatSession, type ChatHandle } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
 import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type StewardGateRecord, stewardGateLine, stewardGateRow, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
@@ -35,7 +35,7 @@ import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/li
 import { backgroundSessionTitle } from '@/lib/rooms'
 import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
 import { isRedundantFinal } from '@/lib/claude-output'
-import { isAuthGateTerminal, roomHasAgent } from '@/lib/connect-gate'
+import { isAgentIdentity, isAuthGateTerminal } from '@/lib/connect-gate'
 import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
 import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
@@ -259,6 +259,9 @@ function VoiceRoomInner({
   onAuthInProgress,
   onVoiceActivity,
   onRoomCheck,
+  registerChat,
+  sendUserText,
+  composerDraft,
   waitingMode,
   preSelectedSessionId,
   agentUrl,
@@ -273,8 +276,14 @@ function VoiceRoomInner({
   /** Sign-in modal open on an active OAuth step (holds off the connect watchdog). */
   onAuthInProgress?: (inProgress: boolean) => void
   onVoiceActivity?: () => void
-  /** No agent in the room to send to: have the provider check and rejoin. */
-  onRoomCheck?: () => void
+  /** The room changed (reconnected, the agent left): have the provider check it. */
+  onRoomCheck?: (room: ReturnType<typeof useRoomContext>, why: string) => void
+  /** Hands the provider this room, its sender and a system-line writer. */
+  registerChat?: (chat: ChatHandle) => () => void
+  /** Typed user_text goes through the provider, which queues it while no agent is in the room. */
+  sendUserText?: (text: string, payload: Uint8Array) => void
+  /** The composer's text, kept across a remount. */
+  composerDraft?: React.MutableRefObject<string>
   waitingMode?: boolean
   preSelectedSessionId?: string | null
   agentUrl?: string
@@ -1346,7 +1355,11 @@ function VoiceRoomInner({
       setAgentState('idle')
     }
     const onReconnecting = () => log('RoomReconnecting')
-    const onReconnected = () => log('RoomReconnected')
+    const onReconnected = () => {
+      log('RoomReconnected')
+      // A reconnect can land in a room the agent left; if it is there, queued text goes out.
+      onRoomCheckRef.current?.(room, 'room reconnected')
+    }
     const onConnState = (s: ConnectionState) => {
       log('ConnectionStateChanged', { state: s })
       if (s === ConnectionState.Connected) {
@@ -1410,8 +1423,13 @@ function VoiceRoomInner({
     }
     const onParticipantConnected = (p: any) =>
       log('ParticipantConnected', { identity: p.identity, isAgent: !p.isLocal })
-    const onParticipantDisconnected = (p: any) =>
+    const onParticipantDisconnected = (p: any) => {
       log('ParticipantDisconnected', { identity: p.identity, isAgent: !p.isLocal })
+      // Only the agent leaving matters (not the meeting canvas). Deferred: a
+      // LiveKit full reconnect drops every remote participant BEFORE it flips
+      // the state to reconnecting, which must not read as the agent leaving.
+      if (isAgentIdentity(p.identity)) setTimeout(() => onRoomCheckRef.current?.(room, 'agent left the room'), 0)
+    }
 
     // 0.9.71: high-value FE-only events not present in BE @livekit/rtc-node 0.13.x —
     // surface them so any audio/interruption regression has a paired signal here.
@@ -1633,39 +1651,16 @@ function VoiceRoomInner({
   }, [agentState, state, micEnabled, isMuted])
 
   const { send: sendToAgent } = useDataChannel('user-input')
-
-  // A typed message is only sent into a room the agent is in. Otherwise (the tab
-  // came back from suspension to an empty or dropped room) it waits here while
-  // the provider rejoins, and goes out on agent_ready or a reconnect that finds
-  // the agent, instead of being published into an empty room and lost.
-  const queuedUserTextRef = useRef<Uint8Array[]>([])
   const onRoomCheckRef = useRef(onRoomCheck)
   onRoomCheckRef.current = onRoomCheck
-  const sendUserText = useCallback((bytes: Uint8Array) => {
-    if (queuedUserTextRef.current.length === 0 && roomHasAgent(room.state, room.remoteParticipants.size)) {
-      sendToAgent(bytes, { reliable: true })
-      return
-    }
-    if (queuedUserTextRef.current.length === 0) {
-      addMessageRef.current?.('system', 'Reconnecting to your agent. Your message will send when it is back.')
-    }
-    queuedUserTextRef.current.push(bytes)
-    console.log(`📥 No agent in the room — message queued (${queuedUserTextRef.current.length})`)
-    onRoomCheckRef.current?.()
-  }, [room, sendToAgent])
-  const flushQueuedUserText = useCallback(() => {
-    if (queuedUserTextRef.current.length === 0 || !roomHasAgent(room.state, room.remoteParticipants.size)) return
-    const queued = queuedUserTextRef.current
-    queuedUserTextRef.current = []
-    console.log(`📤 Sending ${queued.length} queued message(s)`)
-    for (const bytes of queued) sendToAgent(bytes, { reliable: true })
-  }, [room, sendToAgent])
-  const flushQueuedUserTextRef = useRef(flushQueuedUserText)
-  flushQueuedUserTextRef.current = flushQueuedUserText
-  useEffect(() => {
-    room.on(RoomEvent.Reconnected, flushQueuedUserText)
-    return () => { room.off(RoomEvent.Reconnected, flushQueuedUserText) }
-  }, [room, flushQueuedUserText])
+
+  // Hand the provider this room, a sender and a system-line writer: it owns the
+  // queue of typed messages waiting for the agent, which outlives a remount.
+  useEffect(() => registerChat?.({
+    room,
+    send: (payload) => sendToAgent(payload, { reliable: true }),
+    notify: (text) => addMessageRef.current?.('system', text),
+  }), [registerChat, room, sendToAgent])
 
   // ── Outputs drawer data flow (L4; UI#13/19) ──────────────────────────────
   // Re-list the session workspace with REPLACE semantics on open, on focus and
@@ -1991,7 +1986,6 @@ function VoiceRoomInner({
         // via agent_started, so this only drops dead rows.
         setBackgroundFlows([])
         onAgentReadyRef.current?.()
-        flushQueuedUserTextRef.current()
         // Store sessions from agent_ready if provided
         if (data.sessions && Array.isArray(data.sessions)) {
           setSessions(data.sessions)
@@ -3294,7 +3288,7 @@ function VoiceRoomInner({
               clientMsgId,
             })
             const encoder = new TextEncoder()
-            sendUserText(encoder.encode(uploadedPayload))
+            sendUserText?.(text, encoder.encode(uploadedPayload))
             addMessageRef.current?.('system', `Large message uploaded (${(text.length / 1024).toFixed(1)} KB)`)
             return
           }
@@ -3307,10 +3301,10 @@ function VoiceRoomInner({
       const truncated = text.substring(0, 50000) + '\n...[truncated — message exceeded size limit]'
       const smallPayload = JSON.stringify({ type: 'user_text', content: truncated, clientMsgId })
       const encoder = new TextEncoder()
-      sendUserText(encoder.encode(smallPayload))
+      sendUserText?.(text, encoder.encode(smallPayload))
     } else {
       const encoder = new TextEncoder()
-      sendUserText(encoder.encode(payloadStr))
+      sendUserText?.(text, encoder.encode(payloadStr))
     }
   }, [sendUserText])
 
@@ -4809,6 +4803,7 @@ function VoiceRoomInner({
         <div {...{ [PANEL_ANCHOR_ATTR]: '' }} className="shrink-0">
         {/* Input */}
         <TextInput
+          draft={composerDraft}
           onSend={handleSendText}
           attachedFiles={attachedFiles}
           onAttachFile={handleAttachFile}
@@ -5098,7 +5093,7 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, checkRoom, preSelectedSessionId, agentUrl, seedPrompt, isController } =
+  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, checkRoom, registerChat, sendUserText, composerDraft, preSelectedSessionId, agentUrl, seedPrompt, isController } =
     useChatSession()
 
   return (
@@ -5110,6 +5105,9 @@ export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
       onAuthInProgress={markAuthInProgress}
       onVoiceActivity={markVoiceActivity}
       onRoomCheck={checkRoom}
+      registerChat={registerChat}
+      sendUserText={sendUserText}
+      composerDraft={composerDraft}
       waitingMode={waitingMode}
       preSelectedSessionId={preSelectedSessionId}
       agentUrl={agentUrl}

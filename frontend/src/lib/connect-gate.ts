@@ -159,14 +159,22 @@ export function connectProgressText(stage: ConnectStage, health: AgentHealthProb
   return elapsedMs >= SLOW_START_HINT_MS ? `${text} The first start can take a minute or two.` : text
 }
 
+/** The agent's LiveKit identity (agent/src/index.ts mintAgentToken). Other
+ *  remote participants (the meeting canvas, a phone caller) are not the agent. */
+export const AGENT_IDENTITY = 'osborn-agent'
+
+export function isAgentIdentity(identity: string | null | undefined): boolean {
+  return identity === AGENT_IDENTITY
+}
+
 /**
  * Is the page in a room the agent is in? `roomState` is the mounted LiveKit
- * Room's ConnectionState ('connected', 'reconnecting', …) and `remoteCount` its
- * remote participants. A Room that reconnects after the tab was suspended can
- * report 'connected' in an EMPTY room: the agent left while the tab was away.
+ * Room's ConnectionState ('connected', 'reconnecting', …). A Room that
+ * reconnects after the tab was suspended can report 'connected' in a room the
+ * agent has left.
  */
-export function roomHasAgent(roomState: string | null, remoteCount: number): boolean {
-  return roomState === 'connected' && remoteCount > 0
+export function roomHasAgent(roomState: string | null, agentInRoom: boolean): boolean {
+  return roomState === 'connected' && agentInRoom
 }
 
 export interface RoomLivenessState {
@@ -181,25 +189,59 @@ export interface RoomLivenessState {
   agentReady: boolean
   /** ConnectionState of the mounted LiveKit Room; null when none is mounted. */
   roomState: string | null
-  remoteCount: number
+  /** a participant with the agent's identity is in the room. */
+  agentInRoom: boolean
   attempts: number
   maxAttempts: number
 }
 
 /**
  * What to do when the tab comes back to the foreground or the room reports a
- * change: 'live' / 'wait' = nothing; 'rejoin' = connect() again (connect-room
- * brings the agent back); 'lost' = the rejoin budget is spent, so stop showing
- * a live call. While LiveKit is still reconnecting, or a join is under way
- * (token handed off, agent_ready not yet in: the connect watchdog bounds that),
- * it waits; its Reconnected / Disconnected event asks again.
+ * change: 'live' = the agent is there; 'wait' = nothing yet; 'rejoin' = connect
+ * again (connect-room brings the agent back); 'lost' = the rejoin budget is
+ * spent, so stop showing a live call. While LiveKit is still reconnecting (a
+ * full reconnect first drops every remote participant, then flips the state),
+ * or a join is under way (token handed off, agent_ready not yet in: the connect
+ * watchdog bounds that), it waits; the next Reconnected / Disconnected asks again.
  */
 export function roomVerdict(s: RoomLivenessState): 'live' | 'wait' | 'rejoin' | 'lost' {
   if (!s.tabActive || !s.everConnected || s.idleStopped || s.connecting) return 'wait'
   if (s.roomState !== null) {
     if (!s.agentReady) return 'wait'
     if (s.roomState === 'connecting' || s.roomState === 'reconnecting' || s.roomState === 'signalReconnecting') return 'wait'
-    if (roomHasAgent(s.roomState, s.remoteCount)) return 'live'
+    if (roomHasAgent(s.roomState, s.agentInRoom)) return 'live'
   }
   return s.attempts < s.maxAttempts ? 'rejoin' : 'lost'
+}
+
+/**
+ * How to rejoin. A disconnected Room takes a fresh token in place (the chat
+ * stays mounted). A Room still 'connected' (to a room the agent left) ignores a
+ * new token, and /connect-room hands out a NEW room, so it must be remounted.
+ */
+export function rejoinMode(roomState: string | null): 'in-place' | 'remount' {
+  return roomState === null || roomState === 'disconnected' ? 'in-place' : 'remount'
+}
+
+/**
+ * Typed messages waiting for the agent. The queue belongs to the provider, so it
+ * outlives a remount of the room and the chat; it is sent in order once the
+ * agent is back, and a new message never jumps ahead of queued ones.
+ */
+export interface QueuedText<T = Uint8Array> { text: string; payload: T }
+
+export function sendOrQueue<T>(queue: readonly QueuedText<T>[], item: QueuedText<T>, live: boolean): { send: QueuedText<T>[]; queue: QueuedText<T>[]; queued: boolean } {
+  if (live && queue.length === 0) return { send: [item], queue: [], queued: false }
+  return { send: [], queue: [...queue, item], queued: true }
+}
+
+export function flushQueue<T>(queue: readonly QueuedText<T>[], live: boolean): { send: QueuedText<T>[]; queue: QueuedText<T>[] } {
+  return live ? { send: [...queue], queue: [] } : { send: [], queue: [...queue] }
+}
+
+/** The system line for messages given up on (left, timed out, budget spent). */
+export function unsentNotice(queue: readonly QueuedText<unknown>[]): string | null {
+  if (queue.length === 0) return null
+  const n = queue.length
+  return `${n === 1 ? 'Your message was' : `${n} messages were`} not sent: the agent could not be reached. The text is back in the composer.`
 }
