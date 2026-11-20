@@ -9,6 +9,7 @@
 // on the session the agent is actually running.
 
 import { deriveSessionTitle, formatTime, sameSession, sessionActivityTime, sortSessionsByActivity, type SessionListFields } from './sessions'
+import { sessionMatchesQuery } from './session-list'
 
 export type RoomStatus = 'live' | 'background' | 'idle'
 
@@ -70,6 +71,15 @@ export interface BuildRoomRowsOptions {
  * outside the 12 most recent is still reachable, but a BOUND, not "unlimited" —
  * the rail is a switcher, not a full list. */
 export const SEARCH_IDLE_CAP = 100
+
+/** The `buildRoomRows` options for a search query, shared by the desktop rail
+ * and the below-xl bar so both filter the same way: a blank query is plain
+ * browsing (default cap, no filter); a live one raises the cap to
+ * SEARCH_IDLE_CAP and matches idle rows with `sessionMatchesQuery`. */
+export function roomSearchOptions(query: string): Pick<BuildRoomRowsOptions, 'maxIdle' | 'match'> {
+  const q = query.trim()
+  return q ? { maxIdle: SEARCH_IDLE_CAP, match: (s) => sessionMatchesQuery(s, q) } : {}
+}
 
 const short = (id: string) => (id ? id.substring(0, 8) : '')
 /** How a background slot is named in the rail and in its chat lines. */
