@@ -218,15 +218,17 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     for (const m of send) chat!.send(m.payload)
   }, [])
   // The agent could not be reached (watchdog, idle stop, rejoin budget spent):
-  // never drop a queued message silently. Say so and put the text back.
+  // never drop a queued message silently. Say so and put the text back. Every
+  // caller drops the room first, which unmounts the chat, so the notice waits
+  // for the next one to register.
   const giveUpQueuedText = useCallback(() => {
     const notice = unsentNotice(queuedTextRef.current)
     if (!notice) return
     const texts = queuedTextRef.current.map((m) => m.text).join('\n')
     composerDraft.current = composerDraft.current ? `${composerDraft.current}\n${texts}` : texts
     queuedTextRef.current = []
-    notifyChat(notice)
-  }, [notifyChat])
+    pendingNoticeRef.current = notice
+  }, [])
 
   // Connect-attempt generation. Each connect() run captures the value it was
   // started with; Cancel/disconnect bumps it. An in-flight connect() whose
