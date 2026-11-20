@@ -38,9 +38,9 @@ Use this every time changes are ready to ship.
 ## Dev iteration (no npm)
 To try an unreleased build on one Fly machine without publishing:
 `cd frontend && npx tsx scripts/fly-dev-install.ts <fly-app> [ref, default HEAD] --yes`
-(needs FLY_API_TOKEN, NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in `frontend/.env.local`).
-It packs `agent/` at that commit under the version the machine already reports, installs it on the volume and restarts; `/workspace/.osborn-dev-build` records what is installed.
-Rollback: the dashboard Update button or the next release image swaps it out once the version changes. To drop it before then at the same version, delete `/workspace/.npm-global/lib/node_modules/osborn` on the machine and restart; the entrypoint reinstalls the image's version from npm.
+(needs FLY_API_TOKEN in `frontend/.env.local`; the Supabase service key, if set, adds the owner to the printout).
+It packs `agent/` at that commit under the image's version (refusing if /health reports another), installs it and its skills on the volume and restarts. The script's printout is the only record of what is installed. Do not press Update on the dashboard while it runs.
+Rollback: the dashboard Update button or the next release image swaps it out once the version changes. To drop it before then at the same version, delete `/workspace/.npm-global/lib/node_modules/osborn` on the machine and restart; the entrypoint reinstalls the image's version from npm (skills the dev build copied stay until the next version change).
 Dev only: real releases still go through the steps above.
 
 ## Why this order matters

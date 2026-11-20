@@ -1385,20 +1385,32 @@ async function updateOsbornImpl(
 
 /** A dev build of the agent, packed from a git ref (frontend/scripts/fly-dev-install.ts). */
 export interface OsbornInstallSpec {
-  tarballUrl: string // short-lived signed URL
+  tarball: Buffer
   sha256: string
-  ref: string
-  gitSha: string
+}
+
+const IMAGE_OSBORN_PKG = '/usr/local/lib/node_modules/osborn/package.json'
+const VOLUME_OSBORN_DIR = '/workspace/.npm-global/lib/node_modules/osborn'
+// base64 text per exec argument, under Linux's 128 KB single-argument limit.
+const TARBALL_CHUNK_CHARS = 96 * 1024
+
+/** The osborn version baked into the machine's image (what the entrypoint compares against). */
+export async function readImageOsbornVersion(appName: string): Promise<string | null> {
+  const machine = await getFirstMachine(appName)
+  if (!machine) return null
+  const r = await execInMachine(appName, machine.id, ['node', '-p', `require('${IMAGE_OSBORN_PKG}').version`], 15)
+  return r.exitCode === 0 && r.stdOut.trim() ? r.stdOut.trim() : null
 }
 
 /**
  * Install a packed osborn tarball onto a running machine's volume, without
- * npm publish or an image swap: download, verify sha256, `npm install -g` into
- * /workspace/.npm-global, restart, and confirm /health reports expectVersion.
+ * npm publish or an image swap: send it in base64 chunks over exec, verify its
+ * sha256, `npm install -g` into /workspace/.npm-global, refresh the skills it
+ * ships, restart, and confirm /health reports expectVersion.
  *
- * The tarball MUST carry the version the image already runs: the entrypoint
- * reinstalls osborn from npm at boot when the volume copy's version differs
- * from the image's. Shares updateOsborn's per-sandbox lock and result store.
+ * The tarball MUST carry the image's version: the entrypoint reinstalls osborn
+ * from npm at boot when the volume copy's version differs from the image's.
+ * No lock: do not press Update on the dashboard while this runs.
  */
 export async function installOsbornSpec(
   appName: string,
@@ -1406,44 +1418,8 @@ export async function installOsbornSpec(
   userId: string,
   expectVersion: string,
 ): Promise<{ success: boolean; version: string | null; log: string }> {
-  if (updateInflight.has(appName)) {
-    return { success: false, version: null, log: `An update is already running on ${appName}` }
-  }
-  const work = installOsbornSpecImpl(appName, spec, userId, expectVersion)
-  updateInflight.set(appName, work)
-  work.finally(() => {
-    if (updateInflight.get(appName) === work) updateInflight.delete(appName)
-  })
-  return work
-}
-
-async function installOsbornSpecImpl(
-  appName: string,
-  spec: OsbornInstallSpec,
-  userId: string,
-  expectVersion: string,
-): Promise<{ success: boolean; version: string | null; log: string }> {
-  const startedAt = Date.now()
-  const label = `${expectVersion} (dev ${spec.gitSha.slice(0, 7)})`
-  const record = (status: UpdateResult['status'], version: string | null, log: string) =>
-    setUpdateResult({
-      sandboxId: appName,
-      status,
-      targetVersion: label,
-      installedVersion: version,
-      error: status === 'error' ? log : null,
-      startedAt,
-      completedAt: status === 'in-progress' ? null : Date.now(),
-      log,
-    })
-  const finish = (success: boolean, version: string | null, log: string) => {
-    record(success ? 'success' : 'error', version, log)
-    return { success, version, log }
-  }
-  record('in-progress', null, `installOsbornSpec: ${label}`)
-
   const machine = await getFirstMachine(appName)
-  if (!machine) return finish(false, null, `No machine found for app ${appName}`)
+  if (!machine) return { success: false, version: null, log: `No machine found for app ${appName}` }
   const tgz = '/tmp/osborn-dev.tgz'
   const run = async (step: string, cmd: string[], timeoutSec: number) => {
     const r = await execInMachine(appName, machine.id, cmd, timeoutSec)
@@ -1452,26 +1428,35 @@ async function installOsbornSpecImpl(
   }
 
   try {
-    await run('download', ['curl', '-fsSL', '-o', tgz, spec.tarballUrl], 120)
+    await run('reset', ['rm', '-f', `${tgz}.b64`, tgz], 10)
+    const b64 = spec.tarball.toString('base64')
+    for (let i = 0; i < b64.length; i += TARBALL_CHUNK_CHARS) {
+      await run('upload', ['sh', '-c', `printf %s "$1" >> ${tgz}.b64`, 'sh', b64.slice(i, i + TARBALL_CHUNK_CHARS)], 30)
+    }
+    await run('decode', ['sh', '-c', `base64 -d ${tgz}.b64 > ${tgz} && rm -f ${tgz}.b64`], 30)
     const sum = (await run('sha256sum', ['sha256sum', tgz], 30)).trim().split(/\s+/)[0]
     if (sum !== spec.sha256) throw new Error(`sha256 mismatch: got ${sum}, expected ${spec.sha256}`)
-    console.log(`[machines] installOsbornSpec: npm install -g ${label} on ${appName}`)
-    await run('npm install', ['env', 'NPM_CONFIG_PREFIX=/workspace/.npm-global', 'npm', 'install', '-g', tgz, '--no-audit', '--no-fund'], 600)
-    // Positional arg, not interpolation: the ref is caller-supplied text.
-    const marker = `ref=${spec.ref}\ngit=${spec.gitSha}\nsha256=${spec.sha256}\nversion=${expectVersion}\n`
-    await run('marker', ['sh', '-c', 'printf "%s" "$1" > /workspace/.osborn-dev-build', 'sh', marker], 10)
+    console.log(`[machines] installOsbornSpec: npm install -g dev build v${expectVersion} on ${appName}`)
+    // The entrypoint seeds $HOME/.claude/skills from the IMAGE's package, so
+    // copy the dev build's skills over the same names (as its refresh does).
+    await run('npm install', ['sh', '-c', [
+      `NPM_CONFIG_PREFIX=/workspace/.npm-global npm install -g ${tgz} --no-audit --no-fund`,
+      'mkdir -p /workspace/.claude/skills',
+      `for d in ${VOLUME_OSBORN_DIR}/.claude/skills/*/; do [ -d "$d" ] || continue; n=$(basename "$d"); rm -rf "/workspace/.claude/skills/$n"; cp -r "$d" "/workspace/.claude/skills/$n"; done`,
+    ].join(' && ')], 600)
   } catch (err) {
-    return finish(false, null, (err as Error).message)
+    return { success: false, version: null, log: (err as Error).message }
   }
 
+  const pending = 'installed on the volume; goes live on next restart'
   if (!(await restartService(appName, userId))) {
-    return finish(false, null, 'Dev build installed on the volume but the machine did not come back healthy')
+    return { success: false, version: null, log: `Restart did not come back healthy: ${pending}` }
   }
   const installed = await readInstalledOsbornVersion(appName)
   if (installed !== expectVersion) {
-    return finish(false, installed, `/health reports v${installed ?? 'unknown'} after restart, expected v${expectVersion}`)
+    return { success: false, version: installed, log: `/health reports v${installed ?? 'unknown'} after restart, expected v${expectVersion}; the dev build is installed on the volume` }
   }
-  return finish(true, installed, `Installed dev build ${spec.ref} @ ${spec.gitSha} (osborn@${installed})`)
+  return { success: true, version: installed, log: `Installed dev build as osborn@${installed}` }
 }
 
 // REMOVED 2026-05-22: updateViaManifest function.
