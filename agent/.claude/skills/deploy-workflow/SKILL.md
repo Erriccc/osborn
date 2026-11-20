@@ -27,8 +27,8 @@ Use this every time changes are ready to ship.
    - User runs `cd agent && npm publish` from the osborn repo
    - Or publish from CI (`.github/workflows/publish-agent.yml`, npm Trusted Publishing, no token):
      after the version bump is merged to main, `git tag agent-v<ver> && git push origin agent-v<ver>`
-     (on that merged commit). CI checks the tag matches
-     package.json and the version is not already on npm, runs the agent tests, then builds and publishes as `latest`.
+     (on that merged commit). CI refuses a commit that is not on main or a tag that does not match
+     package.json, runs every agent test, then builds and publishes (npm refuses an existing version).
 
 5. Update the Sprite from the NPM registry
    - `npm install -g osborn`
