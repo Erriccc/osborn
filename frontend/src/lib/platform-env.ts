@@ -55,8 +55,8 @@ export const PLATFORM_ENV_SPEC: EnvKeySpec[] = [
   { key: 'LIVEKIT_API_SECRET', source: 'host-env', scope: 'platform', required: true, secret: true, description: 'LiveKit API secret.' },
   { key: 'NEXT_PUBLIC_LIVEKIT_URL', source: 'host-env', scope: 'platform', required: false, secret: false, description: 'Public LiveKit URL for the browser client.' },
   // ── STT / TTS providers — platform-set ──
-  { key: 'DEEPGRAM_API_KEY', source: 'host-env', scope: 'platform', required: true, secret: true, description: 'Deepgram STT (consumed implicitly by the LiveKit Deepgram plugin).' },
-  { key: 'SONIOX_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Soniox STT (alternate transcription plugin).' },
+  { key: 'SONIOX_API_KEY', source: 'host-env', scope: 'platform', required: true, secret: true, description: 'Soniox STT and TTS, the default voice pipeline (agent config.ts DEFAULT_CONFIG; LiveKit Soniox plugin).' },
+  { key: 'DEEPGRAM_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Deepgram STT/TTS, used on a machine only when OSBORN_STT_PROVIDER/OSBORN_TTS_PROVIDER selects it. The frontend host itself needs it for /api/notes/transcribe.' },
   { key: 'GROQ_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Groq inference (fast-brain / low-latency paths).' },
   { key: 'FIREWORKS_API_KEY', source: 'host-env', scope: 'platform', required: false, secret: true, description: 'Fireworks AI — fast-brain inference + embeddings (preferred over OpenRouter when set).' },
   // ── LLM providers ──

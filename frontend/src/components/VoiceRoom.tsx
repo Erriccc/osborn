@@ -23,7 +23,7 @@ import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
-import { cacheTranscript, readCachedTranscript } from '@/lib/transcript-cache'
+import { cacheTranscript, readCachedTranscript, reconcileReplay } from '@/lib/transcript-cache'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -307,6 +307,8 @@ function VoiceRoomInner({
   // current step finishes (session_switch_pending). Separate from the resume
   // chip, which clears on the first assistant message.
   const [switchPending, dispatchSwitchPending] = useReducer(switchPendingReducer, null)
+  // Rooms search: one query for the rail (xl+) and the bar (below xl), both mounted.
+  const [roomsQuery, setRoomsQuery] = useState('')
   useEffect(() => {
     if (!resumeChip) return
     const left = Math.max(0, resumeChip.startedAt + RESUME_CHIP_TIMEOUT_MS - Date.now())
@@ -381,7 +383,12 @@ function VoiceRoomInner({
   // bypasses this. A ref mirrors it so the stable data-message handler reads the
   // live value without re-subscribing.
   const [authPromptDismissed, setAuthPromptDismissed] = useState(false)
+  // The agent is running on a fallback model and Claude sign-in is an optional
+  // upgrade (`claude_auth_optional`, #144): the modal says so and offers Not now.
+  const [claudeAuthOptional, setClaudeAuthOptional] = useState(false)
   const authPromptDismissedRef = useRef(false)
+  // The message handler reads this, not the state: an optional sign-in must not mark the session as blocked.
+  const authOptionalRef = useRef(false)
   authPromptDismissedRef.current = authPromptDismissed
   const dismissAuthModal = useCallback(() => {
     setAuthPromptDismissed(true)
@@ -887,10 +894,10 @@ function VoiceRoomInner({
           console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length} (+${Array.isArray(d.compactions) ? d.compactions.length : 0} compaction markers)`)
           const priorItems = buildPriorItems(preSelectedSessionId, d.messages, Array.isArray(d.compactions) ? d.compactions : undefined, d.steward)
           // Reconcile: if an authoritative replay already painted, leave it;
-          // otherwise drop the optimistic cache rows and show the live history.
+          // otherwise replace the optimistic cache rows the replay holds.
           setMessages(prev => (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)
             ? prev
-            : [...priorItems, ...prev.filter(m => !m.fromCache)]))
+            : reconcileReplay(priorItems, prev)))
           return // painted — stop retrying
         } catch { /* cold machine / network — retry */ }
       }
@@ -1851,7 +1858,7 @@ function VoiceRoomInner({
   // iOS and the mic stays dead for the rest of the turn.
   const ttsActiveUntilRef = useRef(0)
 
-  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => void>()
+  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string; greeting?: boolean }) => void>()
   // Typed messages awaiting their user_transcript echo (bug d9bb78b2).
   const pendingTypedRef = useRef<PendingTyped[]>([])
   /** Set once the agent returns a clientMsgId this session (MINOR: chat-echo). */
@@ -1863,7 +1870,7 @@ function VoiceRoomInner({
   const assistantMessageIdsRef = useRef<Set<string>>(new Set())
   const messagesRef = useRef<ChatMessage[]>([])
   messagesRef.current = messages
-  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => {
+  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string; greeting?: boolean }) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
     // Safety check - skip empty/whitespace-only messages
@@ -1912,6 +1919,7 @@ function VoiceRoomInner({
       messageId: extra?.messageId,
       chunkIndex: extra?.chunkIndex,
       clientMsgId: extra?.clientMsgId,
+      ...(extra?.greeting ? { greeting: true } : {}),
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
     if (role === 'assistant') dispatchResumeChip({ type: 'assistant' })
@@ -2059,7 +2067,7 @@ function VoiceRoomInner({
         })
         if (data.text && data.text.trim()) {
           console.log('🤖 Adding assistant message:', data.text.substring(0, 50), `[source: ${data.source || 'unknown'}]`)
-          addMessageRef.current?.('assistant', data.text, undefined, undefined, undefined, data.messageId ? { messageId: data.messageId } : undefined)
+          addMessageRef.current?.('assistant', data.text, undefined, undefined, undefined, { messageId: data.messageId || undefined, greeting: data.greeting === true })
         } else {
           console.warn('⚠️ assistant_response had empty or invalid text:', data)
         }
@@ -2624,27 +2632,38 @@ function VoiceRoomInner({
         // already dismissed it this session. The terminal banner + watchdog state
         // (onAuthRequired / everRequired) update regardless.
         if (shouldAutoOpenAuthModal('claude_auth_required', authPromptDismissedRef.current)) setClaudeAuthStatus('required')
-        setClaudeAuthEverRequired(true)
-        onAuthRequired?.()
+        // The on-demand flow (claude_auth_start) also opens with this message.
+        if (!authOptionalRef.current) {
+          setClaudeAuthEverRequired(true)
+          onAuthRequired?.()
+        }
       } else if (data.type === 'claude_auth_url') {
         console.log('🔗 Claude auth URL received')
         // Keep the URL ready even when the modal stays closed, so the banner's
         // "Sign in" button can open straight into the flow.
         setClaudeAuthUrl(data.url)
         if (shouldAutoOpenAuthModal('claude_auth_url', authPromptDismissedRef.current)) setClaudeAuthStatus('waiting')
-        setClaudeAuthEverRequired(true)
-        // #78: surface the terminal auth state (connected=true → spinner off,
-        // banner on) for ANY auth-gate entry message, not only
-        // claude_auth_required. If the agent emits the URL first (or the
-        // required message is dropped), the account would otherwise sit on an
-        // infinite "Connecting…" with the watchdog disarmed. markAuthRequired
-        // is idempotent, so a later claude_auth_required is harmless.
-        onAuthRequired?.()
+        if (!authOptionalRef.current) {
+          setClaudeAuthEverRequired(true)
+          // #78: surface the terminal auth state (connected=true → spinner off,
+          // banner on) for ANY auth-gate entry message, not only
+          // claude_auth_required. If the agent emits the URL first (or the
+          // required message is dropped), the account would otherwise sit on an
+          // infinite "Connecting…" with the watchdog disarmed. markAuthRequired
+          // is idempotent, so a later claude_auth_required is harmless.
+          onAuthRequired?.()
+        }
+      } else if (data.type === 'claude_auth_optional') {
+        console.log('🔑 Claude sign-in optional (fallback model)')
+        authOptionalRef.current = true
+        setClaudeAuthOptional(true)
       } else if (data.type === 'claude_auth_waiting_code') {
         console.log('🔑 Claude waiting for auth code')
         if (shouldAutoOpenAuthModal('claude_auth_waiting_code', authPromptDismissedRef.current)) setClaudeAuthStatus('waiting_code')
-        setClaudeAuthEverRequired(true)
-        onAuthRequired?.()
+        if (!authOptionalRef.current) {
+          setClaudeAuthEverRequired(true)
+          onAuthRequired?.()
+        }
       } else if (data.type === 'claude_auth_submitting') {
         console.log('🔑 Claude submitting auth code')
         setClaudeAuthStatus('submitting')
@@ -2653,6 +2672,8 @@ function VoiceRoomInner({
         setClaudeAuthUrl(null)
         setClaudeAuthStatus('complete')
         setClaudeAuthEverRequired(false)
+        authOptionalRef.current = false
+        setClaudeAuthOptional(false)
         setAuthPromptDismissed(false) // auth resolved — allow a future prompt to re-open
         onAuthResolved?.('claude_auth_complete')
         // Auto-dismiss after 3 seconds
@@ -2915,8 +2936,10 @@ function VoiceRoomInner({
           setMessages(prev => {
             // Don't double-inject: skip if an authoritative replay already painted.
             if (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)) return prev
-            // Drop the optimistic cache rows (#136) and show the live history.
-            return [...priorItems, ...prev.filter(m => !m.fromCache)]
+            // Replace the optimistic cache rows (#136) the replay holds; they were
+            // painted for the session asked for, so none survive a different one.
+            const sameSession = !data.sessionId || data.sessionId === preSelectedSessionId
+            return reconcileReplay(priorItems, sameSession ? prev : prev.filter(m => !m.fromCache))
           })
         }
       } else if (data.type === 'checkpoint_captured' || data.type === 'tts_chunks') {
@@ -3853,12 +3876,16 @@ function VoiceRoomInner({
               <div className="flex-1 min-w-0">
                 <h3 className="text-lg font-semibold text-ink">Claude Authentication</h3>
                 <p className="text-sm text-gray-400">
-                  {claudeAuthStatus === 'error' ? 'Authentication failed' : 'Sign in to your Anthropic account'}
+                  {claudeAuthStatus === 'error'
+                    ? 'Authentication failed'
+                    : claudeAuthOptional
+                      ? 'Optional. Your agent is already running on a fallback model.'
+                      : 'Sign in to your Anthropic account'}
                 </p>
               </div>
               <button onClick={dismissAuthModal}
                 className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all shrink-0"
-                title="Dismiss">
+                title="Dismiss" aria-label="Dismiss">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
@@ -3959,6 +3986,16 @@ function VoiceRoomInner({
                 which model is answering, or <span className="font-medium">No model</span> if none can.
               </p>
             )}
+            {/* #144: a labelled way out, not only the icon. Styled like the
+                end-call sheet's Cancel. */}
+            <div className="mt-4 flex flex-col gap-1">
+              {claudeAuthOptional && (
+                <p className="text-xs text-gray-500">Sign in to Claude to upgrade the model. You can do it later from the banner.</p>
+              )}
+              <button onClick={dismissAuthModal} className="min-h-11 rounded-lg text-gray-400 text-sm hover:text-gray-200">
+                {claudeAuthOptional ? 'Not now' : 'Close'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -4069,6 +4106,8 @@ function VoiceRoomInner({
         disabled={!agentConnected}
         liveTitle={firstUserMessage}
         pendingId={switchPending?.sessionId ?? null}
+        query={roomsQuery}
+        onQueryChange={setRoomsQuery}
       />
       {/* Chat column. No xl:min-w floor: at the 1280px xl boundary the 240px
           rooms rail plus a shrink-0 aside dragged to MAX_PANEL_WIDTH_PCT (70%,
@@ -4089,7 +4128,7 @@ function VoiceRoomInner({
             way back into the sign-in flow. In NORMAL FLOW at the top of the chat
             column (bug #79) so it reserves space instead of covering the header /
             hiding the status line. */}
-        {isAuthGateTerminal(claudeAuthEverRequired, claudeAuthStatus) && (
+        {isAuthGateTerminal(claudeAuthEverRequired || claudeAuthOptional, claudeAuthStatus) && (
           <div className="w-full shrink-0 flex items-center justify-center gap-3 bg-amber-500/95 text-black text-sm font-medium px-4 py-2.5 touch-manipulation">
             <span className="shrink-0">🔑</span>
             {/* #87: not a false "can't reply" wall — the agent boots fallback-first
@@ -4098,7 +4137,13 @@ function VoiceRoomInner({
                 upgrade framing (models 3 + 5): connect Claude for full power. */}
             <span className="min-w-0">Not signed in to Claude — the model badge shows what&apos;s answering. Connect Claude for full power.</span>
             <button
-              onClick={() => { setAuthPromptDismissed(false); setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required') }}
+              onClick={() => {
+                setAuthPromptDismissed(false)
+                setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required')
+                // On a fallback model no sign-in flow is running, so ask the agent
+                // to start one (it replays a flow already in flight). Owner-only.
+                if (!claudeAuthUrl && isController) sendJson({ type: 'claude_auth_start' })
+              }}
               className="shrink-0 px-3 py-1 rounded-md bg-black/85 hover:bg-black text-white text-xs font-semibold transition-colors"
             >
               Connect Claude
@@ -4164,7 +4209,7 @@ function VoiceRoomInner({
                 self-test. resolveAgentHealth owns which sessions that applies to. */}
             <AgentHealthNotice
               version={agentVersion}
-              relyingOnFallback={claudeAuthEverRequired}
+              relyingOnFallback={claudeAuthEverRequired || claudeAuthOptional}
               mainProvider={mainProvider}
               keyHealth={agentKeyHealth}
             />
@@ -4503,6 +4548,8 @@ function VoiceRoomInner({
           disabled={!agentConnected}
           liveTitle={firstUserMessage}
           pendingId={switchPending?.sessionId ?? null}
+          query={roomsQuery}
+          onQueryChange={setRoomsQuery}
         />
 
         {/* Prominent compaction banner — sits above chat during PreCompact→PostCompact window.

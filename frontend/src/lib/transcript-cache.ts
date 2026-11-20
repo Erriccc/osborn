@@ -87,6 +87,8 @@ export function serializeTranscript(messages: ChatMessage[]): CachedMessage[] {
     // compaction markers and steward cards. A local system notice has no counterpart there, so
     // caching it would paint a row nothing can reconcile.
     if (m.role === 'system' && !m.compaction && !m.steward && !m.stewardGate) continue
+    // Research log rows (the Logs drawer) and the spoken greeting are never replayed.
+    if (m.category === 'log' || m.greeting) continue
     const content = typeof m.content === 'string' ? m.content : ''
     // A normal bubble needs text; a compaction marker is kept even when empty.
     if (!content && !m.compaction) continue
@@ -135,18 +137,60 @@ export function cacheTranscript(
   if (!sessionId) return
   const store = resolveStorage(storage)
   if (!store) return
-  // The paint IS this cache: serializeTranscript drops those rows, so writing
-  // while they are on screen replaces the history with the turns taken since.
-  if (messages.some(m => m?.fromCache)) return
-  const items = serializeTranscript(messages)
-  if (items.length === 0) return // never clobber a good cache with nothing
+  const live = serializeTranscript(messages)
+  if (live.length === 0) return // never clobber a good cache with nothing
+  const sessions = readSessions(store, userId)
+  // While the optimistic paint is on screen, serializeTranscript has dropped it,
+  // so the turns taken since are added to the stored history the paint came from,
+  // never written in its place. Writing nothing instead froze the cache for good
+  // whenever no replay ever came to clear the paint (#195).
+  let items = live
+  if (messages.some(m => m?.fromCache)) {
+    const liveIds = new Set(live.map(i => i.id))
+    const stored = sessions.find(s => s.id === sessionId)?.items ?? []
+    items = [...stored.filter(i => !liveIds.has(i.id)), ...live].slice(-MAX_ITEMS)
+  }
   // Re-appended at the end, so the session touched longest ago is evicted.
-  const all = [...readSessions(store, userId).filter(s => s.id !== sessionId), { id: sessionId, items }]
+  const all = [...sessions.filter(s => s.id !== sessionId), { id: sessionId, items }]
   try {
     store.setItem(transcriptCacheKey(userId), JSON.stringify(all.slice(-MAX_SESSIONS)))
   } catch {
     // Quota / serialization failure — give up quietly; the replay still hydrates.
   }
+}
+
+const turnText = (m: ChatMessage) =>
+  (typeof m.content === 'string' ? m.content : '').slice(0, MAX_CONTENT).replace(/\s+/g, ' ').trim()
+const isTurn = (m: ChatMessage) => m.role === 'user' || m.role === 'assistant'
+
+/**
+ * Put the authoritative replay in place of the optimistic paint (#153). The
+ * replay can lag the session by a turn or more, so the paint's user turns are
+ * aligned on the replay's by text and order (never by clock: the browser's may
+ * be off): the cached user turn ending the longest run that matches the end of
+ * the replay's user turns is the last one the replay holds, and the cached turns
+ * after it are kept, after the replay. A tie goes to the earliest run, so an
+ * identical text said again later counts as new. With no alignment every cached
+ * row is dropped, as before. Live rows (not from the cache) follow.
+ * Pass `current` without its cache rows when the replay is for another session.
+ */
+export function reconcileReplay(replay: ChatMessage[], current: ChatMessage[]): ChatMessage[] {
+  const live = current.filter(m => !m.fromCache)
+  const said = replay.filter(m => m.role === 'user').map(turnText)
+  const cached = current.filter(m => m.fromCache && isTurn(m))
+  const users = cached.flatMap((m, i) => (m.role === 'user' ? [{ i, text: turnText(m) }] : []))
+  let best = 0, at = -1
+  users.forEach((_, j) => {
+    let run = 0
+    while (run <= j && run < said.length && users[j - run].text === said[said.length - 1 - run]) run++
+    // One matching turn alone is too weak an anchor ("yes" said again elsewhere),
+    // unless it is the whole replay.
+    if (run > best && (run >= 2 || run === said.length)) { best = run; at = j }
+  })
+  const start = at < 0 ? -1 : (users[at + 1]?.i ?? -1)
+  const ahead = start < 0 ? [] : cached.slice(start)
+    .map(m => ({ ...m, id: `prior-ahead-${m.id}`, fromCache: false }))
+  return [...replay, ...ahead, ...live]
 }
 
 /** This account's cached transcript for a session, or [] when none/unreadable. */

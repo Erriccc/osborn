@@ -13,6 +13,7 @@ import {
   roomColor,
   roomIdentityLabel,
   roomInitial,
+  roomSearchOptions,
   SEARCH_IDLE_CAP,
 } from '../src/lib/rooms'
 import { sessionMatchesQuery } from '../src/lib/session-list'
@@ -163,6 +164,28 @@ t('a match outside the browsing cap becomes reachable once you type', () => {
     match: (s) => sessionMatchesQuery(s, 'quarterly'),
   })
   assert.deepEqual(searched.map((r) => r.id), ['s29'], 'typing reaches it')
+})
+
+// #176: the rail and the below-xl bar build their search rows through this one
+// helper, so a query reaches the same sessions on every width.
+t('roomSearchOptions: a blank query is plain browsing, a live one searches', () => {
+  assert.deepEqual(roomSearchOptions(''), {})
+  assert.deepEqual(roomSearchOptions('   '), {}, 'whitespace is no query')
+  const opts = roomSearchOptions('  Quarterly ')
+  assert.equal(opts.maxIdle, SEARCH_IDLE_CAP)
+  assert.equal(opts.match?.({ sessionId: 'x', lastMessage: 'the quarterly budget' }), true, 'trimmed, case-insensitive')
+  assert.equal(opts.match?.({ sessionId: 'y', lastMessage: 'topic 3' }), false)
+})
+
+t('roomSearchOptions reaches a session past the browsing cap', () => {
+  const many = Array.from({ length: 30 }, (_, i) => ({
+    sessionId: `s${String(i).padStart(2, '0')}`,
+    lastMessage: i === 19 ? 'the quarterly budget spreadsheet' : `topic ${i}`,
+    timestamp: ago(i * MIN),
+    messageCount: 1,
+  }))
+  assert.ok(!buildRoomRows(many, null, { now: NOW, ...roomSearchOptions('') }).some((r) => r.id === 's19'))
+  assert.deepEqual(buildRoomRows(many, null, { now: NOW, ...roomSearchOptions('quarterly') }).map((r) => r.id), ['s19'])
 })
 
 // `match` is consulted for the IDLE rows only (see lib/rooms): filtering the

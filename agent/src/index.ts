@@ -142,6 +142,9 @@ function buildToolLogEvent(
   return ev
 }
 
+// Spoken through session.say when a session resumes; matched in sendAgentTranscript.
+const RESUME_GREETING = 'Welcome back! Ready to continue our previous conversation.'
+
 // The reply each chat store request waits for (VoiceRoom askAgent).
 const STORE_REPLY_TYPES: Record<string, string> = {
   skill_get: 'skill_content', skill_add: 'skill_add_result', skill_fork: 'skill_fork_result',
@@ -2222,19 +2225,6 @@ async function main() {
     process.exit(1)
   }
 
-  // Non-fatal diagnostic: surface any OTHER expected-required keys that are
-  // missing (per the shared env-keys.ts manifest — mirror of the frontend's
-  // platform-env.ts injection spec). The LiveKit trio above is the only
-  // hard-fail; the rest degrade gracefully (a plugin falls back, a feature
-  // no-ops), so we log rather than exit — but a missing OPENAI/DEEPGRAM key is
-  // the usual root cause of "voice works but STT/realtime is dead", worth naming.
-  const missingEnv = missingRequiredEnv().filter(
-    (k) => !['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'].includes(k),
-  )
-  if (missingEnv.length > 0) {
-    console.warn(`⚠️   Missing expected env keys (non-fatal): ${missingEnv.join(', ')}`)
-  }
-
   // Parse CLI args
   const cliArgs = parseArgs()
 
@@ -2288,6 +2278,14 @@ async function main() {
   const voiceMode = getVoiceMode(config)
   const directConfig = getDirectConfig(config)
   console.log(`🎯 PIPELINE MODE: ${directConfig.stt.provider} STT → Claude Agent SDK + fast brain → ${directConfig.tts.provider} TTS`)
+
+  // Non-fatal: the LiveKit trio above is the only hard-fail; the STT/TTS key follows the providers in use.
+  const missingEnv = missingRequiredEnv(process.env, { stt: directConfig.stt.provider, tts: directConfig.tts.provider }).filter(
+    (k) => !['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'].includes(k),
+  )
+  if (missingEnv.length > 0) {
+    console.warn(`⚠️   Missing expected env keys (non-fatal): ${missingEnv.join(', ')}`)
+  }
 
   // Determine room code. STABLE PER MACHINE, derived from identity we
   // already have: the Fly app name (one app per user). No new storage, no
@@ -5848,7 +5846,10 @@ async function main() {
         if (normalized === lastSentAgentTranscript) return
 
         console.log(`💬 Agent (${source}, ${text.length} chars): "${text}"`)
-        sendToFrontend({ type: 'assistant_response', text })
+        // The resume greeting is spoken, never stored: flagged so the chat cache skips it.
+        sendToFrontend(normalized === RESUME_GREETING
+          ? { type: 'assistant_response', text, greeting: true }
+          : { type: 'assistant_response', text })
         lastSentAgentTranscript = normalized
       }
 
@@ -6442,7 +6443,7 @@ async function main() {
           // screen connected (measured). Now the first words play at session-
           // ready (~2s); the prep runs in the background and never blocks voice.
           try {
-            await (session as any).say("Welcome back! Ready to continue our previous conversation.")
+            await (session as any).say(RESUME_GREETING)
           } catch (err) {
             console.log('⚠️ Pre-selected session greeting failed:', err)
           }
@@ -7540,7 +7541,7 @@ async function main() {
           // Greet immediately, then point agent to session index (no raw JSONL loading)
           if (currentSession && summary) {
             try {
-              await (currentSession as any).say("Welcome back! Ready to continue our previous conversation.")
+              await (currentSession as any).say(RESUME_GREETING)
             } catch (err) {
               console.log('⚠️ Session gate greeting failed:', err)
             }

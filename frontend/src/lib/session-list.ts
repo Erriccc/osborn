@@ -25,9 +25,9 @@ export interface SessionListItem extends SessionListFields {
  * When the same session appears more than once (the same session filed under
  * several slug folders, or once by full id and once by its 8-char short form),
  * keep ONE copy: the one `--resume` opens. The resume target is the copy that
- * carries a slug-derived `cwd`; among those we prefer the fullest (highest
- * message count) and then the most recently active, so the surviving row has
- * the best title/time/project. First-seen order is otherwise preserved.
+ * carries a slug-derived `cwd`; among those we prefer the most recently active
+ * and then the fullest (highest message count), so the surviving row has the
+ * current title/time/project. First-seen order is otherwise preserved.
  *
  * Identity is `sameSession`, the same rule the rows use, bucketed by id prefix
  * to stay linear — so the two can't drift apart. A Map keeps insertion order
@@ -57,10 +57,12 @@ function preferCopy(a: SessionListItem, b: SessionListItem): boolean {
   const aCwd = !!a.cwd
   const bCwd = !!b.cwd
   if (aCwd !== bCwd) return aCwd // the copy with a resume cwd wins
-  const aMsg = a.messageCount ?? 0
-  const bMsg = b.messageCount ?? 0
-  if (aMsg !== bMsg) return aMsg > bMsg
-  return sessionActivityMs(a) > sessionActivityMs(b)
+  // Activity before count: a large file's count is a sampled lower bound, so a
+  // stale small copy's exact count must not outrank the current copy.
+  const aAt = sessionActivityMs(a)
+  const bAt = sessionActivityMs(b)
+  if (aAt !== bAt) return aAt > bAt
+  return (a.messageCount ?? 0) > (b.messageCount ?? 0)
 }
 
 // ── Search over preview / message / id ────────────────────────────────────

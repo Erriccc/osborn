@@ -8,6 +8,8 @@ export interface EnvConfig {
   livekitApiKey: string
   livekitApiSecret: string
   anthropicApiKey: string
+  /** Default STT and TTS of the agent's voice pipeline (agent config.ts DEFAULT_CONFIG). */
+  sonioxApiKey: string
   voiceProvider: 'openai' | 'gemini'
   openaiApiKey: string
   googleApiKey: string
@@ -19,6 +21,7 @@ export const defaultEnvConfig: EnvConfig = {
   livekitApiKey: '',
   livekitApiSecret: '',
   anthropicApiKey: '',
+  sonioxApiKey: '',
   voiceProvider: 'openai',
   openaiApiKey: '',
   googleApiKey: '',
@@ -37,6 +40,9 @@ export function generateAgentEnv(config: EnvConfig): string {
     '',
     '# Anthropic (Claude)',
     `ANTHROPIC_API_KEY=${config.anthropicApiKey}`,
+    '',
+    '# Speech (Soniox: default speech-to-text and voice)',
+    `SONIOX_API_KEY=${config.sonioxApiKey}`,
     '',
     '# Voice Provider',
   ]
