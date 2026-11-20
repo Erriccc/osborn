@@ -34,6 +34,16 @@ t('dedupe prefers the fuller copy when both have a resume cwd', () => {
   assert.equal(out[0].messageCount, 20)
 })
 
+t('dedupe prefers the more recently active copy over a higher count', () => {
+  // A large current file reports a sampled lower bound; a stale small copy an exact count.
+  const out = prepareSessions([
+    { sessionId: 'x', cwd: '/w', messageCount: 40, lastActivityAt: '2026-11-01T10:00:00Z', title: 'stale copy' },
+    { sessionId: 'x', cwd: '/w', messageCount: 12, lastActivityAt: '2026-11-19T10:00:00Z', title: 'current copy' },
+  ]).sessions
+  assert.equal(out.length, 1)
+  assert.equal(out[0].title, 'current copy')
+})
+
 t('the 8-char short form of a session is the SAME session, not a second row', () => {
   // The rail's `sameSession` already treats an 8-char id as the full one; the
   // list pass has to agree or the prefix copy renders twice.

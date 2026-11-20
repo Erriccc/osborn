@@ -23,7 +23,7 @@ import { createSupabaseBrowser } from '../lib/supabase-browser'
 import { submitBugReport } from '../lib/bug-report'
 import { chatDocumentTitle, groupSessionsByDate, deriveSessionTitle, sessionActivityTime, sortSessionsByActivity } from '@/lib/sessions'
 import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd, sessionMessagesQuery } from '@/lib/chat-url'
-import { cacheTranscript, readCachedTranscript } from '@/lib/transcript-cache'
+import { cacheTranscript, readCachedTranscript, reconcileReplay } from '@/lib/transcript-cache'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession } from './ChatSessionProvider'
@@ -887,10 +887,10 @@ function VoiceRoomInner({
           console.log(`💬 prior messages hydrated over HTTP: ${d.messages.length} (+${Array.isArray(d.compactions) ? d.compactions.length : 0} compaction markers)`)
           const priorItems = buildPriorItems(preSelectedSessionId, d.messages, Array.isArray(d.compactions) ? d.compactions : undefined, d.steward)
           // Reconcile: if an authoritative replay already painted, leave it;
-          // otherwise drop the optimistic cache rows and show the live history.
+          // otherwise replace the optimistic cache rows the replay holds.
           setMessages(prev => (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)
             ? prev
-            : [...priorItems, ...prev.filter(m => !m.fromCache)]))
+            : reconcileReplay(priorItems, prev)))
           return // painted — stop retrying
         } catch { /* cold machine / network — retry */ }
       }
@@ -1851,7 +1851,7 @@ function VoiceRoomInner({
   // iOS and the mic stays dead for the rest of the turn.
   const ttsActiveUntilRef = useRef(0)
 
-  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => void>()
+  const addMessageRef = useRef<(role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string; greeting?: boolean }) => void>()
   // Typed messages awaiting their user_transcript echo (bug d9bb78b2).
   const pendingTypedRef = useRef<PendingTyped[]>([])
   /** Set once the agent returns a clientMsgId this session (MINOR: chat-echo). */
@@ -1863,7 +1863,7 @@ function VoiceRoomInner({
   const assistantMessageIdsRef = useRef<Set<string>>(new Set())
   const messagesRef = useRef<ChatMessage[]>([])
   messagesRef.current = messages
-  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string }) => {
+  addMessageRef.current = useCallback((role: ChatMessage['role'], content: string, toolName?: string, category?: 'chat' | 'log', toolMeta?: ToolMeta, extra?: { messageId?: string; chunkIndex?: number; clientMsgId?: string; greeting?: boolean }) => {
     console.log(`📥 addMessage called: role=${role}, contentLength=${content?.length}, content="${content?.substring(0, 80)}..."`)
 
     // Safety check - skip empty/whitespace-only messages
@@ -1912,6 +1912,7 @@ function VoiceRoomInner({
       messageId: extra?.messageId,
       chunkIndex: extra?.chunkIndex,
       clientMsgId: extra?.clientMsgId,
+      ...(extra?.greeting ? { greeting: true } : {}),
     }
     console.log(`✅ Adding ${role} message to state:`, newMessage)
     if (role === 'assistant') dispatchResumeChip({ type: 'assistant' })
@@ -2059,7 +2060,7 @@ function VoiceRoomInner({
         })
         if (data.text && data.text.trim()) {
           console.log('🤖 Adding assistant message:', data.text.substring(0, 50), `[source: ${data.source || 'unknown'}]`)
-          addMessageRef.current?.('assistant', data.text, undefined, undefined, undefined, data.messageId ? { messageId: data.messageId } : undefined)
+          addMessageRef.current?.('assistant', data.text, undefined, undefined, undefined, { messageId: data.messageId || undefined, greeting: data.greeting === true })
         } else {
           console.warn('⚠️ assistant_response had empty or invalid text:', data)
         }
@@ -2915,8 +2916,10 @@ function VoiceRoomInner({
           setMessages(prev => {
             // Don't double-inject: skip if an authoritative replay already painted.
             if (prev.some(m => m.id.startsWith('prior-') && !m.fromCache)) return prev
-            // Drop the optimistic cache rows (#136) and show the live history.
-            return [...priorItems, ...prev.filter(m => !m.fromCache)]
+            // Replace the optimistic cache rows (#136) the replay holds; they were
+            // painted for the session asked for, so none survive a different one.
+            const sameSession = !data.sessionId || data.sessionId === preSelectedSessionId
+            return reconcileReplay(priorItems, sameSession ? prev : prev.filter(m => !m.fromCache))
           })
         }
       } else if (data.type === 'checkpoint_captured' || data.type === 'tts_chunks') {

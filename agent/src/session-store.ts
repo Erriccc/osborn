@@ -439,7 +439,7 @@ function ingestFile(
 export async function updateSessionStore(
   sessionId: string,
   workingDir: string,
-  opts?: { embed?: Embedder; onProgress?: (msg: string) => void },
+  opts?: { embed?: Embedder; onProgress?: (msg: string) => void; mainOnly?: boolean },
 ): Promise<StoreStats> {
   const paths = getSessionPaths(sessionId, workingDir)
   const osbDir = getOsbDir(sessionId, workingDir)
@@ -454,11 +454,12 @@ export async function updateSessionStore(
     const sources: { source: string; path: string }[] = []
     if (existsSync(paths.conversation)) sources.push({ source: 'main', path: paths.conversation })
 
-    for (const f of paths.subagents) {
+    // mainOnly skips sub-agent discovery, which parses the whole main JSONL.
+    for (const f of opts?.mainOnly ? [] : paths.subagents) {
       const key = basename(f, '.jsonl').replace('agent-', '').substring(0, 8)
       sources.push({ source: `agent-${key}`, path: f })
     }
-    for (const a of getSessionSubAgents(sessionId, workingDir)) {
+    for (const a of opts?.mainOnly ? [] : getSessionSubAgents(sessionId, workingDir)) {
       if (!a.agentFileExists) continue
       const src = `agent-${a.agentId.substring(0, 8)}`
       if (!sources.some(s => s.source === src)) sources.push({ source: src, path: a.agentFile })
