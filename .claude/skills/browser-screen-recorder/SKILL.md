@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 59
+Version: 61
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v61
+- **`/say` bounds copying and decoding the recording too, and copies only what is new.** Each turn copies just the audio recorded since the last peek out of the page; a decode that runs out of the turn's time returns "nothing transcribed: decoding the recording ran out of time" instead of hanging. A tab whose recording is past the 30-min decode cap says so in the `/say` warning, and `GET /status` shows `ears` (recording age against the cap) and `capturePaused` (idle screen-capture pause, which a `/status` read does not wake). Say tasks carry `hearSpan` and `clipSpan` (wall-clock ms) so a transcript and its clip can be compared.
 
 ## What's new in v59
 - **A timed-out act holds the action lock until it has stopped.** Past `OSBORN_BRAIN_TIMEOUT_MS` the engine cancels the call and waits up to 15s for it to stop before the next action runs; a call still running after that is logged in the run's marks.

@@ -15,7 +15,8 @@
  * OSBORN_ENGINE_TOKEN is set (ALWAYS set it on public deployments), every
  * request must carry `x-engine-token: <token>`.
  *   GET  /status              → ground truth: pageUrl, pageState, idlePaused,
- *                               brain ready/dead, lastFrameAgeMs, runDir
+ *                               brain ready/dead, lastFrameAgeMs, runDir,
+ *                               ears (recording age vs decode cap), capturePaused
  *   GET  /tasks               → this run's task index (from the manifest)
  *   GET  /clip?n=N            → download task N's mp4 (video/mp4)
  *   GET  /artifact?n=N        → download task N's screenshot (image/jpeg)
@@ -68,6 +69,7 @@ import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
+import { AUDIO_DECODE_CAP_MS, decodeBudgetMs, recordingAge } from '../lib/say-budget'
 import { actWithCache, fencedCall, forgetCached, withTimeout } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
 import { attachDevtools, redactDiagnostics, redactJson, type DevtoolsBuffer } from '../lib/devtools'
@@ -570,7 +572,7 @@ async function main() {
   // pass the tab they mean. Temp files are per call (two muxes used to share
   // `_peek.*` and could read each other's half-written audio).
   let peekSeq = 0
-  const peekAudioToWav = async (page: Page = active, maxMs = 30 * 60 * 1000): Promise<{ wav: string; clock: AudioClock; durationMs: number } | null> => {
+  const peekAudioToWav = async (page: Page = active, maxMs = AUDIO_DECODE_CAP_MS): Promise<{ wav: string; clock: AudioClock; durationMs: number } | null> => {
     let cleanup: string[] = []
     try {
       const { base64, sinceStartMs, clock } = await peekCapture(page)
@@ -587,7 +589,7 @@ async function main() {
       // Full decode → wav: MediaRecorder opus can't be seeked directly (bad
       // packet headers — proven), so decode once and trim the wav reliably.
       await execFileP('ffmpeg', ['-y', '-loglevel', 'error', '-i', webm, '-c:a', 'pcm_s16le', '-ar', '48000', wav], { timeout: 30000 })
-      const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', wav]).catch(() => ({ stdout: '0' }))
+      const probe = await execFileP('ffprobe', ['-v', 'error', '-show_entries', 'format=duration', '-of', 'csv=p=0', wav], { timeout: 10000 }).catch(() => ({ stdout: '0' }))
       cleanup = [webm]
       return { wav, clock, durationMs: Math.round((Number(String(probe.stdout).trim()) || 0) * 1000) }
     } catch { return null }
@@ -1168,6 +1170,7 @@ async function main() {
         let pageUrl = ''
         let pageState = 'unresponsive'
         let idlePaused = false
+        let earsNow: Awaited<ReturnType<typeof earsState>> | null = null
         try {
           if (!shown) pageState = 'none'  // a person with no tab of their own: nothing to show, not frozen
           else {
@@ -1178,13 +1181,19 @@ async function main() {
           ])) as string
           if (pageState !== 'unresponsive')
             idlePaused = await shown.evaluate(() => /session paused/i.test(document.body?.innerText || '')).catch(() => false)
+          if (pageState !== 'unresponsive') earsNow = await earsState(shown)
           }
         } catch { /* page dead */ }
         // A person's stream is their own tab's recording, so its age is that tab's.
         const journeySeen = !!journey && (!isPersonDriver(viewer) || personOwns(journey.owner, viewer))
+        const recAge = recordingAge(earsNow?.startedAt, Date.now())
         const lastFrame = isPersonDriver(viewer) ? (shown ? live?.tabFrameAt(shown) ?? null : null) : live?.lastFrameAt() ?? null
         return json(res, {
           build: ENGINE_BUILD, run: RUN_STAMP, runDir: RUN_DIR, roomReady, pageUrl, pageState, idlePaused,
+          // The shown tab's page-audio recording: its age against the decode cap (#185).
+          // capturePaused: screen capture is idle-paused; GET /status does not wake it (#214).
+          ears: earsNow ? { armed: earsNow.armed, recordingMin: recAge?.minutes ?? null, decodeCapMin: AUDIO_DECODE_CAP_MS / 60000, overCap: !!recAge?.overCap } : null,
+          capturePaused: live?.isPaused() ?? false,
           // #49: the in-app Browser panel (PR #51 proxy) and any watcher can see
           // whether the auto-joined chat is alive. agentUnreachable is null when
           // reachable, else "agent unreachable: <host>" (or the join error).
@@ -1640,7 +1649,7 @@ async function main() {
           // Cut the clip NOW — speak start to end of the listen window — before
           // the (slow) transcription, so the spoken moment is always in it. It
           // used to be "the last 30s", which for a long turn showed only the tail.
-          let clip: string | null = null; let clipError: string | null = null
+          let clip: string | null = null; let clipError: string | null = null; let clipSpan: number[] | null = null
           let audio: { said: boolean; heard: boolean } = { said: false, heard: false }
           // The clip's frames are taken now; the encode and audio mix finish after
           // the reply (#215), and GET /clip?n waits for them. waitClip:true restores
@@ -1657,12 +1666,19 @@ async function main() {
           // One deadline for the turn, under the panel's 90s cut-off (#199): each
           // step gets what is left, so a stuck page means "nothing heard", not a hang.
           const left = (min: number) => Math.max(min, turnDeadline - Date.now())
-          // Decoding is skipped when under 15s of the turn is left.
-          const decoded = nothingToHear || left(0) < 15000 ? null : await peekAudioToWav(page)
+          // Copying and decoding the recording is bounded too (#199): it is skipped
+          // under 15s left, and a decode that runs out of time skips hearing rather
+          // than copying the whole recording a second time for the raw fallback.
+          const decodeMs = nothingToHear ? null : decodeBudgetMs(left(0))
+          const decoding = decodeMs == null ? null : peekAudioToWav(page)
+          const decoded = !decoding ? null : await withTimeout(decoding, decodeMs!, `decoding the recording ran out of time (${Math.round(decodeMs! / 1000)}s)`)
+            .catch((e) => { hearError = (e as Error).message; void decoding.then((a) => { if (a) rmSync(a.wav, { force: true }) }); return null })
           lap('decode')
+          // Wall-clock span the transcript covers: speaking until the recording was copied (#185).
+          const hearSpan = nothingToHear || hearError ? null : [t0, Date.now()]
           const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
           const budget = left(5000)
-          const heard = nothingToHear ? '' : await withTimeout(decoded ? hearFromWav(decoded.wav, recordingMsAt(decoded.clock, t0)).catch(hearRaw) : hearRaw(),
+          const heard = !hearSpan ? '' : await withTimeout(decoded ? hearFromWav(decoded.wav, recordingMsAt(decoded.clock, t0)).catch(hearRaw) : hearRaw(),
             budget, `hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           lap('hear')
@@ -1673,7 +1689,7 @@ async function main() {
             const encodeMs = live?.lastEncodeMs?.(); if (encodeMs != null) timings.encode = encodeMs  // part of clip
             if (!range) clipError = live ? (clipWhy ?? 'clip failed') : 'live stream unavailable — no clips this session'
             else {
-              clip = range.path
+              clip = range.path; clipSpan = [range.startMs, range.endMs]
               const tMix = Date.now()
               const av = await muxSayAudio(range, saidWav, playStartMs, n, { said: String(body.text), heard }, decoded, 45000).catch(() => null)
               if (av) { clip = av.path; audio = { said: av.said, heard: av.heard } }
@@ -1683,6 +1699,9 @@ async function main() {
             for (const f of [saidWav, decoded?.wav]) if (f) try { rmSync(f, { force: true }) } catch { /* ignore */ }
           }
           const earsAfter = await earsState(page)
+          // Past the decode cap the clip has no page audio and hearing reads the raw recording (#185).
+          const age = recordingAge(ears.startedAt, Date.now())
+          const capWarning = age?.overCap ? `this tab's page-audio recording is ${age.minutes}min old, past the ${AUDIO_DECODE_CAP_MS / 60000}min decode cap: the clip carries no page audio and hearing is slow — reload the tab to start a fresh recording` : null
           const sayWarning = heard ? null
             : hearError ? `nothing transcribed: ${hearError}`
             : !(optionalEnvKey('SONIOX_API_KEY') || optionalEnvKey('DEEPGRAM_API_KEY')) ? 'nothing transcribed: the engine has no speech-to-text key (SONIOX_API_KEY / DEEPGRAM_API_KEY) — listen to the clip instead'
@@ -1692,9 +1711,9 @@ async function main() {
             : 'nothing was heard in the listen window — raise listenMs if the reply comes late'
           const shot = await reqShot(n, 'say', page)
           const window = stampTask(n, 'say', t0, null, shot, body.text, heard, page, true)
-          ;(window as any).timings = timings; (window as any).voice = voice
+          ;(window as any).timings = timings; (window as any).voice = voice; (window as any).hearSpan = hearSpan
           const clipDone = finishClip().catch((e) => { clipError = `clip failed — ${(e as Error).message.slice(0, 120)}` }).then(() => {
-            ;(window as any).clip = clip; (window as any).clipPending = false; (window as any).clipError = clipError; (window as any).clipAudio = audio; writeManifest()
+            ;(window as any).clip = clip; (window as any).clipPending = false; (window as any).clipError = clipError; (window as any).clipAudio = audio; (window as any).clipSpan = clipSpan; writeManifest()
           }).finally(() => pendingClips.delete(n))
           pendingClips.set(n, clipDone)
           if (body.waitClip) await clipDone
@@ -1706,7 +1725,7 @@ async function main() {
           // heard and played audio slowed down: say so rather than hide it.
           const audioClock = earsAfter.audioClock ?? null
           const clockWarning = audioClock != null && audioClock < 0.9 ? `audio in this tab ran at ${audioClock}x real time (CPU throttling): the recording is time-compressed against the video, and the page may have heard and played audio slowed down` : null
-          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: [sayWarning, clockWarning].filter(Boolean).join('; ') || null, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: [sayWarning, capWarning, clockWarning].filter(Boolean).join('; ') || null, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
       if (path === '/hear') {

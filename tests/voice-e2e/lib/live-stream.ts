@@ -72,6 +72,7 @@ export type LiveStream = {
   // Stop/restart screen capture while the engine is idle (a viewer holds it on).
   pause: () => void
   resume: () => void
+  isPaused: () => boolean
   // Latest frame as base64 jpeg — inline keyframes in act/say responses so
   // the director can review-and-relay without downloading the clip first.
   latestFrame: (page?: Page) => string | null
@@ -413,6 +414,7 @@ export async function startLiveStream(page: Page | null, opts?: { port?: number;
     lastEncodeMs: () => encodeMs,
     pause,
     resume,
+    isPaused: () => paused,
     lastFrameAt: () => lastFrameTime,
     viewerCount: () => clients.size,
     serveFrames,
