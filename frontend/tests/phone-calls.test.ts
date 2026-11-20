@@ -34,6 +34,7 @@ const reset = () => {
   st.fetches = [] as { url: string; init: any }[]
   st.fetchReply = (_url: string) => ({ status: 200, body: { ok: true, roomName: ROOM } })
   st.findThrows = false
+  st.healthThrows = false
 }
 reset()
 
@@ -61,7 +62,11 @@ const mocks: Record<string, any> = {
       return st.sandbox
     },
     startSandbox: async (id: string, uid: string, tok?: string) => { st.cloud.push(`start:${id}:${tok}`); return st.woken ?? { status: 'running' } },
-    checkOsbornHealth: async () => { st.cloud.push('health'); return st.healthy },
+    checkOsbornHealth: async () => {
+      st.cloud.push('health')
+      if (st.healthThrows) throw new Error('health check blew up')
+      return st.healthy
+    },
     restartService: async () => { st.cloud.push('restart') },
     waitForHealth: async () => { st.cloud.push('waitHealth'); return true },
   },
@@ -283,6 +288,8 @@ async function main() {
   await t('connectUserAgent: no machine, failed wake, wake + unhealthy restart', async () => {
     reset(); st.sandbox = null
     eq((await connectUserAgent(USER, undefined, async () => 'x') as any).reason, 'no-sandbox', 'no sandbox')
+    reset(); st.findThrows = true
+    eq((await connectUserAgent(USER, 'osborn-mine', async () => 'x') as any).reason, 'unreachable', 'failed lookup is not "no sandbox"')
     reset(); st.sandbox = { id: 'osborn-mine', previewUrl: 'https://agent.example', status: 'stopped' }; st.woken = { status: 'error' }
     eq((await connectUserAgent(USER, 'osborn-mine', async () => 'tok-9') as any).reason, 'wake-failed', 'wake failed')
     ok(st.cloud.includes('start:osborn-mine:tok-9'), 'woken with the sync token')
@@ -321,10 +328,10 @@ async function main() {
     eq(st.cloud, [], 'disputed machine never touched')
   })
   await t('routeCall: a throw while routing hangs up, then rethrows', async () => {
-    reset(); st.findThrows = true
+    reset(); st.healthThrows = true
     let thrown: any = null
     try { await calls.routeCall(call) } catch (e) { thrown = e }
-    eq(thrown?.message, 'machine lookup failed', 'rethrown')
+    eq(thrown?.message, 'health check blew up', 'rethrown')
     eq(st.deleted, [ROOM], 'hung up')
   })
   await t('routeCall: no service role key -> hung up', async () => {

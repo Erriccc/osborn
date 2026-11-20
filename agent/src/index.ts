@@ -43,18 +43,18 @@ import { createGunzip } from 'node:zlib'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 import { createPatch } from 'diff'
-import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, extractCwd, slugToPath, getClaudeProjectsDir, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
+import { loadConfig, getMcpServers, getEnabledMcpServerNames, getVoiceMode, getDirectConfig, listSessions, listAllClaudeSessions, extractCwd, slugToPath, getClaudeProjectsDir, getSessionDir, invalidateSessionListCache, getMostRecentSessionId, sessionExists, cleanupOrphanedMetadata, getSessionSummary, getConversationHistory, ensureSessionWorkspace, getSessionWorkspace, getMcpServerStatusList, buildMcpServersForKeys, listWorkspaceArtifacts, listLibraryFiles, type VoiceMode, type SessionInfo, type SessionSummary } from './config.js'
 import { isSafeArtifactPath } from './lib/safe-artifact-path.js'
 import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds, findUpdates } from './store-catalog.js'
-import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, storeName, type AgentDef, type Role } from './agent-store.js'
+import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, skillHeading, storeName, type AgentDef, type Role } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
@@ -168,11 +168,10 @@ function loadSkillsList(agentDir: string): SkillListing[] {
       const skillFile = join(skillsDir, skillName, 'SKILL.md')
       if (existsSync(skillFile)) {
         const { meta, body } = parseFrontMatter(readFileSync(skillFile, 'utf-8'))
-        // Display name: the first # heading (else the folder); description: front matter, else the paragraph after the heading
-        const titleMatch = body.match(/^#\s+(?:Skill:\s*)?(.+)/m)
-        const name = titleMatch ? titleMatch[1].trim() : skillName
-        const descMatch = body.match(/^#[^\n]+\n+([^\n#]+)/m)
-        const description = typeof meta.description === 'string' && meta.description ? meta.description : descMatch ? descMatch[1].trim() : ''
+        // Display name: the first # heading outside code (else the folder); description: front matter, else the paragraph after the heading
+        const heading = skillHeading(body)
+        const name = heading.title || skillName
+        const description = typeof meta.description === 'string' && meta.description ? meta.description : heading.paragraph || ''
         const forkedFrom = skillForkedFrom(skillsDir, skillName)
         const installedFrom = skillProvenance(skillsDir, skillName)
         skills.push({ name, description, folder: skillName, core: core.has(skillName), ...(forkedFrom ? { forkedFrom } : {}), ...(installedFrom ? { installedFrom } : {}) })
@@ -4135,6 +4134,8 @@ async function main() {
   function resolveCwdForSession(sessionId: string, hint?: string | null): Promise<string | null> {
     return resolveSessionCwd(sessionId, hint, workingDir, {
       exists: (id, wd) => sessionExists(id, wd),
+      recordedCwd: (id, wd) => extractCwd(join(getSessionDir(wd), `${id}.jsonl`)),
+      dirExists: (p) => existsSync(p),
       lookupCwd: (id) => scanSlugCwd(id, getClaudeProjectsDir(), {
         readdir: (d) => readdirSync(d), exists: (p) => existsSync(p),
         decodeSlug: (s) => slugToPath(s), readCwd: (p) => extractCwd(p),
@@ -5630,8 +5631,9 @@ async function main() {
       // client's workingDirectory is only a HINT; for a pre-selected session the
       // agent is AUTHORITATIVE about where that session lives, so `--resume`
       // finds its JSONL instead of coming up in the workspace root — or as a
-      // different session — on a stale or empty hint. null = the JSONL is
-      // nowhere yet (fresh sprite / new project), so the hint stands.
+      // different session — on a stale or empty hint. Unresolved: an existing
+      // hint is used; a missing one is created only for a new chat
+      // (connectWorkingDir), else the default.
       const wdHint = (typeof metadata.workingDirectory === 'string' && metadata.workingDirectory.length > 0)
         ? metadata.workingDirectory
         : null
@@ -5640,13 +5642,13 @@ async function main() {
         try { resolvedConnectCwd = await resolveCwdForSession(preSelectedSessionId, wdHint) }
         catch (e) { console.warn('⚠️ connect cwd resolve failed:', e instanceof Error ? e.message : e) }
       }
-      workingDir = resolvedConnectCwd || wdHint || defaultWorkingDir
-      // Only the HINT is ever created: a resolved cwd can come from an imported
-      // session's JSONL and name another machine's path, and creating that tree
-      // would boot the agent in an empty dir (scanSlugCwd won't either).
-      if (workingDir === wdHint && !existsSync(workingDir)) {
+      const connectDir = connectWorkingDir(resolvedConnectCwd, wdHint, preSelectedSessionId, defaultWorkingDir, existsSync)
+      workingDir = connectDir.dir
+      if (connectDir.create) {
         mkdirSync(workingDir, { recursive: true })
         console.log(`📁 Created project directory: ${workingDir}`)
+      } else if (wdHint && !resolvedConnectCwd && workingDir !== wdHint) {
+        console.warn(`⚠️ Project folder not found, not created: ${wdHint}`)
       }
       console.log(`📂 Working directory: ${workingDir}`)
     } catch (err) {

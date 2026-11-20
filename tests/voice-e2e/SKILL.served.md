@@ -206,6 +206,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 ## What's new in v58
 - The evidence-log redactor now also masks npm, AWS, PEM private-key, Fireworks and Soniox keys, and secret assignment values (`PASSWORD=…`, `token=…` keyword arguments, symbol-start or quote-split values).
 
+## What's new in v57
+- **A timed-out act never acts late.** Past `OSBORN_BRAIN_TIMEOUT_MS` the call is cancelled before it can click or type, so it cannot land on top of your next action; `/journey start` with the recovered journey's own name, from the driver who owned it, continues it with its steps and replies `continued:true`.
+
 ## What's new in v56
 - **A deploy no longer drops your request silently.** A command in flight when the engine stops (a deploy or restart) gets `503 engine_restarting` with `retryable:true` and `retryAfterSec`, not an empty 502: wait, check `/status` (`restartRecovered`, `previousRun`) and send it again — the active journey carries over. `drive.sh say` re-attaches on it.
 - `/journey end` of another driver's journey is `409 journey_owned` while that driver is still sending commands (a journey whose owner went quiet for 10 minutes can still be ended). Cleanup closes the journey owner's tabs and hands back a tab they had taken over instead of closing it.

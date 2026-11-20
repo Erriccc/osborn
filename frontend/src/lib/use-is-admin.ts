@@ -4,7 +4,8 @@
 // dashboard account menu and the settings page — they used to carry their own
 // copies, which drifted. `lib/admin.ts` owns the real gate but is server-only
 // (it reads ADMIN_EMAILS and builds a cookie client), so a client surface can
-// only ask the route, which stays the enforcement point.
+// only ask the server. It asks /api/admin/me, which answers `{ admin }` with a
+// 200 for everyone; the /api/admin/* data routes stay the enforcement point.
 
 import { useEffect, useState } from 'react'
 
@@ -13,7 +14,7 @@ import { useEffect, useState } from 'react'
  * transient network/5xx failure is retried once and never committed to "not
  * admin", so a blip can't drop the entry on one visit and restore it the next.
  * Keyed on the user id, so an auth-object swap for the same person does not
- * re-fetch the route. */
+ * re-fetch. */
 export function useIsAdmin(user: { id?: string } | null | undefined): boolean {
   const [isAdmin, setIsAdmin] = useState(false)
   const userId = user?.id ?? null
@@ -22,13 +23,16 @@ export function useIsAdmin(user: { id?: string } | null | undefined): boolean {
     let cancelled = false
     const probe = async (retry: boolean): Promise<void> => {
       try {
-        const r = await fetch('/api/admin/users', { cache: 'no-store' })
+        const r = await fetch('/api/admin/me', { cache: 'no-store' })
         if (cancelled) return
-        if (r.ok) { setIsAdmin(true); return }
-        // 401/403 is a definitive "not an admin" — settle on it. Writing false
-        // matters: an admin replaced by a non-admin inside the same mount would
-        // otherwise keep the stale Admin entry.
-        if (r.status === 401 || r.status === 403) { setIsAdmin(false); return }
+        // A 200 is definitive either way — settle on it. Writing false matters: an
+        // admin replaced by a non-admin inside the same mount would otherwise keep
+        // the stale Admin entry.
+        if (r.ok) {
+          const d = await r.json().catch(() => null)
+          if (cancelled) return
+          if (d && typeof d.admin === 'boolean') { setIsAdmin(d.admin); return }
+        }
         if (retry) return probe(false) // transient server error — retry once
       } catch {
         if (cancelled) return
