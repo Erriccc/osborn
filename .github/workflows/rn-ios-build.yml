@@ -37,11 +37,11 @@ jobs:
       run:
         working-directory: mobile
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install JS deps (core pinned to SDK 57)
         run: npm install --legacy-peer-deps
@@ -111,7 +111,7 @@ jobs:
           cp -R "$SIM" artifact/VoiceNativeRN-sim.app
           echo "Packaged: $DEV + $SIM"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: VoiceNativeRN-unsigned-${{ github.sha }}
           path: mobile/ios/artifact/
@@ -125,7 +125,7 @@ jobs:
       # embedded XCTest runner (Xcode + CLT only) — no idb-companion needed; if a
       # future run complains about idb, add `brew install idb-companion` here.
       - name: Set up JDK (Maestro runs on the JVM)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -173,7 +173,7 @@ jobs:
 
       - name: Upload Maestro artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: rn-maestro-${{ github.sha }}
           path: mobile/maestro-output/

@@ -20,12 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
       # The commit must be on main and a tag must match the version. A branch can edit this
       # file, so the real gate is the `npm` environment's required reviewer and the tag ruleset.
       - name: Check ref
@@ -55,7 +55,7 @@ jobs:
       - name: Build and pack
         working-directory: agent
         run: npm run build && npm pack && mv osborn-*.tgz ../osborn.tgz
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: osborn-tarball
           path: osborn.tgz
@@ -71,14 +71,14 @@ jobs:
       id-token: write
       contents: read
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 22
+          node-version: 24
           registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      # Trusted publishing needs npm >= 11.5.1; early Node 24 releases ship an older npm 11.
       - name: Update npm
         run: npm install -g npm@^11.5.1 && npm --version
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: osborn-tarball
       # npm refuses a version that is already published.

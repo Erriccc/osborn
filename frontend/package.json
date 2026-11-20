@@ -12,7 +12,6 @@
     "test": "node scripts/run-tests.mjs"
   },
   "dependencies": {
-    "@daytonaio/sdk": "^0.161.0",
     "@livekit/components-react": "^2.0.0",
     "@livekit/components-styles": "^1.0.0",
     "@phosphor-icons/react": "^2.1.10",
@@ -46,6 +45,6 @@
     "typescript": "^5.0.0"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   }
 }

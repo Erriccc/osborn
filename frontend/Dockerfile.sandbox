@@ -35,7 +35,7 @@
 # no bind-mount complexity, the chroot version was retired.
 # Archive: docs/archive/Dockerfile.sandbox.chroot-2026-05-28.md
 
-FROM node:22-slim
+FROM node:24-slim
 
 # Runtime deps (same as chroot variant — comes from image, image-swap upgrades)
 RUN apt-get update -qq && \
@@ -98,8 +98,10 @@ ENV OSBORN_CWD=/workspace
 # CLIs are immediately runnable. Verified end-to-end on real Fly 2026-06-01:
 # pure-JS (cowsay) AND native-compiled (node-pty via node-gyp) both install at
 # runtime, persist across restart, no OOM (toolchain is in the image).
-# Caveat: native user modules are tied to the image's Node ABI (currently 22) —
-# a future Node-major image bump would need an `npm rebuild` of volume globals.
+# Caveat: a native user module built against the Node ABI (not Node-API) is tied
+# to the image's Node major (currently 24) and needs an `npm rebuild` after a
+# Node-major image bump. osborn's own native deps (better-sqlite3, node-pty,
+# onnxruntime-node, @livekit/rtc-node) use Node-API, so the volume copy loads on 22 and 24.
 ENV NPM_CONFIG_PREFIX=/workspace/.npm-global
 ENV NPM_CONFIG_CACHE=/tmp/npm-cache
 ENV PATH=/workspace/.npm-global/bin:$PATH

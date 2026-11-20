@@ -28,7 +28,7 @@ npm run lint   # ESLint via next lint
 There is no test suite.
 
 ### Deployment
-Frontend deploys to Railway (nixpacks, Node 22). Build: `cd frontend && npm install && npm run build`. Start: `cd frontend && npm run start`.
+Frontend deploys to Railway (nixpacks, Node 24). Build: `cd frontend && npm install && npm run build`. Start: `cd frontend && npm run start`.
 
 ### Required Environment
 
