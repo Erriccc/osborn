@@ -687,6 +687,7 @@ interface PreviewAcc {
   aiTitle?: string
   firstTs?: string
   lastTs?: string
+  anyTs?: string // last timestamp on any record (tool results included)
   /** message.id of the last counted assistant record (split messages count once). */
   lastAsstId?: string
 }
@@ -714,6 +715,7 @@ function previewUserText(content: unknown): string | null {
 function accumulatePreviewEntry(acc: PreviewAcc, entry: any): void {
   if (!entry || typeof entry !== 'object') return
   if (!acc.firstTs && typeof entry.timestamp === 'string' && entry.timestamp) acc.firstTs = entry.timestamp
+  if (typeof entry.timestamp === 'string' && entry.timestamp) acc.anyTs = entry.timestamp
   if (entry.type === 'ai-title' && typeof entry.aiTitle === 'string') {
     const t = cleanTurnText(entry.aiTitle, 'assistant')
     if (t) acc.aiTitle = t.substring(0, PREVIEW_TITLE_CHARS)
@@ -818,7 +820,9 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
         title: tail.aiTitle ?? head.aiTitle ?? head.firstUser,
         messageCount,
         firstTs: head.firstTs,
-        lastActivityAt: tail.lastTs ?? head.lastTs,
+        // No dated turn in the tail sample: any dated record there (a tool result), else unset
+        // so callers use the file's mtime — never the head sample's turn.
+        lastActivityAt: tail.lastTs ?? tail.anyTs,
       }
     } finally {
       closeSync(fd)
@@ -860,7 +864,7 @@ export interface ClaudeSessionEntry {
   title?: string          // ai-title or first real user message (sanitized)
   messageCount: number    // conversation turns (real user turns + assistant text messages)
   firstTs?: string        // first record timestamp (session start)
-  lastActivityAt?: string // last real user/assistant turn timestamp (not mtime)
+  lastActivityAt?: string // last real turn's timestamp (a large file's undated tail: any dated record there); unset → mtime
   filePath: string        // full path to the .jsonl file
   fileSize: number        // bytes
 }
@@ -967,8 +971,8 @@ interface SessionManifestEntry {
 interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
 // Older manifests are discarded on load. v2: sanitized preview fields. v3: the
 // large-file messageCount estimate changed, and unchanged files are never re-read.
-// v4: the large-file count is the sampled lower bound.
-const SESSION_MANIFEST_VERSION = 4
+// v4: the large-file count is the sampled lower bound. v5: no head fallback for last activity.
+const SESSION_MANIFEST_VERSION = 5
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')
 }
