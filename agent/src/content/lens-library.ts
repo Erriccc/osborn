@@ -333,7 +333,7 @@ export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStep
     // Period map on exactly this row range, staged first; published only when a map came back.
     mkdirSync(join(dir, STAGING_DIR), { recursive: true })
     const staged = join(dir, STAGING_DIR, file)
-    const r = await runPeriodMap({ sessionId: o.sessionId, outPath: staged, fromRowId: p.startRowId, toRowId: p.endRowId, dry: o.dry, log })
+    const r = await runPeriodMap({ sessionId: o.sessionId, outPath: staged, fromRowId: p.startRowId, toRowId: p.endRowId, projectDir, dry: o.dry, log })
     res.costUsd = r.costUsd
     res.errors = [...r.errors]
     const ok = !!r.map || !!o.dry

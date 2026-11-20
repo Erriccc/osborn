@@ -40,12 +40,14 @@ export interface PeriodOptions {
   /** Block stats only — no model call. */
   dry?: boolean
   audio?: AudioAdapter
+  /** The session's project dir: a session id can have a store under more than one project. */
+  projectDir?: string | null
   log?: (m: string) => void
 }
 
 export async function runPeriodMap(o: PeriodOptions): Promise<PeriodRunReport> {
   const log = o.log ?? (() => {})
-  const db = resolveSessionDb(o.sessionId)
+  const db = resolveSessionDb(o.sessionId, o.projectDir)
   if (!db) throw new Error(`no session.db for ${o.sessionId}`)
   const projectDir = dirname(dirname(dirname(db)))
   const refused = refuseOutPath(o.outPath, projectDir)

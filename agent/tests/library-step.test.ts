@@ -281,5 +281,24 @@ await t('malformed manifest entries are dropped on read, logged, and never writt
   assert.ok(!back.periods['999'] && !back.periods['x'] && !('invalid' in back))
 })
 
+// ── a second store for the same session under another project ──
+await t('two stores for one session: each run reads its own project\'s store, not the first one found', async () => {
+  const decoyPd = join(process.env.CLAUDE_CONFIG_DIR!, 'projects', '-aa-decoy')
+  mkdirSync(join(decoyPd, 'osb', sid), { recursive: true })
+  const decoy = new Database(join(decoyPd, 'osb', sid, 'session.db'))
+  decoy.exec(`CREATE TABLE content(id INTEGER PRIMARY KEY, source TEXT, line_num INT, byte_offset INT, ts TEXT, msg_type TEXT, model TEXT, git_branch TEXT, cwd TEXT, tool_name TEXT, blob BLOB)`)
+  for (const [, , h] of ROWS) decoy.prepare('INSERT INTO content(source, ts, msg_type, blob) VALUES (?,?,?,?)').run('main', iso(h), 'system', brotliCompressSync(Buffer.from('decoy')))
+  decoy.close()
+  const period = segmentPeriods(stamps(), [5, 7, 11], 4 * H).closed[1]
+  const run = (projectDir: string) => runLibraryStep({ sessionId: sid, projectDir, period, outDir: mkdtempSync(join(tmp, 'out-')) })
+  const before = chatCalls
+  const real = await run(pd)
+  assert.equal(real.status, 'written', real.errors.join('; '))
+  assert.equal(chatCalls - before, 1)
+  const other = await run(decoyPd)
+  assert.notEqual(other.status, 'written')
+  assert.equal(chatCalls - before, 1)
+})
+
 db.close()
 console.log(`\n${pass} passed`)
