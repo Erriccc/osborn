@@ -31,7 +31,7 @@ This approach catches rendering issues, unexpected fields, and errors before the
 
 Candidate values (email, password, phone, address, work history, education) are filled by the `fill.mjs` helper, not by the MCP tools. The helper and the Playwright MCP must drive the SAME browser, which means both attach to one Chrome over CDP on loopback.
 
-1. Secret file. The user creates it and types the values in their own editor (never ask for the values in chat, never write them yourself):
+1. Secret file. The user creates it in their own terminal and types the values in their own editor. Whatever is in it is submitted to employers as the user's record, so you never create, copy, write or edit it: not with `cp`, `touch`, `tee`, `echo`/`printf`, a heredoc, `Write` or `Edit`, and not with placeholders. That holds even when the user tells you their jobs, schools or dates in conversation, or asks you to "just put them in": a detail spoken in chat is not a checked record. Say plainly that whatever goes in the file is what employers receive, give them these commands to run themselves, and wait:
    ```bash
    mkdir -p ~/.osborn
    cp ~/.claude/skills/browser-apply/candidate.example.env ~/.osborn/candidate.env
@@ -53,7 +53,8 @@ Candidate values (email, password, phone, address, work history, education) are 
 
 ### Step 0 — Check the helper, then open the browser
 Run `node ~/.claude/skills/browser-apply/fill.mjs check` first. It prints variable names (including an `extra:` line listing every other `CANDIDATE_*` key the user set — work history, education, anything else) and `cdp: reachable` or `cdp: unreachable`, never values.
-- File missing / refused: point the user at "One-time setup" step 1 and wait.
+- File missing / refused: point the user at "One-time setup" step 1 and wait. Do not create the file yourself, from the template or from anything said in the conversation.
+- Show the user the `set:`, `extra:` and `placeholder:` lines before the first fill (names only) and ask them to confirm that list is exactly what they meant to set; a misspelled key shows up there as an unexpected name. A key under `placeholder:` still holds the template value: it counts as unset, the helper refuses to fill it, and only the user replaces it.
 - `cdp: unreachable`: you can still navigate and click with the MCP tools, but every value from the secret file — email, password, phone, address, and every work-history and education field — must be typed by the user themselves. You have no copy of any of them; do not reconstruct one.
 
 Use: `mcp__playwright__browser_navigate` with the applyManually URL
@@ -159,9 +160,9 @@ node ~/.claude/skills/browser-apply/fill.mjs fill --confirm-host acme.wd1.mywork
 Rules:
 - NEVER `cat`, `less`, `head`, `echo`, `printenv`, `env`, `grep`, `Read` or otherwise print the secret file or the `CANDIDATE_*` variables.
 - NEVER pass a value to an MCP browser tool or put one in a command line; pass env NAMES only.
-- If `check` reports the file missing or too open, tell the user to create it from `candidate.example.env` and run `chmod 600`; do not create it with values yourself.
+- If `check` reports the file missing or too open, tell the user to create it from `candidate.example.env` and run `chmod 600` themselves; do not create, copy or `chmod` it yourself.
 - If `check` says `cdp: unreachable`, or `fill` refuses (no browser, wrong host, wrong field type), do not work around it: ask the user to type the secret fields themselves.
-- Never edit `~/.osborn/candidate.env`. Only the user changes its values or its `CANDIDATE_CDP_URL` line.
+- Never create or edit `~/.osborn/candidate.env`, and never turn details from the conversation (what the user said, a résumé, a repo, an earlier application) into its contents. Only the user writes its values or its `CANDIDATE_CDP_URL` line. If they want an entry added, they add it; you ask and wait.
 - Never reuse an earlier confirmation for a different host or a later fill; ask again each time.
 
 ## Workday data-automation-id Selector Reference

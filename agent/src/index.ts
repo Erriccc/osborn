@@ -2225,19 +2225,6 @@ async function main() {
     process.exit(1)
   }
 
-  // Non-fatal diagnostic: surface any OTHER expected-required keys that are
-  // missing (per the shared env-keys.ts manifest — mirror of the frontend's
-  // platform-env.ts injection spec). The LiveKit trio above is the only
-  // hard-fail; the rest degrade gracefully (a plugin falls back, a feature
-  // no-ops), so we log rather than exit — but a missing OPENAI/DEEPGRAM key is
-  // the usual root cause of "voice works but STT/realtime is dead", worth naming.
-  const missingEnv = missingRequiredEnv().filter(
-    (k) => !['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'].includes(k),
-  )
-  if (missingEnv.length > 0) {
-    console.warn(`⚠️   Missing expected env keys (non-fatal): ${missingEnv.join(', ')}`)
-  }
-
   // Parse CLI args
   const cliArgs = parseArgs()
 
@@ -2291,6 +2278,14 @@ async function main() {
   const voiceMode = getVoiceMode(config)
   const directConfig = getDirectConfig(config)
   console.log(`🎯 PIPELINE MODE: ${directConfig.stt.provider} STT → Claude Agent SDK + fast brain → ${directConfig.tts.provider} TTS`)
+
+  // Non-fatal: the LiveKit trio above is the only hard-fail; the STT/TTS key follows the providers in use.
+  const missingEnv = missingRequiredEnv(process.env, { stt: directConfig.stt.provider, tts: directConfig.tts.provider }).filter(
+    (k) => !['LIVEKIT_URL', 'LIVEKIT_API_KEY', 'LIVEKIT_API_SECRET'].includes(k),
+  )
+  if (missingEnv.length > 0) {
+    console.warn(`⚠️   Missing expected env keys (non-fatal): ${missingEnv.join(', ')}`)
+  }
 
   // Determine room code. STABLE PER MACHINE, derived from identity we
   // already have: the Fly app name (one app per user). No new storage, no

@@ -39,6 +39,11 @@ export const EXPECTED_VARS = [
 export const CONFIG_KEYS = ['CANDIDATE_CDP_URL']
 export const DEFAULT_CDP_URL = 'http://127.0.0.1:9222'
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]'])
+// The placeholder values candidate.example.env ships with. A file copied from the template and not
+// filled in would otherwise type "YOUR_EMPLOYER" into a real application, so such a key counts as
+// unset: check lists it under `placeholder:` and fill refuses it.
+const TEMPLATE_PLACEHOLDER_RE = /^(YOUR_[A-Za-z0-9_]*|WHAT_YOU_DID|you@example\.com)$/
+export const isTemplatePlaceholder = (v) => TEMPLATE_PLACEHOLDER_RE.test(String(v ?? '').trim())
 
 /** Fixed secret-file path. Uses the passwd home directory so $HOME cannot redirect it. */
 export function secretPath() {
@@ -241,6 +246,7 @@ export async function runFill(args, fileEnv, deps = {}) {
   for (const [name] of pairs) {
     if (!/^CANDIDATE_[A-Z0-9_]+$/.test(name) || CONFIG_KEYS.includes(name)) throw new Error(`only CANDIDATE_* values may be filled: ${name.slice(0, 40)}`)
     if (!fileEnv[name]) throw new Error(`${name} is not set in the secret file`)
+    if (isTemplatePlaceholder(fileEnv[name])) throw new Error(`${name} still holds the template placeholder; ask the user to replace it in the secret file themselves`)
   }
   // Validate the target before loading Playwright or opening any connection.
   const cdp = cdpFrom(fileEnv)
@@ -266,18 +272,23 @@ export async function runFill(args, fileEnv, deps = {}) {
 
 /** check command output lines (names and config only, never values). */
 export async function checkReport(path, fileEnv, fetchImpl = fetch) {
-  const set = EXPECTED_VARS.filter(k => fileEnv[k])
+  const real = k => fileEnv[k] && !isTemplatePlaceholder(fileEnv[k])
+  const set = EXPECTED_VARS.filter(real)
   const missing = EXPECTED_VARS.filter(k => !fileEnv[k])
+  const placeholder = Object.keys(fileEnv)
+    .filter(k => k.startsWith('CANDIDATE_') && !CONFIG_KEYS.includes(k) && fileEnv[k] && isTemplatePlaceholder(fileEnv[k]))
+    .sort()
   const cdp = cdpFrom(fileEnv)
   // Anything else the user put in the file: work history, education, and any
   // key a future form needs. Per-entry and open-ended, so deliberately not in
   // EXPECTED_VARS (one job and no degree must not read as "missing"); listed by
   // NAME so the model can see what it may fill and never invents an employer.
   const extra = Object.keys(fileEnv)
-    .filter(k => k.startsWith('CANDIDATE_') && fileEnv[k] && !EXPECTED_VARS.includes(k) && !CONFIG_KEYS.includes(k))
+    .filter(k => k.startsWith('CANDIDATE_') && real(k) && !EXPECTED_VARS.includes(k) && !CONFIG_KEYS.includes(k))
     .sort()
   const lines = [`ok: ${path} is a regular file owned by you, mode 600`, `set: ${set.join(', ') || '(none)'}`]
   if (missing.length) lines.push(`missing: ${missing.join(', ')}`)
+  if (placeholder.length) lines.push(`placeholder: ${placeholder.join(', ')} (still the template value; only the user may replace them, never fill or edit them yourself)`)
   lines.push(`extra: ${extra.join(', ') || '(none — ask the user for any work history, education or other field the form needs)'}`)
   lines.push(`cdp: ${(await probeCdp(cdp, fetchImpl)) ? 'reachable' : 'unreachable'} (${cdp})`)
   return lines
