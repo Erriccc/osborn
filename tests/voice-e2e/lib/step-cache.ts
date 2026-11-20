@@ -175,6 +175,38 @@ export async function actWithCache(
   return { cached: false, healed: !!hit, did: describeAction(action) }
 }
 
+/** Settles with `p`, or rejects with `why` after `ms` (the timer is always cleared). */
+export const withTimeout = <T,>(p: Promise<T>, ms: number, why: string | Error): Promise<T> => {
+  let t: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([p, new Promise<never>((_, rej) => { t = setTimeout(() => rej(typeof why === 'string' ? new Error(why) : why), ms) })]).finally(() => clearTimeout(t))
+}
+
+/**
+ * Runs `run` with a deadline, and fences it when the deadline passes (#174).
+ * On timeout the signal aborts (no new observe or act starts) and `onTimeout`
+ * runs (the engine closes that call's brain, which ends a call in flight). The
+ * rejection then waits up to `settleMs` for the call to stop, so the caller's
+ * action lock is held until the timed-out action has stopped, not just its
+ * deadline. `stopped(false)` means it was still running when the wait ran out;
+ * `onLate` hears what a timed-out call returned if it finished anyway.
+ */
+export async function fencedCall<T>(
+  run: (signal: AbortSignal) => Promise<T>,
+  o: { timeoutMs: number; settleMs: number; why: string; onTimeout?: () => void; stopped?: (stopped: boolean) => void; onLate?: (r: T) => void },
+): Promise<T> {
+  const fence = new AbortController()
+  const call = run(fence.signal)
+  const timedOut = new Error(o.why)
+  try { return await withTimeout(call, o.timeoutMs, timedOut) }
+  catch (e) { if (e !== timedOut) throw e }
+  fence.abort(timedOut)
+  call.then((r) => o.onLate?.(r), () => {})
+  try { o.onTimeout?.() } catch { /* closing the brain must not mask the timeout */ }
+  const stopped = await withTimeout(call.then(() => true, () => true), o.settleMs, 'still running').catch(() => false)
+  o.stopped?.(stopped)
+  throw timedOut
+}
+
 /** True when redaction would change it, or it types into a password field:
  *  such a step stays out of actions.json. */
 export const holdsSecret = (v: { key?: string; action?: any }): boolean =>

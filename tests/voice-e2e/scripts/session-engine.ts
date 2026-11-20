@@ -68,7 +68,7 @@ import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
-import { actWithCache, forgetCached } from '../lib/step-cache'
+import { actWithCache, fencedCall, forgetCached, withTimeout } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
 import { attachDevtools, redactDiagnostics, redactJson, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
@@ -380,11 +380,6 @@ async function main() {
   // doing nothing. It exists to exercise everything AROUND the brain — effect
   // detection, warnings, the scroll fallback, clips — without a model key.
   const BRAIN_STUB = process.env.OSBORN_BRAIN_STUB === '1'
-  // Settles with `p`, or rejects with `msg` after `ms` (the timer is always cleared).
-  const withTimeout = <T,>(p: Promise<T>, ms: number, msg: string): Promise<T> => {
-    let t: ReturnType<typeof setTimeout> | undefined
-    return Promise.race([p, new Promise<never>((_, rej) => { t = setTimeout(() => rej(new Error(msg)), ms) })]).finally(() => clearTimeout(t))
-  }
   const initBrain = async () => {
     brainAlive = false
     if (BRAIN_STUB) { brainAlive = true; brainError = null; brainModel = 'stub (does nothing)'; mark('brain STUB active — /act performs no action'); return }
@@ -466,23 +461,22 @@ async function main() {
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
     // A value below 10s (say "120", meant as seconds) would time every act out at once.
     const BRAIN_TIMEOUT_MS = Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) >= 10000 ? Number(process.env.OSBORN_BRAIN_TIMEOUT_MS) : 120000
-    // A timed-out call is fenced (#174): the abort stops it starting any action once the lock
-    // is free, only ITS brain is closed (never a replacement), and a late finish is logged.
+    // A timed-out call is fenced (#174): the abort stops it starting any action, only ITS brain
+    // is closed (never a replacement), the lock stays held until the call has stopped (up to
+    // SETTLE_MS), and a late finish or a call that would not stop is logged.
     const sh = stagehand
-    const fence = new AbortController()
-    const call = actWithCache(sh, p, i, fence.signal)
+    const SETTLE_MS = 15000
     const why = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`
     try {
-      return await withTimeout(call, BRAIN_TIMEOUT_MS, why)
+      return await fencedCall((signal) => actWithCache(sh, p, i, signal), {
+        timeoutMs: BRAIN_TIMEOUT_MS, settleMs: SETTLE_MS, why,
+        onTimeout: () => { if (stagehand === sh) { brainAlive = false; brainError = why }; void sh.close().catch(() => {}) },
+        stopped: (ok) => { if (!ok) mark(`brain: a timed-out act was still running ${SETTLE_MS / 1000}s after its brain closed — the next action may overlap it: "${i.slice(0, 60)}"`) },
+        onLate: (r) => { if (!r.noop) mark(`brain: a timed-out act finished late and acted (${r.did ?? 'unknown action'}): "${i.slice(0, 60)}"`) },
+      })
     }
     catch (e) {
-      if ((e as Error)?.message === why) {
-        fence.abort(e)
-        call.then((r) => { if (!r.noop) mark(`brain: a timed-out act finished late and acted (${r.did ?? 'unknown action'}): "${i.slice(0, 60)}"`) }, () => {})
-        if (stagehand === sh) { brainAlive = false; brainError = why }
-        void sh.close().catch(() => {})
-      }
-      else if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
+      if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
       throw e
     }
   }
