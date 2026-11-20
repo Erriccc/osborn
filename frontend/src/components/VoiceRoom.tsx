@@ -262,6 +262,7 @@ function VoiceRoomInner({
   registerChat,
   sendUserText,
   composerDraft,
+  seedSent,
   waitingMode,
   preSelectedSessionId,
   agentUrl,
@@ -284,6 +285,8 @@ function VoiceRoomInner({
   sendUserText?: (text: string, payload: Uint8Array) => void
   /** The composer's text, kept across a remount. */
   composerDraft?: React.MutableRefObject<string>
+  /** The seed prompt has been sent (held by the provider, so a remount does not resend it). */
+  seedSent?: React.MutableRefObject<boolean>
   waitingMode?: boolean
   preSelectedSessionId?: string | null
   agentUrl?: string
@@ -3391,7 +3394,8 @@ function VoiceRoomInner({
   // preSelectedSessionId) as soon as the agent is connected. This is the whole
   // "Talk about it" / seeded-chat mechanism: no new API, no new route — the
   // same /chat flow + the existing send path, just pre-filled.
-  const seedSentRef = useRef(false)
+  const localSeedSent = useRef(false)
+  const seedSentRef = seedSent ?? localSeedSent
   useEffect(() => {
     if (seedSentRef.current) return
     if (!seedPrompt || preSelectedSessionId) return
@@ -3400,7 +3404,7 @@ function VoiceRoomInner({
     handleSendText(seedPrompt)
     // Clear the stashed seed so a page refresh doesn't re-send it.
     try { sessionStorage.removeItem('voice-native-seed') } catch {}
-  }, [agentConnected, seedPrompt, preSelectedSessionId, handleSendText])
+  }, [agentConnected, seedPrompt, preSelectedSessionId, handleSendText, seedSentRef])
 
   // Wraps toggleFavorite so the agent learns about the change (on AND off).
   // Nothing is sent when the server write rolled the star back.
@@ -5093,8 +5097,13 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, checkRoom, registerChat, sendUserText, composerDraft, preSelectedSessionId, agentUrl, seedPrompt, isController } =
+  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, checkRoom, registerChat, sendUserText, composerDraft, seedSent, liveSessionId, agentUrl, seedPrompt, isController } =
     useChatSession()
+  // The session this chat mounts into, read once per mount: on a fresh load it
+  // is the launch value; a remount after an in-place switch gets the live one,
+  // so the cache paint, hydration and prior_messages guard follow the session
+  // the agent is running (#149), not the one the page opened with.
+  const [preSelectedSessionId] = useState(liveSessionId)
 
   return (
     <VoiceRoomInner
@@ -5108,6 +5117,7 @@ export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
       registerChat={registerChat}
       sendUserText={sendUserText}
       composerDraft={composerDraft}
+      seedSent={seedSent}
       waitingMode={waitingMode}
       preSelectedSessionId={preSelectedSessionId}
       agentUrl={agentUrl}

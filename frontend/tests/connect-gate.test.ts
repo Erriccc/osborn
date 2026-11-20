@@ -362,6 +362,21 @@ t('page: the rejoin overlay covers the call controls without unmounting the chat
   ok(page.includes('<VoiceRoom waitingMode={!connected} />') && page.includes('(!connected || rejoining) && ('), 'overlay on rejoining, waitingMode only on !connected')
 })
 
+t('remount: the seed is sent once and the chat mounts into the live session', () => {
+  ok(/const seedSent = useRef\(false\)/.test(provider) && provider.includes('    seedSent,'), 'seed-sent lives in the provider')
+  ok(/const seedSentRef = seedSent \?\? localSeedSent/.test(voiceRoom) && voiceRoom.includes('seedSent={seedSent}'), 'VoiceRoom uses the provider flag')
+  const getter = provider.slice(provider.indexOf('const liveSessionId = useCallback'), provider.indexOf('}, [preSelectedSessionId])', provider.indexOf('const liveSessionId = useCallback')))
+  ok(getter.includes('sessionParamsFromSearch(window.location.search).sessionId') && getter.includes('live || preSelectedSessionId'), 'live URL session, else the launch value')
+  ok(provider.includes('const connectSessionId = liveSessionId()'), 'connect() resumes the same session')
+  ok(voiceRoom.includes('const [preSelectedSessionId] = useState(liveSessionId)'), 'each chat mount reads the live session once')
+  ok(!/useChatSession\(\)[^;]*\bpreSelectedSessionId\b/.test(voiceRoom.slice(voiceRoom.indexOf('export default function VoiceRoom'))), 'not the launch value')
+})
+
+t('a sign-in prompt during a rejoin is not hidden by the overlay', () => {
+  const auth = provider.slice(provider.indexOf('const markAuthRequired = useCallback'), provider.indexOf('}, [])', provider.indexOf('const markAuthRequired = useCallback')))
+  ok(auth.includes('setRejoining(false)'), 'markAuthRequired clears rejoining')
+})
+
 // ── Report ────────────────────────────────────────────────────────────────
 let failed = 0
 for (const [name, pass, err] of results) {

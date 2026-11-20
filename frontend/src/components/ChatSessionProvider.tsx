@@ -88,6 +88,12 @@ interface ChatSessionContextValue {
   sendUserText: (text: string, payload: Uint8Array) => void
   // The composer's unsent text, kept across a remount of the chat.
   composerDraft: React.MutableRefObject<string>
+  // The seed prompt has gone out (kept here: a remount must not re-send it).
+  seedSent: React.MutableRefObject<boolean>
+  // The session this page is live in NOW: the URL's ?session= (rewritten after
+  // a switch or once a new session gets its id), else the launch value. What
+  // connect() resumes, and what a (re)mounted chat paints and hydrates.
+  liveSessionId: () => string | null
   // True while THIS tab controls the session (bug 619af155). A second tab
   // stays out of the room until the user takes over.
   isController: boolean
@@ -205,6 +211,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const chatRef = useRef<ChatHandle | null>(null)
   const queuedTextRef = useRef<QueuedText[]>([])
   const composerDraft = useRef('')
+  const seedSent = useRef(false)
   const pendingNoticeRef = useRef<string | null>(null)
   const notifyChat = useCallback((text: string) => {
     if (chatRef.current) chatRef.current.notify(text)
@@ -476,6 +483,11 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected, idleStopped, lastActivityAt, activeSandboxId])
 
+  const liveSessionId = useCallback((): string | null => {
+    const live = typeof window !== 'undefined' ? sessionParamsFromSearch(window.location.search).sessionId : null
+    return live || preSelectedSessionId
+  }, [preSelectedSessionId])
+
   // ── Connection flow ──────────────────────────────────────────────
   const connect = useCallback(async () => {
     // Claim this connect attempt. If the user cancels (disconnect bumps the
@@ -725,7 +737,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       const live = typeof window !== 'undefined'
         ? sessionParamsFromSearch(window.location.search)
         : { sessionId: null, workingDirectory: '' }
-      const connectSessionId = live.sessionId || preSelectedSessionId
+      const connectSessionId = liveSessionId()
       // Never send an EMPTY cwd when one is known: an older agent still trusts
       // this hint raw, and an empty one boots it in the workspace ROOT (#112).
       // The live URL's cwd wins; if a switch left it empty, fall back to the cwd
@@ -776,7 +788,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     provider,
     voiceArch,
     codingAgent,
-    preSelectedSessionId,
+    liveSessionId,
     workingDirectory,
   ])
 
@@ -988,6 +1000,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const markAuthRequired = useCallback(() => {
     setAuthRequired(true)
     setConnected(true) // surface the VoiceRoom UI so user can see + complete auth
+    setRejoining(false) // the rejoin overlay must not cover the sign-in modal
   }, [])
 
   const markAuthResolved = useCallback((messageType: 'claude_auth_complete' | 'claude_auth_error') => {
@@ -1160,6 +1173,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     registerChat,
     sendUserText,
     composerDraft,
+    seedSent,
+    liveSessionId,
     isController: controlsEnabled(tabRole),
   }
 
