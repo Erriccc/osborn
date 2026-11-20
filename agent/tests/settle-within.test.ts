@@ -1,7 +1,7 @@
 // settleWithin: a join can never hang on a session close that never settles.
 // Run with `npx tsx agent/tests/settle-within.test.ts`.
 import assert from 'node:assert'
-import { settleWithin } from '../src/lib/settle-within.js'
+import { settleWithin, closeSessionBounded } from '../src/lib/settle-within.js'
 
 const run = async () => {
   let unhandled = 0
@@ -22,6 +22,9 @@ const run = async () => {
   assert.equal(await settleWithin(late, 20), false)
   await new Promise((r) => setTimeout(r, 150))
   assert.equal(unhandled, 0, 'no unhandled rejection')
+  const t2 = Date.now()
+  await closeSessionBounded({ close: () => new Promise(() => {}) }, { closeMs: 50 })
+  assert.ok(Date.now() - t2 < 1000, 'a close that never settles is released after the bound')
   console.log('settle-within: ok')
 }
 run().catch((e) => { console.error(e); process.exit(1) })
