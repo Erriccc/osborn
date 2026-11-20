@@ -19,6 +19,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import SignInCard from '@/components/SignInCard'
 import { REFINE_PLATFORMS, buildSeededChatUrl, refineSeed } from '@/lib/seed-chat'
+import { libraryGrid, type StatusFilter } from '@/lib/library-grid'
 import type { User } from '@supabase/supabase-js'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -38,8 +39,6 @@ interface ContentItem {
   updated_at: string
   parent_source_id?: string | null
 }
-
-type StatusFilter = 'all' | 'published' | 'draft'
 
 // Refine studio — platform/format targets. Values match the `type` column
 // accepted by content_create_rendition (migration 009).
@@ -99,7 +98,10 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
   // is shareable/bookmarkable (bug B17 — detail used to open as a modal with the
   // URL stuck at /library). Next 14's history integration keeps router state in
   // sync without a full navigation, so the list underneath is preserved.
-  const openItem = useCallback((item: ContentItem) => {
+  // Which modal tab the next opened item starts on (the "N renditions" chip opens the studio).
+  const openTab = useRef<'source' | 'refine'>('source')
+  const openItem = useCallback((item: ContentItem, startTab: 'source' | 'refine' = 'source') => {
+    openTab.current = startTab
     setReading(item)
     if (typeof window !== 'undefined' && window.location.pathname !== `/library/${item.id}`) {
       try { window.history.pushState(window.history.state, '', `/library/${item.id}`) } catch { /* ignore */ }
@@ -145,7 +147,8 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
   // When the reading modal opens (or switches item), reset the studio.
   useEffect(() => {
     if (!reading) return
-    setTab('source')
+    setTab(openTab.current)
+    openTab.current = 'source'
     setPlatform('blog')
     setRefineErr(null)
     setInstruction('')
@@ -185,6 +188,8 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
         const without = prev.filter(x => x.id !== r.id)
         return [r, ...without]
       })
+      // Keep the grid's rendition count on the source card current.
+      setItems(prev => prev.some(i => i.id === r.id) ? prev.map(i => (i.id === r.id ? { ...i, ...r } : i)) : [r, ...prev])
     } catch (e) {
       setRefineErr(e instanceof Error ? e.message : 'Refine failed')
     } finally {
@@ -303,7 +308,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
         })
       const { data, error: qErr } = await supabase
         .from('content_items')
-        .select('id, type, status, title, hook, body, source_session_id, source_kind, slug, published_at, created_at, updated_at')
+        .select('id, type, status, title, hook, body, source_session_id, source_kind, slug, published_at, created_at, updated_at, parent_source_id')
         .order('created_at', { ascending: false })
       if (cancelled) return
       if (qErr) setError(qErr.message)
@@ -426,11 +431,9 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
     })
   }, [])
 
-  const counts = useMemo(() => ({
-    all: items.length,
-    published: items.filter(i => i.status === 'published').length,
-    draft: items.filter(i => i.status === 'draft').length,
-  }), [items])
+  // Renditions are reached from their source's card, not shown as cards of their own.
+  const grid = useMemo(() => libraryGrid(items, filter, query), [items, filter, query])
+  const { counts, visible } = grid
 
   // Most-recently-published item, for the Featured hero. Only shown when the
   // current filter would include it (so it never fights the filter/search).
@@ -445,15 +448,6 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
       })
       .sort((a, b) => (b.published_at! > a.published_at! ? 1 : -1))
     return matches[0] ?? null
-  }, [items, filter, query])
-
-  const visible = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return items.filter(i => {
-      if (filter !== 'all' && i.status !== filter) return false
-      if (!q) return true
-      return [i.title, i.hook, i.body, i.slug, i.type].some(f => (f ?? '').toLowerCase().includes(q))
-    })
   }, [items, filter, query])
 
   return (
@@ -572,9 +566,11 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
             {visible.map(item => {
               const heading = item.title || item.slug || 'Untitled page'
               const published = item.status === 'published'
+              const renditionCount = grid.renditions.get(item.id) ?? 0
               return (
-                <button key={item.id} onClick={() => openItem(item)}
-                  className="group text-left flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-4 hover:border-accent-dim/50 hover:-translate-y-0.5 hover:shadow-[0_8px_30px_-12px_rgba(0,0,0,0.6)] transition-all">
+                <div key={item.id} role="button" tabIndex={0} onClick={() => openItem(item)}
+                  onKeyDown={e => { if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openItem(item) } }}
+                  className="group cursor-pointer text-left flex flex-col rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-4 hover:border-accent-dim/50 hover:-translate-y-0.5 hover:shadow-[0_8px_30px_-12px_rgba(0,0,0,0.6)] transition-all">
                   <div className="flex items-center justify-between mb-3">
                     <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${published ? 'bg-accent-dim/25 text-[var(--accent)]' : 'bg-[var(--surface-2)] text-[var(--text-muted)]'}`}>
                       <DocIcon className="w-[18px] h-[18px]" />
@@ -591,8 +587,15 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
                   <div className="mt-auto pt-3 flex items-center gap-2 text-[11px] text-[var(--text-muted)]">
                     <span>{fmtDate(item.published_at || item.created_at)}</span>
                     {item.type && <><span className="opacity-40">·</span><span>{item.type}</span></>}
+                    {renditionCount > 0 && (
+                      <button onClick={e => { e.stopPropagation(); openItem(item, 'refine') }}
+                        aria-label={`${renditionCount} rendition${renditionCount === 1 ? '' : 's'}: open the Refine studio`}
+                        className="ml-auto inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-medium bg-accent-dim/25 text-[var(--accent)] hover:opacity-80 transition-opacity">
+                        {renditionCount} rendition{renditionCount === 1 ? '' : 's'}
+                      </button>
+                    )}
                   </div>
-                </button>
+                </div>
               )
             })}
           </div>

@@ -19,11 +19,12 @@ ok(c.i.headers.apikey && c.i.headers.Authorization === `Bearer ${c.i.headers.api
 ok(JSON.parse(Buffer.from(c.i.headers.apikey.split('.')[1], 'base64url').toString()).role === 'anon', 'key role anon')
 ok(Object.keys(body).sort().join() === 'p_payload,p_token' && body.p_token === TOKEN, 'body {p_token,p_payload}')
 ok(!('status' in body.p_payload) && !('published_at' in body.p_payload) && !/"status"/.test(c.i.body), 'no status in payload')
-ok(/^[0-9a-f]{64}$/.test(body.p_payload.content_hash) && s.status === 'ok' && s.contentHash === body.p_payload.content_hash, 'hash + state ok')
+ok(/^[0-9a-f]{64}$/.test(body.p_payload.content_hash) && s.status === 'ok' && /^[0-9a-f]{64}$/.test(s.contentHash), 'hash + state ok')
 await ingestLibraryPage(mk(), { log })
 ok(JSON.parse(calls[1].i.body).p_payload.content_hash === body.p_payload.content_hash, 'hash stable')
-await ingestLibraryPage(mk('# Period 01\n\nchanged\n'), { log })
-ok(JSON.parse(calls[2].i.body).p_payload.content_hash !== body.p_payload.content_hash, 'hash changes with content')
+const s2 = await ingestLibraryPage(mk('# Period 01\n\nchanged\n'), { log })
+ok(JSON.parse(calls[2].i.body).p_payload.content_hash === body.p_payload.content_hash, 'row key stable when the page is rewritten (upsert, not a new row)')
+ok(s2.contentHash !== s.contentHash, 'manifest change detector moves with content')
 
 for (const [k, v] of [['OSBORN_CONTENT_INGEST', '0'], ['OSBORN_CONTENT_LENS', '0']]) {
   setEnv(); process.env[k] = v; calls = stub(() => R(200)); s = await ingestLibraryPage(mk(), { log })

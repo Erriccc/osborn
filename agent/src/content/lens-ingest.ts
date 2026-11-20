@@ -12,8 +12,10 @@
  *   token, URL query, headers or body).
  * - Opt-out: OSBORN_CONTENT_INGEST=0. OSBORN_CONTENT_LENS=0 disables it too.
  * - Never sends a status. The server forces draft anyway.
- * - Idempotent: content_hash = sha256(sessionId, startRowId, page markdown), so
- *   re-runs upsert instead of duplicating.
+ * - Idempotent: the payload's content_hash is pageKeyFor(sessionId, startRowId),
+ *   one key per period, so a rewritten page updates its draft row instead of
+ *   adding a second one. contentHashFor (which includes the markdown) is only
+ *   the manifest's change detector (IngestState.contentHash → needsIngest).
  */
 
 import { createHash } from 'node:crypto'
@@ -92,6 +94,12 @@ export function resolveIngestConfig(): IngestConfig {
   return { ok: true, url, anonKey, token }
 }
 
+/** The row's idempotency key (content_hash sent to content_ingest): one per session period, whatever the page says. */
+export function pageKeyFor(p: Pick<IngestPage, 'sessionId' | 'startRowId'>): string {
+  return createHash('sha256').update(`library-page\n${p.sessionId}\n${p.startRowId}`).digest('hex')
+}
+
+/** The page's change detector (recorded in the manifest's IngestState), not the row key. */
 export function contentHashFor(p: Pick<IngestPage, 'sessionId' | 'startRowId' | 'markdown'>): string {
   return createHash('sha256').update(`${p.sessionId}\n${p.startRowId}\n${p.markdown}`).digest('hex')
 }
@@ -114,7 +122,7 @@ export function buildIngestPayload(p: IngestPage, scrub: (s: string) => string =
     source_session_id: SESSION_ID_RE.test(p.sessionId) ? p.sessionId : null,
     source_anchors: { start_row_id: p.startRowId, end_row_id: p.endRowId, closed_by: p.closedBy, period_index: p.index, file: p.file },
     source_kind: 'library_page',
-    content_hash: contentHashFor(p),
+    content_hash: pageKeyFor(p),
   }
 }
 
