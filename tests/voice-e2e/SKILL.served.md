@@ -205,7 +205,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 
 ## What's new in v62
 - **`ears.audioClock` reports on every tab, not only once page audio was tapped.** It was null on a page with only the synthetic mic. `/say` `timings` add `audio` (the utterance's length): `play` well over `audio` means the tab's audio ran slow, and `/say` warns about it the same way as a low `audioClock`.
-- The spoken-turn clip's audio is mixed at 48kHz (it came out at 96kHz), which trims the mix step.
+- The spoken-turn clip's audio is mixed at 48kHz (loudnorm had raised it to 192kHz), which trims the mix step.
 
 ## What's new in v61
 - **`/say` bounds copying and decoding the recording too, and copies only what is new.** Each turn copies just the audio recorded since the last peek out of the page; a decode that runs out of the turn's time returns "nothing transcribed: decoding the recording ran out of time" instead of hanging. A tab whose recording is past the 30-min decode cap says so in the `/say` warning, and `GET /status` shows `ears` (recording age against the cap) and `capturePaused` (idle screen-capture pause, which a `/status` read does not wake). Say tasks carry `hearSpan` and `clipSpan` (wall-clock ms) so a transcript and its clip can be compared.
