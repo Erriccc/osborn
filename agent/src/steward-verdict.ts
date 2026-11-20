@@ -36,7 +36,7 @@ export type StewardRecord = StewardVerdict | StewardGateRecord
 const LABELS: Record<string, string> = {
   'VERDICT': 'verdict', 'REUSE MAP': 'reuse', 'INVENTORY': 'reuse', 'DUPLICATES': 'reuse', 'BEHAVIOUR': 'regressions', 'NET-NEW': 'netNew', 'REMOVED': 'removed',
   'REGRESSION MAP': 'regressions', 'IMPACT': 'impact', 'CHALLENGED': 'regressions', 'TESTS': 'regressions',
-  'SETTLED': 'regressions', 'STEPS': 'regressions', 'LINES': 'lines', 'HISTORY': 'history', 'ROOT CAUSE': 'rootCause',
+  'SETTLED': 'regressions', 'USER TIME': 'regressions', 'STEPS': 'regressions', 'LINES': 'lines', 'HISTORY': 'history', 'ROOT CAUSE': 'rootCause',
   'DECISION': 'decision', 'HUMAN DECISION': 'decision', 'DECISION NEEDED': 'decision',
 }
 // A label line, tolerant of markdown: "- **VERDICT:** ...", "## HISTORY", "ROOT CAUSE — ...".
@@ -46,7 +46,7 @@ const strip = (s: string) => s.replace(/^[\s>*_\-•]+|[\s*_]+$/g, '').replace(/
 const isNone = (s: string) => /^(none|n\/a|nothing)\b\.?$/i.test(s)
 // Labels the template puts after HISTORY: only these may end it from a bullet line, so a
 // "- IMPACT: …" or "- coupled: …" bullet inside HISTORY stays history (#259).
-const AFTER_HISTORY = new Set(['CHALLENGED', 'SETTLED', 'STEPS', 'ROOT CAUSE', 'DECISION', 'HUMAN DECISION', 'DECISION NEEDED'])
+const AFTER_HISTORY = new Set(['CHALLENGED', 'SETTLED', 'USER TIME', 'STEPS', 'ROOT CAUSE', 'DECISION', 'HUMAN DECISION', 'DECISION NEEDED'])
 const BULLET_RE = /^\s*(?:[-•*]\s|>)/
 // Bounds, so a long return cannot overflow the data-channel packet on reload.
 const MAX_ENTRIES = 20, MAX_ENTRY = 300, MAX_TEXT = 1000, MAX_RAW = 6000

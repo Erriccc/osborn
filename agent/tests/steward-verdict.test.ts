@@ -26,6 +26,15 @@ HISTORY:
 - coupled: VoiceRoom.tsx present
 ROOT CAUSE: new feature, no earlier fault`
 
+t('USER TIME after HISTORY never lands in the history card', () => {
+  const v = parseStewardVerdict(`VERDICT: CLEAN — ok
+HISTORY:
+- churn: x.ts 2 commits
+USER TIME: saves the user a reload
+- no added waiting`, '2026-11-20T00:00:00.000Z')!
+  assert.deepEqual(v.history, ['churn: x.ts 2 commits'])
+})
+
 t('REFACTORED: verdict, summary and every field', () => {
   const v = parseStewardVerdict(REFACTORED, '2026-11-13T00:00:00.000Z')!
   assert.equal(v.verdict, 'REFACTORED')

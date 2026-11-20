@@ -23,6 +23,7 @@ Rules:
 - For each new rule, check existing data (stored rows, installed files, caches, older clients): nothing may gain power or lose behaviour by accident.
 - Every user-facing claim about behaviour (UI text, docs, prompts) must have code that enforces it.
 - Every new export, served field and handler must have a user; report the ones that don't.
+- User time: a change that adds waiting, clicks or questions for the user without saying why is a finding; ask for the PR's "User time" line (saves / costs the user time because …).
 - A finding without a concrete trigger or a concrete existing duplicate is not a finding. Put it under "unconfirmed" (max 3) or drop it.
 - No praise, no style nits, no restating the diff.
 
