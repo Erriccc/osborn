@@ -163,3 +163,34 @@ t('prior_messages push: last 10 verdicts and last 10 gates kept apart, raw and i
 })
 
 console.log(`\n${pass} passed`)
+
+t('#224: HISTORY sorted into four rows; a warning row is flagged, a benign one is not', () => {
+  const v = parseStewardVerdict(`VERDICT: CLEAN — ok
+HISTORY:
+- churn: x.ts 4 commits / 60 days
+- re-touched: 2 hunks checked / 1 found (#212 changed L40-60)
+- coupled: index.ts, missing: VoiceRoom.tsx
+- decisions: #210, #212
+ROOT CAUSE: retry storm in pushMessage, log in #212 (#210 → #212 → this)`, 'x', 'https://github.com/o/r/issues/')!
+  assert.deepEqual(v.historyRows.map((r) => r.key), ['churn', 'retouched', 'coupled', 'decisions'])
+  assert.deepEqual(v.historyRows.map((r) => r.warn), [false, true, true, false])
+  assert.deepEqual(v.missingCoupled, ['coupled: index.ts, missing: VoiceRoom.tsx'])
+  assert.deepEqual(v.chain, [210, 212])
+  assert.equal(v.issueBase, 'https://github.com/o/r/issues/')
+})
+
+t('#224: none / 0 found do not warn; a feature has an empty chain', () => {
+  const v = parseStewardVerdict(REFACTORED, 'x')!
+  assert.ok(v.historyRows.every((r) => !r.warn))
+  assert.deepEqual(v.missingCoupled, [])
+  assert.deepEqual(v.chain, [])
+  assert.equal(v.issueBase, undefined)
+  const w = parseStewardVerdict(`VERDICT: CLEAN — ok\nHISTORY:\n- coupled: missing: none\n- decisions: gh unavailable (unauthenticated)`, 'x')!
+  assert.deepEqual(w.missingCoupled, [])
+  assert.equal(w.historyRows[3].warn, true)
+})
+
+const { githubIssueBase } = await import('../src/steward-verdict.js')
+t('#224: githubIssueBase is undefined outside a git repo', () => {
+  assert.equal(githubIssueBase('/nonexistent-dir-xyz'), undefined)
+})

@@ -1,6 +1,7 @@
 // Steward verdict card (#221, #224): the steward's return text (agent/src/prompts/steward.md,
 // "What to return") parsed into the fields the chat card shows, and kept in a sidecar next to
 // compactions.jsonl so a reload rebuilds the card where it happened.
+import { execFileSync } from 'child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { getStorePath } from './session-store.js'
@@ -17,12 +18,55 @@ export interface StewardVerdict {
   removed: string[]
   lines?: string
   history: string[]
+  /** HISTORY sorted into the card's four rows, always in this order; a row with a warning is shown open. */
+  historyRows: StewardHistoryRow[]
+  /** HISTORY entries naming a coupled file missing from the diff: a warning row of their own. */
+  missingCoupled: string[]
+  /** Issue numbers of the chain the ROOT CAUSE line cites (#A → #B → this), in order. */
+  chain: number[]
+  /** `https://github.com/<owner>/<repo>/issues/` for the working repo, so the card can link chain numbers. */
+  issueBase?: string
   /** IMPACT: each changed symbol → its usages → verdict, then SIBLINGS. */
   impact?: string[]
   /** The full return, so the card can show the whole record. */
   raw: string
   /** ISO time the steward returned. */
   at: string
+}
+
+export type StewardHistoryKey = 'churn' | 'retouched' | 'coupled' | 'decisions'
+export interface StewardHistoryRow { key: StewardHistoryKey; items: string[]; warn: boolean }
+
+// Which row a HISTORY entry belongs to, by its leading words; anything else is a decision record.
+const ROW_OF: Array<[StewardHistoryKey, RegExp]> = [
+  ['retouched', /re-?touch|hunk|fix chain|repeat/i],
+  ['coupled', /coupl|partner/i],
+  ['churn', /churn|revert/i],
+]
+// An entry warns when it reports a finding, unless it ends by saying there is none.
+const WARN_RE = /\b(repeat|missing|undo(?:es)?|reverts? (?:a|the|an earlier)|could not|unavailable|unauthenticated|not run)\b|\b[1-9]\d* found\b/i
+const CLEAR_RE = /(?::|—|-|\b)\s*(none|0|no(?:ne)? found|nothing)\.?\s*$/i
+const warns = (e: string) => WARN_RE.test(e) && !CLEAR_RE.test(e)
+
+export function historyRows(history: string[]): StewardHistoryRow[] {
+  const rows: StewardHistoryRow[] = (['churn', 'retouched', 'coupled', 'decisions'] as const).map((key) => ({ key, items: [], warn: false }))
+  for (const e of history) {
+    const head = e.split(/[:—]/)[0]
+    const key = ROW_OF.find(([, re]) => re.test(head))?.[0] ?? 'decisions'
+    const row = rows.find((r) => r.key === key)!
+    row.items.push(e)
+    if (warns(e)) row.warn = true
+  }
+  return rows
+}
+
+/** Issue links for chain numbers: the working repo's GitHub issues URL, or undefined off GitHub. */
+export function githubIssueBase(cwd: string): string | undefined {
+  try {
+    const url = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd, encoding: 'utf-8', timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'] }).trim()
+    const m = url.match(/github\.com[:/]([\w.-]+)\/([\w.-]+?)(?:\.git)?$/)
+    return m ? `https://github.com/${m[1]}/${m[2]}/issues/` : undefined
+  } catch { return undefined }
 }
 
 /** The sign-off gate advised on or refused a commit / push / PR (#254). Kept in the same sidecar. */
@@ -53,7 +97,7 @@ const MAX_ENTRIES = 20, MAX_ENTRY = 300, MAX_TEXT = 1000, MAX_RAW = 6000
 const cap = (s: string, n: number) => (s.length > n ? s.slice(0, n) + '… [truncated]' : s)
 
 /** Parse a steward return. Null when the text carries no VERDICT line. */
-export function parseStewardVerdict(text: string, at: string = new Date().toISOString()): StewardVerdict | null {
+export function parseStewardVerdict(text: string, at: string = new Date().toISOString(), issueBase?: string): StewardVerdict | null {
   const sections: Record<string, string[]> = {}
   const loose: string[] = []
   let current: string | null = null
@@ -92,16 +136,25 @@ export function parseStewardVerdict(text: string, at: string = new Date().toISOS
   const joined = (k: string) => cap((sections[k] ?? []).join(' ').trim(), MAX_TEXT) || undefined
   const impact = bounded('impact')
   // "For BLOCK, name the decision": a labelled DECISION line, else the free text that follows.
+  const history = bounded('history')
+  const rootCause = joined('rootCause')
+  // The written chain (#A → #B → this) when there is one, else every issue the line cites.
+  const chainText = rootCause?.match(/#\d+(?:\s*(?:→|->)\s*#\d+)*\s*(?:→|->)\s*this\b/i)?.[0] ?? rootCause ?? ''
+  const chain = [...new Set([...chainText.matchAll(/#(\d+)\b/g)].map((m) => Number(m[1])))]
   const decision = verdict === 'BLOCK' ? joined('decision') ?? (loose.join(' ') || undefined) : undefined
   return {
     verdict,
     summary: cap(strip(vm[2]), MAX_TEXT),
     ...(decision ? { decision: cap(decision, MAX_TEXT) } : {}),
-    ...(joined('rootCause') ? { rootCause: joined('rootCause') } : {}),
+    ...(rootCause ? { rootCause } : {}),
     netNew: netNew.slice(0, MAX_ENTRIES),
     removed: bounded('removed'),
     ...(joined('lines') ? { lines: joined('lines') } : {}),
-    history: bounded('history'),
+    history,
+    historyRows: historyRows(history),
+    missingCoupled: history.filter((e) => /coupl|partner/i.test(e.split(/[:—]/)[0]) && /\bmissing\b/i.test(e) && warns(e)),
+    chain,
+    ...(issueBase ? { issueBase } : {}),
     ...(impact.length ? { impact } : {}),
     raw: cap(String(text).trim(), MAX_RAW),
     at,

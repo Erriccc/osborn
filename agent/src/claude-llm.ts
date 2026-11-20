@@ -24,7 +24,7 @@ import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
-import { parseStewardVerdict, appendStewardRecord, type StewardRecord } from './steward-verdict.js'
+import { parseStewardVerdict, appendStewardRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
@@ -3300,7 +3300,8 @@ class ClaudeLLMStream extends llm.LLMStream {
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
               // Steward verdict card (#221): parsed, kept in the session's sidecar, sent to the chat.
               const atRole = roleOf(at, this.#opts.agentRoles, NAMED_AGENTS)
-              const verdict = atRole && ROLES[atRole].verdict ? parseStewardVerdict(msg) : null
+              const verdict = atRole && ROLES[atRole].verdict
+                ? parseStewardVerdict(msg, undefined, this.#opts.workingDirectory ? githubIssueBase(this.#opts.workingDirectory) : undefined) : null
               if (verdict) {
                 this.#recordSteward(verdict)
                 this.#eventEmitter.emit('steward_verdict', verdict)

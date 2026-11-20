@@ -64,6 +64,16 @@ t('#254: a steward gate line is cached with its record, a plain system notice is
   eq(items[0].stewardGate, gate, 'gate record passed through')
 })
 
+t('#224: a steward card keeps its history rows, chain and missing-coupled warning in the cache', () => {
+  const steward = {
+    verdict: 'CLEAN' as const, summary: 'ok', at: '2026-11-20T00:00:00.000Z',
+    historyRows: [{ key: 'coupled' as const, items: ['coupled: missing: VoiceRoom.tsx'], warn: true }],
+    missingCoupled: ['coupled: missing: VoiceRoom.tsx'], chain: [210, 212], issueBase: 'https://github.com/o/r/issues/',
+  }
+  const items = serializeTranscript([msg({ id: 's1', role: 'system', content: 'Steward: CLEAN', steward })])
+  eq(items[0].steward, steward, 'steward card passed through')
+})
+
 t('serialize drops synthetic day/Today dividers, keeps real messages', () => {
   const items = serializeTranscript([
     msg({ id: 'prior-day-Nov 11-sess', role: 'assistant', content: '── Nov 11 ──' }),
