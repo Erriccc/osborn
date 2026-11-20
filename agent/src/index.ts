@@ -82,6 +82,7 @@ import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeC
 import { readVolumeSyncStatus } from './volume-sync-status.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
+import { settleWithin } from './lib/settle-within.js'
 
 // ============================================================
 // PIPELINE MODE: STT (Deepgram) → Claude Agent SDK → TTS
@@ -5584,7 +5585,7 @@ async function main() {
     // Quick reconnects (< ~6s) crash with "byte stream handler already set" without this.
     if (pendingSessionClose) {
       console.log('⏳ Waiting for previous session to fully close...')
-      await pendingSessionClose
+      if (!(await settleWithin(pendingSessionClose, 6000))) console.warn('⚠️ previous session close still pending after 6s — continuing')
     }
 
     // Clean up any existing session before creating a new one
@@ -5607,7 +5608,7 @@ async function main() {
     if (currentSession) {
       console.log('🧹 Cleaning up previous session...')
       try {
-        await currentSession.close()
+        if (!(await settleWithin(currentSession.close(), 5000))) console.warn('⚠️ session close timed out after 5s — continuing')
       } catch {}
       try {
         currentSession.removeAllListeners()
@@ -5752,7 +5753,7 @@ async function main() {
       const reused = claimWarm()
       // Re-attached: its requests follow whoever holds it now (a browser or app, or a new call).
       if (reused === phoneParkedBrain) phoneParkedBrain = null
-      if (pendingSessionClose) { try { await pendingSessionClose } catch {} }
+      if (pendingSessionClose && !(await settleWithin(pendingSessionClose, 6000))) console.warn('⚠️ previous session close still pending after 6s — continuing')
       const result = await createDirectSession(resumeSessionId, reused)
       session = result.session
       agent = result.agent
@@ -6583,7 +6584,9 @@ async function main() {
       currentSession = null
       // Track async close so new connections can wait for byte stream handler to be released
       pendingSessionClose = (async () => {
-        try { await sessionToClose.close() } catch {}
+        try {
+          if (!(await settleWithin(sessionToClose.close(), 5000))) console.warn('⚠️ session close timed out after 5s — continuing')
+        } catch {}
         try { sessionToClose.removeAllListeners() } catch {}
         pendingSessionClose = null
       })()
