@@ -16,9 +16,8 @@
  * Blocked pieces never reach this module (content-run).
  */
 
-import { createHash } from 'node:crypto'
 import { basename } from 'node:path'
-import { postContentIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
+import { ingestRowKey, postContentIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
 import { CHECK_MODEL, CHECK_PROVIDER } from './content-llm.js'
 import type { CheckSummary } from './content-manifest.js'
 import type { Brief } from './content-brief.js'
@@ -42,7 +41,7 @@ export interface ScriptDraft {
 }
 
 export const pieceContentHash = (sessionId: string, startRowId: number, pieceId: string): string =>
-  createHash('sha256').update(`content-script\n${sessionId}\n${startRowId}\n${pieceId}`).digest('hex')
+  ingestRowKey('content-script', sessionId, startRowId, pieceId)
 
 export const projectSlugFor = (projectDir: string | null): string | null => (projectDir ? basename(projectDir) : null)
 

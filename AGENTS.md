@@ -259,6 +259,10 @@ MCP servers extend Codex with external tools (GitHub, YouTube, etc.). Three tran
 
 **Init logging**: `ClaudeLLMStream.run()` logs `✅ MCP server <name>: connected` or `❌ MCP server <name>: <status>` from the SDK's system init message.
 
+## User time (guiding principle)
+
+Osborn exists to shorten the path from idea to done, so a user's time and effort in a conversation is never wasted (#381). Every change states whether it saves or costs the user time, and why, in the "User time" section of its PR description. A change that adds waiting, clicks or questions says why it is worth that cost.
+
 ## Critical Patterns
 
 Bug fixes and gotchas (persistent session lifecycle, voice queue timing, Gemini quirks, research batching, Smithery proxy, etc.) live in **[docs/critical-patterns.md](docs/critical-patterns.md)**. Read that file when debugging anything non-obvious. Representative first entry:

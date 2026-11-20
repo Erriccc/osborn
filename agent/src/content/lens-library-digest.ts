@@ -28,7 +28,7 @@ import { loadClientRedactor, type ClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { NO_CONTENT_KEY, hasContentModelKey, parseJsonLoose } from './content-llm.js'
 import { machineTimeZone, parseDigest, rebuildIndex } from './lens-library-index.js'
-import { clip, needsIngest, postContentIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
+import { clip, ingestRowKey, needsIngest, postContentIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
 import { writeAtomic } from './content-manifest.js'
 import { libraryHomeDir } from './lens-paths.js'
 import type { LibraryPeriod } from './lens-library-select.js'
@@ -181,9 +181,7 @@ function renderDigestMd(day: string, items: DigestItem[], o: { costUsd: number; 
 }
 
 /** Stable per machine + day, so a rewritten digest updates its draft in place. */
-function digestContentHash(day: string): string {
-  return createHash('sha256').update(`osborn-library-digest\n${hostname()}\n${day}`).digest('hex')
-}
+const digestContentHash = (day: string): string => ingestRowKey('osborn-library-digest', hostname(), day)
 
 const bodyHash = (md: string) => createHash('sha256').update(md).digest('hex')
 

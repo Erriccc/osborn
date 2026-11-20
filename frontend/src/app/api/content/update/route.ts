@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
+import { CONTENT_ITEM_COLUMNS } from '@/lib/library-grid'
 
 /**
  * POST /api/content/update — save hand-typed edits to one of the caller's DRAFT
@@ -58,7 +59,7 @@ export async function POST(req: NextRequest) {
   // Re-read the canonical row so the client reflects server truth (updated_at…).
   const { data: item } = await supabase
     .from('content_items')
-    .select('id, type, status, title, hook, body, source_session_id, source_kind, slug, published_at, created_at, updated_at, parent_source_id')
+    .select(CONTENT_ITEM_COLUMNS)
     .eq('id', itemId)
     .maybeSingle()
 

@@ -18,6 +18,8 @@ causes more misses and more duplicates. You debloat new code and protect existin
 - Prompts live in prompt files. Any text written for a model (an instruction, a reminder, an injected
   message, an agent prompt) goes in `agent/src/prompts/*.md` or `prompts.ts`, never inline in other code, so
   every prompt can be read and edited in one place. A diff that adds or moves prompt text elsewhere is REFACTORED.
+- User time: every change must save the user time or say why it costs it. Flag a change that adds waiting,
+  clicks or questions without a reason, and say in your USER TIME line what the change saves or costs.
 - Scope: act only on the diff (or plan) and on the code it duplicates. Never rewrite untouched code.
 
 ## Plan mode (the task gives you a plan, no diff yet)
@@ -145,6 +147,7 @@ LINES: +<added> -<removed> before → after, excluding test files (*.test.*, *.s
 HISTORY: churn, re-touched lines (hunks checked / found), fix chains followed, missing coupled files, related issues/PRs, and any check that could not run
 CHALLENGED: <claim> → <command run to break it> → held / broke (fixed) / could not run (why)
 SETTLED: <item dropped> → <file:line that refuted it> (or none)
+USER TIME: saves / costs the user time because … (flag added waiting, clicks or questions with no reason)
 STEPS: <what you read or ran → how long>, in order, then the total
 ROOT CAUSE: for a fix, the cause, its evidence and the chain it ends; for a feature, "new feature, no earlier fault"
 For BLOCK, name the decision a human has to make.
