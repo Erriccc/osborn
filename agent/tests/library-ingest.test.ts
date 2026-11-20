@@ -1,7 +1,7 @@
 // Library → cloud ingest tests (content_ingest RPC). No network: fetch is stubbed.
 // Run: npx tsx agent/tests/library-ingest.test.ts   (one file at a time)
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { brotliCompressSync } from 'node:zlib'
@@ -24,7 +24,7 @@ process.env.OSBORN_SUPABASE_ANON_KEY = ANON
 process.env.OSBORN_SYNC_TOKEN = TOKEN
 
 const { runLibraryStep, readManifest, libraryDirFor, ingestPendingPages } = await import('../src/content/lens-library.js')
-const { ingestPage, buildIngestPayload, isAnonKey, resolveIngestConfig, INGEST_MAX_BYTES, pageKeyFor, contentHashFor } = await import('../src/content/lens-ingest.js')
+const { ingestPage, buildIngestPayload, isAnonKey, resolveIngestConfig, INGEST_MAX_BYTES } = await import('../src/content/lens-ingest.js')
 
 let pass = 0
 const t = async (name: string, fn: () => unknown) => {
@@ -100,14 +100,6 @@ await t('payload: allowed type, required content_hash, anchors, never a status/o
   assert.equal(p.source_session_id, sid)
   for (const k of ['status', 'published_at', 'owner_user_id', 'user_id', 'slug']) assert.ok(!(k in p), k)
 })
-await t('payload: content_hash is one key per session period, so a rewritten page upserts its row', () => {
-  const a = buildIngestPayload(page()), b = buildIngestPayload(page('# Period map\n\n## Period goal\nShip it again, rewritten.\n'))
-  assert.notEqual(a.body, b.body)
-  assert.equal(a.content_hash, b.content_hash)
-  assert.equal(a.content_hash, pageKeyFor({ sessionId: sid, startRowId: 1 }))
-  assert.notEqual(pageKeyFor({ sessionId: sid, startRowId: 2 }), a.content_hash)
-  assert.notEqual(pageKeyFor({ sessionId: sid + 'x', startRowId: 1 }), a.content_hash)
-})
 await t('request: POST {url}/rest/v1/rpc/content_ingest, apikey + Bearer anon, body {p_token, p_payload}', async () => {
   rpc = []; logs.length = 0
   const st = await ingestPage(page(), { log })
@@ -120,8 +112,7 @@ await t('request: POST {url}/rest/v1/rpc/content_ingest, apikey + Bearer anon, b
   const body = JSON.parse(rpc[0].init.body)
   assert.deepEqual(Object.keys(body).sort(), ['p_payload', 'p_token'])
   assert.equal(body.p_token, TOKEN)
-  assert.equal(body.p_payload.content_hash, pageKeyFor(page()))
-  assert.equal(st.contentHash, contentHashFor(page()))
+  assert.equal(body.p_payload.content_hash, st.contentHash)
   noSecretsLogged()
 })
 await t('request: sends Content-Profile: public and Accept-Profile: public (db_schema lists storage first)', async () => {
@@ -194,7 +185,7 @@ await t('step: next run retries the failed ingest (no model call) and records ok
   const e = readManifest(libDir, sid).periods['1']
   assert.equal(e.ingest?.status, 'ok')
   firstHash = e.ingest!.contentHash
-  assert.equal(JSON.parse(rpc[0].init.body).p_payload.content_hash, pageKeyFor({ sessionId: sid, startRowId: 1 }))
+  assert.equal(JSON.parse(rpc[0].init.body).p_payload.content_hash, firstHash)
   assert.ok(!JSON.parse(rpc[0].init.body).p_payload.body.includes('Acme'))
 })
 await t('step: once ingested, later runs send nothing', async () => {
@@ -212,21 +203,7 @@ await t('timeout retry: a pending page that timed out is retried by the pending 
   assert.equal(await ingestPendingPages(libDir, m, { log }), true)
   assert.equal(m.periods['1'].ingest?.status, 'ok')
   assert.equal(rpc.length, 2)
-  for (const c of rpc) assert.equal(JSON.parse(c.init.body).p_payload.content_hash, pageKeyFor({ sessionId: sid, startRowId: 1 }))
-  assert.equal(m.periods['1'].ingest?.contentHash, firstHash)
-})
-await t('rewritten page: re-ingested once with the SAME row key (an update, not a second row)', async () => {
-  const m = readManifest(libDir, sid)
-  const path = join(libDir, m.periods['1'].file)
-  writeFileSync(path, readFileSync(path, 'utf-8') + '\n<!-- regenerated -->\n')
-  rpc = []
-  assert.equal(await ingestPendingPages(libDir, m, { log }), true)
-  assert.equal(rpc.length, 1)
-  assert.equal(JSON.parse(rpc[0].init.body).p_payload.content_hash, pageKeyFor({ sessionId: sid, startRowId: 1 }))
-  assert.notEqual(m.periods['1'].ingest?.contentHash, firstHash)
-  rpc = []
-  assert.equal(await ingestPendingPages(libDir, m, { log }), false)
-  assert.equal(rpc.length, 0)
+  for (const c of rpc) assert.equal(JSON.parse(c.init.body).p_payload.content_hash, firstHash)
 })
 await t('opt-out through the step: OSBORN_CONTENT_INGEST=0 → pending pages are not sent', async () => {
   const m = readManifest(libDir, sid)

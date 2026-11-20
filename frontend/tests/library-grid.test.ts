@@ -1,7 +1,7 @@
 // Run: cd frontend && npx --yes tsx tests/library-grid.test.ts
 // /library grid: Refine studio renditions (parent_source_id set) are not cards of
-// their own. They count on their source's card, and a filter or search that
-// matches only a rendition still shows that source.
+// their own. They count on their source's card. The status filter reads the
+// card's own status; a search that matches only a rendition shows its source.
 import { libraryGrid, type GridItem } from '../src/lib/library-grid'
 
 let pass = 0, fail = 0
@@ -30,11 +30,11 @@ t('renditions are not cards; the source carries their count', () => {
   eq(g.renditions.get('p12'), 4, 'p12 renditions')
   eq(g.renditions.get('p13'), undefined, 'p13 renditions')
 })
-t('counts are cards, and a published rendition counts its source as published', () => {
-  eq(libraryGrid(items, 'all', '').counts, { all: 2, published: 2, draft: 1 }, 'counts')
+t('counts are cards by their own status: All = Published + Draft', () => {
+  eq(libraryGrid(items, 'all', '').counts, { all: 2, published: 1, draft: 1 }, 'counts')
 })
-t('published filter shows the draft source of a published rendition', () => {
-  eq(ids(libraryGrid(items, 'published', '').visible), ['p12', 'p13'], 'published')
+t('a published rendition does not make its draft source Published', () => {
+  eq(ids(libraryGrid(items, 'published', '').visible), ['p13'], 'published')
   eq(ids(libraryGrid(items, 'draft', '').visible), ['p12'], 'draft')
 })
 t('search finds a rendition by title and shows its source card', () => {
@@ -42,9 +42,10 @@ t('search finds a rendition by title and shows its source card', () => {
   eq(ids(libraryGrid(items, 'all', 'ingest').visible), ['p13'], 'search source')
   eq(ids(libraryGrid(items, 'all', 'nothing like this').visible), [], 'no match')
 })
-t('filter and search apply to the same member', () => {
-  // "case study" matches r4, a draft; the published filter must not show p12 for it.
-  eq(ids(libraryGrid(items.filter(i => i.id !== 'r3'), 'published', 'case study').visible), [], 'mixed')
+t('filter is the source status, search reaches its renditions', () => {
+  // "how we built" matches r3 (published) but p12 is a draft card.
+  eq(ids(libraryGrid(items, 'published', 'how we built').visible), [], 'published + rendition hit')
+  eq(ids(libraryGrid(items, 'draft', 'how we built').visible), ['p12'], 'draft + rendition hit')
 })
 t('a rendition whose source is gone stays a card', () => {
   const g = libraryGrid([item('r9', { parent_source_id: 'missing', type: 'blog' })], 'all', '')

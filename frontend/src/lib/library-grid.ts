@@ -3,10 +3,10 @@
  *
  * A rendition (a Refine studio draft: a content_items row with parent_source_id,
  * migration 009) is not its own card. It is reached from its source's card
- * ("N renditions" → the source's Refine studio). A source card is shown when the
- * source OR any of its renditions passes the status filter and the search, so a
- * published rendition or a search hit on a rendition's title still surfaces the
- * source it belongs to. A rendition whose source is not in the list stays a card.
+ * ("N renditions" → the source's Refine studio). The status filter and counts use
+ * the card's own status (the pill it shows), so All = Published + Draft; search
+ * also matches its renditions, so a hit on a rendition's title surfaces its
+ * source. A rendition whose source is not in the list stays a card.
  */
 
 /** The content_items columns the library page and the content API routes read. */
@@ -49,7 +49,8 @@ export function libraryGrid<T extends GridItem>(items: T[], filter: StatusFilter
   }
   const cards = items.filter(i => !isCardRendition(i))
   const members = (c: T) => [c, ...(family.get(c.id) ?? [])]
-  const passes = (c: T, f: StatusFilter, q: string) => members(c).some(m => (f === 'all' || m.status === f) && matchesQuery(m, q))
+  // The status filter reads the card's own status (its pill); search also reaches its renditions.
+  const passes = (c: T, f: StatusFilter, q: string) => (f === 'all' || c.status === f) && members(c).some(m => matchesQuery(m, q))
   const q = query.trim().toLowerCase()
   return {
     visible: cards.filter(c => passes(c, filter, q)),
