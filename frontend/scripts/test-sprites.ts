@@ -7,9 +7,10 @@
  * If userId is omitted, uses "test-user-debug-123" as a test user.
  */
 
-import { config } from 'dotenv'
+import { existsSync } from 'fs'
 import { resolve } from 'path'
-config({ path: resolve(__dirname, '../.env.local') })
+const envFile = resolve(__dirname, '../.env.local')
+if (existsSync(envFile)) process.loadEnvFile(envFile)
 
 import {
   createSandbox,
