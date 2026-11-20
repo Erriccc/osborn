@@ -4,8 +4,8 @@
 // stream into transcript and tool rows with applyViewEvent. Nothing here
 // sends anything to the agent.
 
-import type { ChatMessage, ToolMeta } from '../components/voice/shared'
-import { dropControlUserItems } from './control-text'
+import { completeToolRow, toolMetaFromEvent, toolTarget, type ChatMessage } from '../components/voice/shared'
+import { historyTurns } from './control-text'
 
 export interface ViewTask { taskId: string; subagentType?: string; description?: string; status: string; startedAt?: number }
 
@@ -47,45 +47,21 @@ export function applyViewEvent(rows: ChatMessage[], data: any, now = Date.now())
       return text ? cap([...rows, row('system', text, now, { category: 'log' })]) : rows
     case 'tool_use': {
       if (typeof data.tool !== 'string' || !data.tool) return rows
-      const meta: ToolMeta = {
-        tool: data.tool,
-        status: data.status === 'completed' ? 'completed' : 'running',
-        fileName: data.fileName, filePath: data.filePath, command: data.command,
-        pattern: data.pattern, url: data.url, description: data.description, agentRole: data.agentRole,
-      }
+      const meta = toolMetaFromEvent(data)
       if (meta.status === 'completed') {
-        for (let i = rows.length - 1; i >= 0; i--) {
-          const m = rows[i]
-          const prev = m.toolMeta
-          if (prev && prev.tool === data.tool && prev.status === 'running') {
-            const done: ChatMessage = { ...m, toolMeta: { ...prev, ...dropUndefined(meta), tool: prev.tool, status: 'completed' } }
-            return [...rows.slice(0, i), done, ...rows.slice(i + 1)]
-          }
-        }
+        const done = completeToolRow(rows, meta)
+        if (done) return done
       }
-      return cap([...rows, row('system', toolTarget(meta) || meta.tool, now, { category: 'log', toolName: meta.tool, toolMeta: meta })])
+      return cap([...rows, row('system', toolTarget(meta) || meta.description || meta.tool, now, { category: 'log', toolName: meta.tool, toolMeta: meta })])
     }
     default:
       return rows
   }
 }
 
-function dropUndefined<T extends object>(o: T): Partial<T> {
-  return Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>
-}
-
-/** What a tool row names: the file, command, pattern, URL or description. */
-export function toolTarget(m: ToolMeta): string {
-  return m.fileName || m.command || m.pattern || m.url || m.description || ''
-}
-
 /** Stored history (/session-messages) → rows, control notices dropped. */
 export function historyMessages(msgs: Array<{ role: string; content: string; ts?: string | number | null }>): ChatMessage[] {
-  return dropControlUserItems(msgs.map((m) => ({ ...m, role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content ?? '') })))
-    .map((m, i) => {
-      const t = m.ts ? new Date(m.ts).getTime() : 0
-      return { id: `hist-${i}`, role: m.role as ChatMessage['role'], content: m.content, timestamp: new Date(Number.isNaN(t) ? 0 : t) }
-    })
+  return historyTurns(msgs).map((m, i) => ({ id: `hist-${i}`, role: m.role, content: m.content, timestamp: new Date(m.t) }))
 }
 
 /** Elapsed time for the running list: 45s, 3m 05s, 1h 02m. */

@@ -10,7 +10,7 @@ import { CloudTurnDetector } from './turn-detector-shim.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
-import { AccessToken } from 'livekit-server-sdk'
+import { AccessToken, type VideoGrant } from 'livekit-server-sdk'
 
 // Initialize logger before anything else
 initializeLogger({ pretty: true, level: 'info' })
@@ -2349,21 +2349,14 @@ async function main() {
   // session now joins a UNIQUE temporary room (buildRoomName), the token must
   // be minted per room, not once at boot. mintAgentToken(roomName) returns a
   // fresh JWT grant for the given room.
-  const mintAgentToken = async (targetRoom: string): Promise<string> => {
-    const token = new AccessToken(apiKey, apiSecret, {
-      identity: 'osborn-agent',
-      name: 'Osborn AI',
-      metadata: JSON.stringify({ type: 'agent', version: '0.3.0' }),
-    })
-    token.addGrant({
-      roomJoin: true,
-      room: targetRoom,
-      canPublish: true,
-      canSubscribe: true,
-      canPublishData: true,
-    })
-    return token.toJwt()
+  // One minting path for every token the agent issues: itself, the meeting canvas and the read-only view (#383).
+  const mintRoomToken = (room: string, who: { identity: string; name: string; metadata: Record<string, unknown>; ttl?: string }, grant: Omit<VideoGrant, 'roomJoin' | 'room'>): Promise<string> => {
+    const t = new AccessToken(apiKey, apiSecret, { identity: who.identity, name: who.name, metadata: JSON.stringify(who.metadata), ...(who.ttl ? { ttl: who.ttl } : {}) })
+    t.addGrant({ roomJoin: true, room, ...grant })
+    return t.toJwt()
   }
+  const mintAgentToken = (targetRoom: string): Promise<string> =>
+    mintRoomToken(targetRoom, { identity: 'osborn-agent', name: 'Osborn AI', metadata: { type: 'agent', version: '0.3.0' } }, { canPublish: true, canSubscribe: true, canPublishData: true })
 
   // ============================================================
   // Room session (0.9.83): FRESH Room instance per user session
@@ -8059,13 +8052,8 @@ async function main() {
   // frontends still function.
   canvasTokenHook = async () => {
     if (!activeRoomName) return null
-    const t = new AccessToken(apiKey, apiSecret, {
-      identity: 'meeting-canvas',
-      name: 'Meeting Canvas',
-      metadata: JSON.stringify({ type: 'canvas' }),
-    })
-    t.addGrant({ roomJoin: true, room: activeRoomName, canPublish: false, canSubscribe: true, canPublishData: false })
-    return { token: await t.toJwt(), url: process.env.LIVEKIT_URL || '', room: activeRoomName }
+    const token = await mintRoomToken(activeRoomName, { identity: 'meeting-canvas', name: 'Meeting Canvas', metadata: { type: 'canvas' } }, { canPublish: false, canSubscribe: true, canPublishData: false })
+    return { token, url: process.env.LIVEKIT_URL || '', room: activeRoomName }
   }
 
   viewTokenHook = async (withToken) => {
@@ -8083,14 +8071,9 @@ async function main() {
     }
     if (!withToken) return view
     // Hidden + subscribe-only: no tracks, no data, invisible to the other participants (and the agent).
-    const t = new AccessToken(apiKey, apiSecret, {
-      identity: `${VIEWER_IDENTITY_PREFIX}${randomUUID().slice(0, 8)}`,
-      name: 'Viewer',
-      metadata: JSON.stringify({ type: 'viewer' }),
-      ttl: '2h',
-    })
-    t.addGrant({ roomJoin: true, room: activeRoomName, canPublish: false, canPublishData: false, canSubscribe: true, canUpdateOwnMetadata: false, hidden: true })
-    return { ...view, token: await t.toJwt(), url: process.env.LIVEKIT_URL || '' }
+    const token = await mintRoomToken(activeRoomName, { identity: `${VIEWER_IDENTITY_PREFIX}${randomUUID().slice(0, 8)}`, name: 'Viewer', metadata: { type: 'viewer' }, ttl: '2h' },
+      { canPublish: false, canPublishData: false, canSubscribe: true, canUpdateOwnMetadata: false, hidden: true })
+    return { ...view, token, url: process.env.LIVEKIT_URL || '' }
   }
 
   connectRoomHook = async (phoneRoom?: string): Promise<string> => {

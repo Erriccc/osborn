@@ -28,7 +28,7 @@ import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession, type ChatHandle } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
-import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type StewardGateRecord, stewardGateLine, stewardGateRow, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
+import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, toolMetaFromEvent, toolTarget, completeToolRow, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type StewardGateRecord, stewardGateLine, stewardGateRow, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
@@ -37,7 +37,7 @@ import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/l
 import { isRedundantFinal } from '@/lib/claude-output'
 import { isAgentIdentity, isAuthGateTerminal } from '@/lib/connect-gate'
 import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
-import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
+import { historyTurns, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { AudioControls } from './voice/AudioControls'
@@ -175,12 +175,7 @@ function buildPriorItems(
 
   const rows: Row[] = []
   // Bug 14bedf48: control notices in the stored history are not You bubbles.
-  dropControlUserItems(
-    msgs.map((m) => ({ ...m, role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content ?? '') })),
-  ).forEach((m, i) => {
-    const t = m.ts ? new Date(m.ts).getTime() : 0
-    rows.push({ kind: 0, t: Number.isNaN(t) ? 0 : t, idx: i, role: m.role, content: m.content })
-  })
+  historyTurns(msgs).forEach((m, i) => rows.push({ kind: 0, t: m.t, idx: i, role: m.role, content: m.content }))
   ;(compactions ?? []).forEach((c, i) => {
     const t = c.at != null ? new Date(c.at).getTime() : NaN
     if (Number.isNaN(t)) return // a marker with no usable timestamp can't be placed
@@ -2177,23 +2172,9 @@ function VoiceRoomInner({
         // and flip it to 'completed' (merging in any extra fields the agent
         // sends on completion, e.g. diff, linesAdded). Only if no such pending
         // row exists do we append a new entry (defensive fallback).
-        const toolMeta: ToolMeta = {
-          tool: data.tool,
-          status: data.status === 'completed' ? 'completed' : 'running',
-          filePath: data.filePath,
-          fileName: data.fileName,
-          command: data.command,
-          pattern: data.pattern,
-          url: data.url,
-          description: data.description,
-          linesAdded: data.linesAdded,
-          linesRemoved: data.linesRemoved,
-          editCount: data.editCount,
-          diff: data.diff,
-          agentRole: data.agentRole,
-        }
+        const toolMeta = toolMetaFromEvent(data)
         // Human summary line (also used as the message content / fallback).
-        const target = data.fileName || data.command || data.pattern || data.url || ''
+        const target = toolTarget(data)
         // Live sub-agent progress: a tool_use tagged with agentId belongs to a running
         // sub-agent — surface it on that Running row so you can watch it work. Reuses the
         // existing tool stream; no separate channel. (Log-feed card below is unchanged.)
@@ -2206,17 +2187,8 @@ function VoiceRoomInner({
         if (data.status === 'completed') {
           // Find and update the most recent running row for this tool.
           setMessages((prev) => {
-            // Walk backwards to find the last 'running' entry for this tool.
-            for (let i = prev.length - 1; i >= 0; i--) {
-              const m = prev[i]
-              if (m.toolMeta?.tool === data.tool && m.toolMeta?.status === 'running') {
-                const updated: ChatMessage = {
-                  ...m,
-                  toolMeta: { ...m.toolMeta, ...toolMeta, status: 'completed' },
-                }
-                return [...prev.slice(0, i), updated, ...prev.slice(i + 1)]
-              }
-            }
+            const updated = completeToolRow(prev, toolMeta)
+            if (updated) return updated
             // No pending row found — append a completed entry as fallback.
             const msg = target ? `${data.tool}: ${target}` : data.tool
             return [...prev, {

@@ -14,11 +14,11 @@ import { Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { MessageBubble } from '@/components/voice/MessageBubble'
-import type { ChatMessage } from '@/components/voice/shared'
+import { toolTarget, type ChatMessage } from '@/components/voice/shared'
 import { agentReadUrl } from '@/lib/agent-read'
 import { sessionMessagesQuery } from '@/lib/chat-url'
 import { useDocumentTitle } from '@/lib/use-document-title'
-import { applyViewEvent, busyLabel, historyMessages, runTime, toolTarget, type RoomViewStatus } from '@/lib/room-view'
+import { applyViewEvent, busyLabel, historyMessages, runTime, type RoomViewStatus } from '@/lib/room-view'
 
 const POLL_MS = 5000
 
@@ -191,7 +191,7 @@ function RoomView() {
               <div key={m.id} className="flex min-w-0 items-center gap-2 py-1 font-mono text-[11.5px] text-[var(--text-secondary)]">
                 <span className={`w-1.5 h-1.5 shrink-0 rounded-full ${m.toolMeta.status === 'running' ? 'bg-[var(--accent)] animate-pulse' : 'bg-[var(--text-muted)]'}`} aria-hidden="true" />
                 <span className="shrink-0 text-[var(--text-primary)]">{m.toolMeta.tool}</span>
-                <span className="min-w-0 truncate">{toolTarget(m.toolMeta)}</span>
+                <span className="min-w-0 truncate">{toolTarget(m.toolMeta) || m.toolMeta.description}</span>
               </div>
             ) : (
               <MessageBubble key={m.id} message={m} grouped={i > 0 && feed[i - 1].role === m.role && !feed[i - 1].toolMeta} />

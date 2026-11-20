@@ -27,7 +27,8 @@ t('a repeated assistant messageId is not added twice', () => {
 t('a completed tool updates its running row in place', () => {
   let rows = applyViewEvent([], { type: 'tool_use', tool: 'Bash', status: 'running', command: 'npm test' })
   assert.equal(rows[0].toolMeta?.status, 'running')
-  rows = applyViewEvent(rows, { type: 'tool_use', tool: 'Bash', status: 'completed' })
+  // The agent's completed event carries the same input (buildToolLogEvent), so the fields survive the merge.
+  rows = applyViewEvent(rows, { type: 'tool_use', tool: 'Bash', status: 'completed', command: 'npm test' })
   assert.equal(rows.length, 1)
   assert.equal(rows[0].toolMeta?.status, 'completed')
   assert.equal(rows[0].toolMeta?.command, 'npm test')
