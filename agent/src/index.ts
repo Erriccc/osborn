@@ -10,7 +10,7 @@ import { CloudTurnDetector } from './turn-detector-shim.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
-import { AccessToken } from 'livekit-server-sdk'
+import { AccessToken, type VideoGrant } from 'livekit-server-sdk'
 
 // Initialize logger before anything else
 initializeLogger({ pretty: true, level: 'info' })
@@ -74,7 +74,7 @@ import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
-import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isViewerIdentity, roomOccupants, VIEWER_IDENTITY_PREFIX, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
 import { PHONE_CODE_HANGUP_GRACE_MS, PHONE_CODE_TIMEOUT_MS, addCodeDigit, checkPhoneCode, heldCode, isPhoneLinePlayer as isLinePlayer, offerPhoneCode, phoneCallerAdmission, phoneCodeAction, removePhoneCaller } from './phone-code.js'
 import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
 import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, saySwitchOutcome, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
@@ -152,9 +152,10 @@ const STORE_REPLY_TYPES: Record<string, string> = {
   skill_remove: 'skill_remove_result', get_agent_prompt: 'agent_prompt',
 }
 // Store routes, guarded by storeRefused: writes change the machine's skills; reads carry the
-// core prompts, the user's skills and the catalog. Neither answers every site's CORS.
+// core prompts, the user's skills and the catalog. Neither answers every site's CORS. The
+// room view's token route (#383) is guarded the same way: its token hears every broadcast.
 const STORE_WRITE_PATHS = new Set(['/skills/fork', '/skills/remove', '/store/install'])
-const STORE_PATHS = new Set([...STORE_WRITE_PATHS, '/skills', '/skills/content', '/store/catalog', '/store/entry', '/agents'])
+const STORE_PATHS = new Set([...STORE_WRITE_PATHS, '/skills', '/skills/content', '/store/catalog', '/store/entry', '/agents', '/view-token'])
 
 // Skills shipped with the package (core: maintained by Voice Native).
 const PKG_SKILLS_DIR = join(__dirname, '..', '.claude', 'skills')
@@ -339,6 +340,10 @@ let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null
 // the browser voice experience (2026-08-01 quality architecture; replaces the
 // synth-file chain when connected). Set from main() where the room name lives.
 let canvasTokenHook: (() => Promise<{ token: string; url: string; room: string } | null>) | null = null
+// Read-only room view (#383): what the live session is doing, and with
+// `withToken` a hidden, subscribe-only LiveKit token (`viewer-*`) to watch its
+// broadcast stream. Null when no room is live. Set from main().
+let viewTokenHook: ((withToken: boolean) => Promise<Record<string, unknown> | null>) | null = null
 let leaveRoomHook: ((reason: string) => Promise<void>) | null = null
 // Hook for the bug-reporter skill. The /report-bug HTTP endpoint validates the
 // payload + generates the reportId in the module-level handler, then delegates
@@ -431,7 +436,7 @@ function parseDevSubdomainPort(req: { headers: { host?: string; 'fly-replay-src'
 // Route prefixes that belong to the agent itself. The proxy fall-through checks
 // this list FIRST so it never intercepts an agent API path.
 const AGENT_ROUTE_PREFIXES = [
-  '/health', '/sessions', '/skills', '/agents', '/store', '/canvas', '/canvas-token',
+  '/health', '/sessions', '/skills', '/agents', '/store', '/canvas', '/canvas-token', '/view-token',
   '/canvas-stream', '/events', '/room-code', '/connect-room', '/leave-room',
   '/report-bug', '/restart', '/tts', '/noise-cancel', '/webhook', '/sessions/export',
   '/sessions/import', '/sessions/manifest',
@@ -798,6 +803,16 @@ function startApiServer(workingDir: string, port: number): void {
       })
       if (refusal) reply(refusal.status, { error: refusal.error })
       return !!refusal
+    }
+
+    if (req.method === 'GET' && url.pathname === '/view-token') {
+      // Owner-only: the token gate, and with no token (local) the store's who-may-ask rules,
+      // since a hidden listener hears every broadcast. `?status=1` reads the snapshot without a token.
+      if (unauthorized() || storeRefused(true)) return
+      const out = viewTokenHook ? await viewTokenHook(url.searchParams.get('status') !== '1') : null
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+      res.end(JSON.stringify(out ?? { live: false }))
+      return
     }
 
     if (req.method === 'GET' && url.pathname === '/skills') {
@@ -2340,21 +2355,14 @@ async function main() {
   // session now joins a UNIQUE temporary room (buildRoomName), the token must
   // be minted per room, not once at boot. mintAgentToken(roomName) returns a
   // fresh JWT grant for the given room.
-  const mintAgentToken = async (targetRoom: string): Promise<string> => {
-    const token = new AccessToken(apiKey, apiSecret, {
-      identity: 'osborn-agent',
-      name: 'Osborn AI',
-      metadata: JSON.stringify({ type: 'agent', version: '0.3.0' }),
-    })
-    token.addGrant({
-      roomJoin: true,
-      room: targetRoom,
-      canPublish: true,
-      canSubscribe: true,
-      canPublishData: true,
-    })
-    return token.toJwt()
+  // One minting path for every token the agent issues: itself, the meeting canvas and the read-only view (#383).
+  const mintRoomToken = (room: string, who: { identity: string; name: string; metadata: Record<string, unknown>; ttl?: string }, grant: Omit<VideoGrant, 'roomJoin' | 'room'>): Promise<string> => {
+    const t = new AccessToken(apiKey, apiSecret, { identity: who.identity, name: who.name, metadata: JSON.stringify(who.metadata), ...(who.ttl ? { ttl: who.ttl } : {}) })
+    t.addGrant({ roomJoin: true, room, ...grant })
+    return t.toJwt()
   }
+  const mintAgentToken = (targetRoom: string): Promise<string> =>
+    mintRoomToken(targetRoom, { identity: 'osborn-agent', name: 'Osborn AI', metadata: { type: 'agent', version: '0.3.0' } }, { canPublish: true, canSubscribe: true, canPublishData: true })
 
   // ============================================================
   // Room session (0.9.83): FRESH Room instance per user session
@@ -2372,6 +2380,10 @@ async function main() {
   // is live only while the agent is in that room AND a SIP participant is in it
   // (cleared when the caller leaves or the room session ends).
   let phoneRoomName: string | null = null
+  // People in the room for the leave/idle timers and connect reuse: read-only viewers (#383) do not count.
+  const peopleIn = (room: Room | null): number => room ? roomOccupants([...room.remoteParticipants.values()].map((p) => p.identity)) : 0
+  // When the agent joined the current room (the room view shows how long the session has run).
+  let roomJoinedAt: number | null = null
   const inPhoneRoom = () => isPhoneCallLive(
     activeRoomName, phoneRoomName,
     !!activeRoom && [...activeRoom.remoteParticipants.values()].some((p) => p.kind === ParticipantKind.SIP),
@@ -2549,10 +2561,10 @@ async function main() {
     if (agentsActive()) return
     if (aloneTimer) clearTimeout(aloneTimer)
     aloneTimer = null
-    if (!activeRoom || activeRoom.remoteParticipants.size > 0) return
+    if (!activeRoom || peopleIn(activeRoom) > 0) return
     aloneTimer = setTimeout(() => {
       aloneTimer = null
-      if (activeRoom && activeRoom.remoteParticipants.size === 0 && livekitState.status === 'connected') {
+      if (activeRoom && peopleIn(activeRoom) === 0 && livekitState.status === 'connected') {
         console.log(`🕊️ Alone in room ${ALONE_GRACE_MS / 1000}s — destroying room session to stop connection-minute burn`)
         intentionalLeave = true
         // Fresh-Room-per-session (0.9.83): tear down + discard the instance
@@ -2574,10 +2586,10 @@ async function main() {
     if (agentsActive()) return
     if (fastLeaveTimer) clearTimeout(fastLeaveTimer)
     fastLeaveTimer = null
-    if (!activeRoom || activeRoom.remoteParticipants.size > 0) return
+    if (!activeRoom || peopleIn(activeRoom) > 0) return
     fastLeaveTimer = setTimeout(() => {
       fastLeaveTimer = null
-      if (activeRoom && activeRoom.remoteParticipants.size === 0 && livekitState.status === 'connected') {
+      if (activeRoom && peopleIn(activeRoom) === 0 && livekitState.status === 'connected') {
         console.log(`🚪 Room empty ${POST_LEAVE_GRACE_MS / 1000}s after session end (tab close / leave) — destroying room session`)
         intentionalLeave = true
         destroyRoomSession('fast-leave').catch((e) => console.error('fast-leave destroyRoomSession failed:', e))
@@ -2610,13 +2622,13 @@ async function main() {
     idleExitTimer = setTimeout(() => {
       idleExitTimer = null
       const stillIdle = livekitState.status === 'idle' || livekitState.status === 'failed'
-      const empty = !activeRoom || activeRoom.remoteParticipants.size === 0
+      const empty = !activeRoom || peopleIn(activeRoom) === 0
       if (stillIdle && empty && !agentsActive()) {
         console.log(`⏻ [IDLE-EXIT] still idle after grace — exiting 0 so Fly stops the machine (billing stops; next Resume boots it)`)
         // Give the log tee a beat to flush, then stop the machine.
         setTimeout(() => process.exit(0), 2000)
       } else {
-        console.log(`⏻ [IDLE-EXIT] aborted — status=${livekitState.status} participants=${activeRoom?.remoteParticipants.size ?? 0}`)
+        console.log(`⏻ [IDLE-EXIT] aborted — status=${livekitState.status} participants=${peopleIn(activeRoom)}`)
       }
     }, IDLE_EXIT_GRACE_MS)
   }
@@ -2910,7 +2922,7 @@ async function main() {
   // Safe to recycle = nothing a restart would interrupt: no user in the room,
   // voice pipeline quiet, no host/background agents running.
   const safeToRecycle = (): boolean => {
-    const noUser = !activeRoom || activeRoom.remoteParticipants.size === 0
+    const noUser = !activeRoom || peopleIn(activeRoom) === 0
     const voiceQuiet = !currentSpeechHandle && voiceQueue.length === 0 && userState !== 'speaking'
     return noUser && voiceQuiet && !agentsActive()
   }
@@ -3364,7 +3376,7 @@ async function main() {
     // Orphan cleanup: if no user is connected, the LLM subprocess was kept alive
     // solely to serve the meeting — release it now and let idle-exit stop the
     // machine (same billing discipline as 0.9.73, deferred until meeting end).
-    const userPresent = activeRoom && activeRoom.remoteParticipants.size > 0
+    const userPresent = activeRoom && peopleIn(activeRoom) > 0
     if (!userPresent && currentLLM) {
       console.log('🏁 Meeting over with no user connected — releasing LLM + arming idle-exit')
       killCurrentLLM(`meeting_ended(${reason})_no_user`)
@@ -3387,7 +3399,7 @@ async function main() {
     console.log(`🏁 Meeting leave-grace armed (${MEETING_LEAVE_GRACE_MS / 1000}s) — bot stays unless the user is really gone`)
     meetingLeaveGraceTimer = setTimeout(() => {
       meetingLeaveGraceTimer = null
-      const userPresent = activeRoom && activeRoom.remoteParticipants.size > 0
+      const userPresent = activeRoom && peopleIn(activeRoom) > 0
       if (activeMeetingBotId && !userPresent) void endMeeting('user_disconnected_grace_expired')
     }, MEETING_LEAVE_GRACE_MS)
   }
@@ -5470,7 +5482,8 @@ async function main() {
 
     room.on(RoomEvent.Disconnected, handleRoomDisconnected)
     room.on(RoomEvent.ParticipantConnected, (p: RemoteParticipant) => { participantConnectedHandler?.(p) })
-    room.on(RoomEvent.ParticipantDisconnected, handleParticipantDisconnected)
+    // A read-only viewer (#383) leaving ends nothing.
+    room.on(RoomEvent.ParticipantDisconnected, (p: RemoteParticipant) => { if (!isViewerIdentity(p.identity)) handleParticipantDisconnected(p) })
     room.on(RoomEvent.DataReceived, handleDataReceived)
     // Phone calls: keypad 2 denies the pending approval; 1 allows only once
     // PHONE_KEYPAD_APPROVALS_ENABLED is on. Only from the caller in an authorised phone room.
@@ -5490,6 +5503,8 @@ async function main() {
   // (they fire no ParticipantConnected event — rtc-node populates them from the
   // connect callback, not via events).
   participantConnectedHandler = async (participant: RemoteParticipant) => {
+    // A read-only viewer (#383) only watches: nothing is built, adopted or cancelled for it.
+    if (isViewerIdentity(participant.identity)) { console.log(`👀 Viewer joined: ${participant.identity}`); return }
     console.log(`\n👤 User joined: ${participant.identity}`)
     keepWorkingRequested = false  // a request belongs to the hang-up it preceded
     // The meeting canvas joining as a listener = browser-parity audio path is
@@ -6213,7 +6228,7 @@ async function main() {
             console.log(`⚠️ Recovery too frequent — scheduling retry in ${MIN_RECOVERY_INTERVAL}ms`)
             setTimeout(async () => {
               // Re-check: if session was already recovered or user left, skip
-              if (currentSession || !activeRoom || !activeRoom.remoteParticipants.size) return
+              if (currentSession || !activeRoom || !peopleIn(activeRoom)) return
               console.log('🔄 Retrying direct mode recovery after guard interval...')
               // Trigger recovery by emitting a synthetic close
               sess.emit('close' as any, { reason: 'error' })
@@ -7931,6 +7946,7 @@ async function main() {
             // Success — adopt this instance as the active room.
             activeRoom = room
             activeRoomName = targetRoomName
+            roomJoinedAt = Date.now()
             currentRoomCode = targetRoomName  // legacy /room-code returns last-created NAME
             localParticipant = room.localParticipant
             livekitState.status = 'connected'
@@ -8042,13 +8058,28 @@ async function main() {
   // frontends still function.
   canvasTokenHook = async () => {
     if (!activeRoomName) return null
-    const t = new AccessToken(apiKey, apiSecret, {
-      identity: 'meeting-canvas',
-      name: 'Meeting Canvas',
-      metadata: JSON.stringify({ type: 'canvas' }),
-    })
-    t.addGrant({ roomJoin: true, room: activeRoomName, canPublish: false, canSubscribe: true, canPublishData: false })
-    return { token: await t.toJwt(), url: process.env.LIVEKIT_URL || '', room: activeRoomName }
+    const token = await mintRoomToken(activeRoomName, { identity: 'meeting-canvas', name: 'Meeting Canvas', metadata: { type: 'canvas' } }, { canPublish: false, canSubscribe: true, canPublishData: false })
+    return { token, url: process.env.LIVEKIT_URL || '', room: activeRoomName }
+  }
+
+  viewTokenHook = async (withToken) => {
+    if (!activeRoom || !activeRoomName) return null
+    const llm = currentLLM as any
+    const busy = llm?.busyState?.() ?? {}
+    const view: Record<string, unknown> = {
+      live: true,
+      room: activeRoomName,
+      sessionId: llm?.sessionId ?? currentResumeSessionId ?? null,
+      since: roomJoinedAt,
+      phoneCall: inPhoneRoom(),
+      busy: { turnInFlight: !!busy.turnInFlight, compacting: !!busy.compacting, permissionPending: !!busy.permissionPending },
+      tasks: (() => { try { return llm?.getRunningTasks?.() ?? [] } catch { return [] } })(),
+    }
+    if (!withToken) return view
+    // Hidden + subscribe-only: no tracks, no data, invisible to the other participants (and the agent).
+    const token = await mintRoomToken(activeRoomName, { identity: `${VIEWER_IDENTITY_PREFIX}${randomUUID().slice(0, 8)}`, name: 'Viewer', metadata: { type: 'viewer' }, ttl: '2h' },
+      { canPublish: false, canPublishData: false, canSubscribe: true, canUpdateOwnMetadata: false, hidden: true })
+    return { ...view, token, url: process.env.LIVEKIT_URL || '' }
   }
 
   connectRoomHook = async (phoneRoom?: string): Promise<string> => {
@@ -8064,7 +8095,7 @@ async function main() {
     // or a stale race) is torn down and replaced with a fresh one.
     const plan = planConnectRoom({
       activeRoomName: activeRoom ? activeRoomName : null,
-      occupied: !!activeRoom && activeRoom.remoteParticipants.size > 0,
+      occupied: !!activeRoom && peopleIn(activeRoom) > 0,
       // A caller's room is never handed to a browser, even once the caller has left.
       phoneCallLive: inPhoneRoom() || isPhoneRoomName(activeRoomName),
       phoneRoom,
@@ -8103,8 +8134,8 @@ async function main() {
     // client joined) were kicking the agent out mid-adopt, stranding the new
     // user on "Connecting..." (observed 2026-07-28). The alone-timer handles
     // the real departure when they actually leave.
-    if (activeRoom.remoteParticipants.size > 0) {
-      console.log(`🛑 /leave-room ignored (${reason}) — ${activeRoom.remoteParticipants.size} participant(s) still in room`)
+    if (peopleIn(activeRoom) > 0) {
+      console.log(`🛑 /leave-room ignored (${reason}) — ${peopleIn(activeRoom)} participant(s) still in room`)
       return
     }
     console.log(`🚪 /leave-room (${reason}) — destroying room session`)

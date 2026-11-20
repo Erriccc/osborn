@@ -333,7 +333,8 @@ function MessageContent({ content }: { content: string }) {
   )
 }
 
-// Modern chat message bubble with parts support
+// Modern chat message bubble with parts support. An action left out (the
+// read-only room view passes none) has no button; Copy is always there.
 export const MessageBubble = React.memo(function MessageBubble({
   message,
   grouped,
@@ -445,12 +446,14 @@ export const MessageBubble = React.memo(function MessageBubble({
                 </span>
               )}
               {copyButton}
-              <button onClick={onIgnore} className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95" title="Ignore" aria-label="Ignore">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
-                </svg>
-              </button>
+              {onIgnore && (
+                <button onClick={onIgnore} className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95" title="Ignore" aria-label="Ignore">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
+                  </svg>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -572,7 +575,7 @@ export const MessageBubble = React.memo(function MessageBubble({
         {!isSystem && !message.isStreaming && (
           <div className="flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 max-sm:opacity-100 transition-opacity">
             {copyButton}
-            <button
+            {onLike && <button
               onClick={onLike}
               className={`p-1.5 -m-1 rounded transition-colors active:scale-95 ${isLiked ? 'text-amber-400 hover:text-amber-300' : 'text-gray-500 hover:text-gray-200'}`}
               title="Like"
@@ -588,8 +591,8 @@ export const MessageBubble = React.memo(function MessageBubble({
                   <path d="M7 22H4a2 2 0 01-2-2v-7a2 2 0 012-2h3" />
                 </svg>
               )}
-            </button>
-            <button
+            </button>}
+            {onReplay && <button
               onClick={onReplay}
               className="p-1.5 -m-1 rounded text-gray-500 hover:text-gray-200 transition-colors active:scale-95"
               title="Replay"
@@ -598,7 +601,7 @@ export const MessageBubble = React.memo(function MessageBubble({
                 <polyline points="1 4 1 10 7 10" />
                 <path d="M3.51 15a9 9 0 102.13-9.36L1 10" />
               </svg>
-            </button>
+            </button>}
           </div>
         )}
       </div>

@@ -155,6 +155,41 @@ export interface ToolMeta {
   agentRole?: string
 }
 
+/** A `tool_use` event (agent buildToolLogEvent) → the row's ToolMeta. */
+export function toolMetaFromEvent(data: any): ToolMeta {
+  return {
+    tool: data.tool,
+    status: data.status === 'completed' ? 'completed' : 'running',
+    filePath: data.filePath,
+    fileName: data.fileName,
+    command: data.command,
+    pattern: data.pattern,
+    url: data.url,
+    description: data.description,
+    linesAdded: data.linesAdded,
+    linesRemoved: data.linesRemoved,
+    editCount: data.editCount,
+    diff: data.diff,
+    agentRole: data.agentRole,
+  }
+}
+
+/** What a tool row names: the file, command, pattern or URL. */
+export const toolTarget = (m: { fileName?: string; command?: string; pattern?: string; url?: string }): string =>
+  m.fileName || m.command || m.pattern || m.url || ''
+
+/** The agent sends running then completed per tool call: the completed event flips the newest
+ *  running row for that tool in place (merging the extra fields). Null when none is running. */
+export function completeToolRow(rows: ChatMessage[], meta: ToolMeta): ChatMessage[] | null {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const m = rows[i]
+    if (m.toolMeta?.tool === meta.tool && m.toolMeta?.status === 'running') {
+      return [...rows.slice(0, i), { ...m, toolMeta: { ...m.toolMeta, ...meta, status: 'completed' } }, ...rows.slice(i + 1)]
+    }
+  }
+  return null
+}
+
 // Payload for a persistent, expandable "Conversation compacted" transcript
 // marker (phase 1 of compaction integrity / visible memory). Driven entirely by
 // the already-flowing compaction_* data-channel events — it is pure surface and

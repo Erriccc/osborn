@@ -48,3 +48,12 @@ export function dropControlUserItems<T extends { role: string; content: string }
   const out = items.filter((m) => m.role !== 'user' || !isControlNotice(m.content))
   return out.length === items.length ? items : out
 }
+
+/** Stored history (/session-messages) → turns: user/assistant roles, control notices dropped, time in ms (0 when unknown). */
+export function historyTurns(msgs: Array<{ role: string; content: string; ts?: string | number | null }>): Array<{ role: 'user' | 'assistant'; content: string; t: number }> {
+  return dropControlUserItems(msgs.map((m) => ({ role: m.role === 'assistant' ? 'assistant' as const : 'user' as const, content: String(m.content ?? ''), ts: m.ts })))
+    .map((m) => {
+      const t = m.ts ? new Date(m.ts).getTime() : 0
+      return { role: m.role, content: m.content, t: Number.isNaN(t) ? 0 : t }
+    })
+}

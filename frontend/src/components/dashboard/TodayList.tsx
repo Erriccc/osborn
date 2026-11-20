@@ -12,7 +12,8 @@ import { buildTodayRows, type TodayBrief, type TodayKind, type TodayNote, type T
 /**
  * Recent: the dashboard's one list (rows from lib/today.ts). MODEL: Things 3
  * "Today" and Linear "My Issues". Session rows resume, note rows open a
- * NoteSheet, brief rows open the brief. Each row is a single control.
+ * NoteSheet, brief rows open the brief. Each row is a single control; the
+ * session live on the machine also gets View beside it (read-only, #383).
  */
 
 type Filter = 'all' | TodayKind
@@ -37,11 +38,14 @@ export default function TodayList({
   sessions,
   sessionsLoading,
   onResume,
+  liveSessionId,
 }: {
   /** Deduped (prepareSessions), so each session is one row. */
   sessions: SessionListItem[]
   sessionsLoading?: boolean
   onResume: (sessionId: string, cwd?: string) => void
+  /** The session live on the machine right now: its row gets View (read-only room view, #383). */
+  liveSessionId?: string | null
 }) {
   const [notes, setNotes] = useState<TodayNote[]>([])
   const [briefs, setBriefs] = useState<TodayBrief[]>([])
@@ -129,11 +133,20 @@ export default function TodayList({
       </>
     )
     const cls = 'group flex w-full min-h-[40px] items-center gap-2 sm:gap-3 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-surface-2/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]'
+    const live = r.kind === 'session' && !!liveSessionId && r.id === liveSessionId
+    const viewHref = `/view?${new URLSearchParams({ session: r.id, ...(r.cwd ? { workingDirectory: r.cwd } : {}) })}`
     return (
-      <li key={r.key}>
+      <li key={r.key} className={live ? 'flex items-center gap-1' : undefined}>
         {r.kind === 'brief'
           ? <Link href={`/library/${r.id}`} className={cls} title={r.title}>{inner}</Link>
-          : <button type="button" onClick={() => open(r)} title={r.title} className={cls}>{inner}</button>}
+          : <button type="button" onClick={() => open(r)} title={r.title} className={live ? `${cls} min-w-0 flex-1` : cls}>{inner}</button>}
+        {live && (
+          <Link href={viewHref} title="Watch this live session without joining it" aria-label={`View live session: ${r.title}`}
+            className="shrink-0 flex min-h-[40px] items-center gap-1.5 rounded-lg px-2.5 text-[12px] font-medium text-[var(--text-secondary)] transition-colors hover:bg-surface-2/60 hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]">
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--voice-speaking)]" aria-hidden="true" />
+            View
+          </Link>
+        )}
       </li>
     )
   }

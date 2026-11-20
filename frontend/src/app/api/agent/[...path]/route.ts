@@ -11,7 +11,7 @@
  * Deliberately TIGHT — only the exact paths in the allowlists are forwarded;
  * everything else 404s here. Dangerous/stateful routes (restart, editor, canvas)
  * keep their own gates and are never proxied.
- *   GET:  sessions, session-messages, sessions/export-one (binary tar.gz), the store reads
+ *   GET:  sessions, session-messages, sessions/export-one (binary tar.gz), view-token, the store reads
  *   POST: sessions/import  (session-sharing import leg; binary body), the store changes
  */
 import { NextRequest, NextResponse } from 'next/server'
@@ -21,7 +21,8 @@ import { agentTimeoutMs } from '@/lib/agent-read'
 // Agent & skill store (agent/src/index.ts): listing, prompts, skill changes and the catalog.
 const STORE_GET = ['agents', 'skills', 'skills/content', 'store/catalog', 'store/entry']
 const STORE_POST = ['skills/fork', 'skills/remove', 'store/install']
-const PROXYABLE_GET = new Set(['sessions', 'session-messages', 'sessions/export-one', ...STORE_GET])
+// view-token: the read-only room view's hidden, subscribe-only LiveKit token and live status (#383).
+const PROXYABLE_GET = new Set(['sessions', 'session-messages', 'sessions/export-one', 'view-token', ...STORE_GET])
 const PROXYABLE_POST = new Set(['sessions/import', ...STORE_POST])
 // Not "Not found": agentError reads that as the machine's catch-all (an outdated machine).
 const notProxyable = () => NextResponse.json({ error: 'This page cannot reach that route on your machine. Reload the page.' }, { status: 404 })

@@ -1266,7 +1266,7 @@ export class ClaudeLLM extends llm.LLM {
   //   PreToolUse(Task) records tool_use_id per subagent_type (FIFO) →
   //   SubagentStart claims the oldest unclaimed tool_use_id of its type →
   //   task_started maps tool_use_id → task_id.
-  #tasksById = new Map<string, { toolUseId?: string; subagentType?: string; description?: string; status: string }>()
+  #tasksById = new Map<string, { toolUseId?: string; subagentType?: string; description?: string; status: string; startedAt: number }>()
   #taskIdByToolUse = new Map<string, string>()
   #pendingToolUseByType = new Map<string, string[]>()
   #toolUseByAgentId = new Map<string, string>()
@@ -1960,6 +1960,7 @@ export class ClaudeLLM extends llm.LLM {
         subagentType: msg.subagent_type,
         description: msg.description,
         status: 'running',
+        startedAt: Date.now(),
       })
       if (msg.tool_use_id) this.#taskIdByToolUse.set(msg.tool_use_id, msg.task_id)
     } else if (msg.subtype === 'task_updated') {
@@ -1974,10 +1975,10 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   /** Live background tasks (for truthful status/UX). */
-  getRunningTasks(): Array<{ taskId: string; subagentType?: string; description?: string; status: string }> {
+  getRunningTasks(): Array<{ taskId: string; subagentType?: string; description?: string; status: string; startedAt: number }> {
     return [...this.#tasksById.entries()]
       .filter(([, t]) => t.status === 'running' || t.status === 'pending')
-      .map(([taskId, t]) => ({ taskId, subagentType: t.subagentType, description: t.description, status: t.status }))
+      .map(([taskId, t]) => ({ taskId, subagentType: t.subagentType, description: t.description, status: t.status, startedAt: t.startedAt }))
   }
 
   // ============================================================
