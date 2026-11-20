@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 58
+Version: 59
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -203,11 +203,14 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
+## What's new in v59
+- **A timed-out act holds the action lock until it has stopped.** Past `OSBORN_BRAIN_TIMEOUT_MS` the engine cancels the call and waits up to 15s for it to stop before the next action runs; a call still running after that is logged in the run's marks.
+
 ## What's new in v58
 - The evidence-log redactor now also masks npm, AWS, PEM private-key, Fireworks and Soniox keys, and secret assignment values (`PASSWORD=…`, `token=…` keyword arguments, symbol-start or quote-split values).
 
 ## What's new in v57
-- **A timed-out act never acts late.** Past `OSBORN_BRAIN_TIMEOUT_MS` the call is cancelled before it can click or type, so it cannot land on top of your next action; `/journey start` with the recovered journey's own name, from the driver who owned it, continues it with its steps and replies `continued:true`.
+- **A timed-out act never acts late.** Past `OSBORN_BRAIN_TIMEOUT_MS` the call is cancelled before it can start a new click or type (v59 also waits for it to stop); `/journey start` with the recovered journey's own name, from the driver who owned it, continues it with its steps and replies `continued:true`.
 
 ## What's new in v56
 - **A deploy no longer drops your request silently.** A command in flight when the engine stops (a deploy or restart) gets `503 engine_restarting` with `retryable:true` and `retryAfterSec`, not an empty 502: wait, check `/status` (`restartRecovered`, `previousRun`) and send it again — the active journey carries over. `drive.sh say` re-attaches on it.
