@@ -385,6 +385,8 @@ function VoiceRoomInner({
   // upgrade (`claude_auth_optional`, #144): the modal says so and offers Not now.
   const [claudeAuthOptional, setClaudeAuthOptional] = useState(false)
   const authPromptDismissedRef = useRef(false)
+  // The message handler reads this, not the state: an optional sign-in must not mark the session as blocked.
+  const authOptionalRef = useRef(false)
   authPromptDismissedRef.current = authPromptDismissed
   const dismissAuthModal = useCallback(() => {
     setAuthPromptDismissed(true)
@@ -2635,22 +2637,27 @@ function VoiceRoomInner({
         // "Sign in" button can open straight into the flow.
         setClaudeAuthUrl(data.url)
         if (shouldAutoOpenAuthModal('claude_auth_url', authPromptDismissedRef.current)) setClaudeAuthStatus('waiting')
-        setClaudeAuthEverRequired(true)
-        // #78: surface the terminal auth state (connected=true → spinner off,
-        // banner on) for ANY auth-gate entry message, not only
-        // claude_auth_required. If the agent emits the URL first (or the
-        // required message is dropped), the account would otherwise sit on an
-        // infinite "Connecting…" with the watchdog disarmed. markAuthRequired
-        // is idempotent, so a later claude_auth_required is harmless.
-        onAuthRequired?.()
+        if (!authOptionalRef.current) {
+          setClaudeAuthEverRequired(true)
+          // #78: surface the terminal auth state (connected=true → spinner off,
+          // banner on) for ANY auth-gate entry message, not only
+          // claude_auth_required. If the agent emits the URL first (or the
+          // required message is dropped), the account would otherwise sit on an
+          // infinite "Connecting…" with the watchdog disarmed. markAuthRequired
+          // is idempotent, so a later claude_auth_required is harmless.
+          onAuthRequired?.()
+        }
       } else if (data.type === 'claude_auth_optional') {
         console.log('🔑 Claude sign-in optional (fallback model)')
+        authOptionalRef.current = true
         setClaudeAuthOptional(true)
       } else if (data.type === 'claude_auth_waiting_code') {
         console.log('🔑 Claude waiting for auth code')
         if (shouldAutoOpenAuthModal('claude_auth_waiting_code', authPromptDismissedRef.current)) setClaudeAuthStatus('waiting_code')
-        setClaudeAuthEverRequired(true)
-        onAuthRequired?.()
+        if (!authOptionalRef.current) {
+          setClaudeAuthEverRequired(true)
+          onAuthRequired?.()
+        }
       } else if (data.type === 'claude_auth_submitting') {
         console.log('🔑 Claude submitting auth code')
         setClaudeAuthStatus('submitting')
@@ -2659,6 +2666,7 @@ function VoiceRoomInner({
         setClaudeAuthUrl(null)
         setClaudeAuthStatus('complete')
         setClaudeAuthEverRequired(false)
+        authOptionalRef.current = false
         setClaudeAuthOptional(false)
         setAuthPromptDismissed(false) // auth resolved — allow a future prompt to re-open
         onAuthResolved?.('claude_auth_complete')

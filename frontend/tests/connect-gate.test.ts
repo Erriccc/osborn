@@ -237,6 +237,8 @@ t('VoiceRoom: claude_auth_optional makes sign-in optional and startable', () => 
   ok(voiceRoom.includes("{claudeAuthOptional ? 'Not now' : 'Close'}"), 'labelled way out')
   ok(voiceRoom.includes("sendJson({ type: 'claude_auth_start' })"), 'Connect Claude starts sign-in on demand')
   ok(voiceRoom.includes('relyingOnFallback={claudeAuthEverRequired || claudeAuthOptional}'), 'health notice knows about the fallback')
+
+  ok(/if \(!authOptionalRef\.current\) \{\s*setClaudeAuthEverRequired\(true\)/.test(voiceRoom), 'an optional sign-in URL never marks the session as blocked')
 })
 
 // ── Report ────────────────────────────────────────────────────────────────
