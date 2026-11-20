@@ -35,5 +35,13 @@ Use this every time changes are ready to ship.
    - Check the running version matches what was published
    - grep the osborn-sprite.log for the version if needed
 
+## Dev iteration (no npm)
+To try an unreleased build on one Fly machine without publishing:
+`cd frontend && npx tsx scripts/fly-dev-install.ts <fly-app> [ref, default HEAD] --yes`
+(needs FLY_API_TOKEN, NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in `frontend/.env.local`).
+It packs `agent/` at that commit under the version the machine already reports, installs it on the volume and restarts; `/workspace/.osborn-dev-build` records what is installed.
+Rollback: the dashboard Update button or the next release image swaps it out once the version changes. To drop it before then at the same version, delete `/workspace/.npm-global/lib/node_modules/osborn` on the machine and restart; the entrypoint reinstalls the image's version from npm.
+Dev only: real releases still go through the steps above.
+
 ## Why this order matters
 Installing from the registry (step 5) ensures the Sprite runs exactly what anyone else would install — not a local build that may differ from what was published. Local builds are for development only.

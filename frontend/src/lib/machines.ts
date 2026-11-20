@@ -1216,9 +1216,8 @@ async function updateOsbornImpl(
   // re-extract (~5s) = ~1-2 min total, same as legacy image-swap, but with
   // volume-as-truth architecture in place.
   //
-  // The `updateOsbornInChroot()` helper below is kept as a private function
-  // for ops scenarios (e.g. manual recovery from corrupted /opt/npm-global)
-  // but is NOT wired into the active update path.
+  // Dev builds go on in place through installOsbornSpec() below (same
+  // version as the image, so the entrypoint keeps them).
   //
   // Clear any stale manifest file from the abandoned manifest-flow (best-
   // effort, fire-and-forget).
@@ -1384,147 +1383,95 @@ async function updateOsbornImpl(
   )
 }
 
+/** A dev build of the agent, packed from a git ref (frontend/scripts/fly-dev-install.ts). */
+export interface OsbornInstallSpec {
+  tarballUrl: string // short-lived signed URL
+  sha256: string
+  ref: string
+  gitSha: string
+}
+
 /**
- * In-place osborn update via chroot npm install.
+ * Install a packed osborn tarball onto a running machine's volume, without
+ * npm publish or an image swap: download, verify sha256, `npm install -g` into
+ * /workspace/.npm-global, restart, and confirm /health reports expectVersion.
  *
- * NOT WIRED INTO THE ACTIVE UPDATE PATH as of 0.9.47 — see updateOsbornImpl
- * step 2 for rationale (image-swap is faster and more reliable than in-place
- * npm install on 2GB machines due to onnxruntime-node OOM risk during
- * postinstall). Kept as a manual recovery helper for corrupted volumes.
- *
- * Runs `chroot /workspace/root-chroot npm install -g osborn@<version>` against
- * a running Fly Machine. The new binary lands in /opt/npm-global on the
- * persistent volume (because NPM_CONFIG_PREFIX is set inside the chroot), then
- * we restart the machine so the entrypoint re-exec's osborn from the updated
- * /opt/npm-global/bin/osborn path.
- *
- * Why this is faster than image-swap: no PATCH config, no Fly machine
- * replacement, no image pull, no /usr re-seed. Just an npm install (~15-25s)
- * + a stop/start cycle (~10-15s) = ~30-45s vs ~55-95s for image-swap.
- *
- * Why we still need a restart: the running osborn process holds the OLD code
- * in memory. The new binary on disk only becomes effective when osborn
- * re-execs from the volume-backed path — that happens via the entrypoint
- * after the machine restarts. We can't `kill -HUP` the running process
- * because osborn doesn't have a self-restart handler (yet).
- *
- * If anything fails, caller falls back to image-swap.
+ * The tarball MUST carry the version the image already runs: the entrypoint
+ * reinstalls osborn from npm at boot when the volume copy's version differs
+ * from the image's. Shares updateOsborn's per-sandbox lock and result store.
  */
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function updateOsbornInChroot(
+export async function installOsbornSpec(
   appName: string,
-  machineId: string,
-  targetVersion: string,
+  spec: OsbornInstallSpec,
   userId: string,
+  expectVersion: string,
 ): Promise<{ success: boolean; version: string | null; log: string }> {
-  // 1. npm install inside chroot — this is the actual update.
-  //    Timeout 180s: npm install on slow connections can take a while.
-  console.log(`[machines] in-chroot: running npm install -g osborn@${targetVersion}`)
-  const install = await execInMachine(
-    appName,
-    machineId,
-    [
-      'chroot', '/workspace/root-chroot',
-      'env',
-      'NPM_CONFIG_PREFIX=/opt/npm-global',
-      'PATH=/opt/npm-global/bin:/usr/local/bin:/usr/bin:/bin',
-      'npm', 'install', '-g', `osborn@${targetVersion}`,
-    ],
-    180,
-  )
-  if (install.exitCode !== 0) {
-    return {
-      success: false,
-      version: null,
-      log: `chroot npm install failed (exit ${install.exitCode}): ${(install.stdErr || install.stdOut).substring(0, 400)}`,
-    }
+  if (updateInflight.has(appName)) {
+    return { success: false, version: null, log: `An update is already running on ${appName}` }
+  }
+  const work = installOsbornSpecImpl(appName, spec, userId, expectVersion)
+  updateInflight.set(appName, work)
+  work.finally(() => {
+    if (updateInflight.get(appName) === work) updateInflight.delete(appName)
+  })
+  return work
+}
+
+async function installOsbornSpecImpl(
+  appName: string,
+  spec: OsbornInstallSpec,
+  userId: string,
+  expectVersion: string,
+): Promise<{ success: boolean; version: string | null; log: string }> {
+  const startedAt = Date.now()
+  const label = `${expectVersion} (dev ${spec.gitSha.slice(0, 7)})`
+  const record = (status: UpdateResult['status'], version: string | null, log: string) =>
+    setUpdateResult({
+      sandboxId: appName,
+      status,
+      targetVersion: label,
+      installedVersion: version,
+      error: status === 'error' ? log : null,
+      startedAt,
+      completedAt: status === 'in-progress' ? null : Date.now(),
+      log,
+    })
+  const finish = (success: boolean, version: string | null, log: string) => {
+    record(success ? 'success' : 'error', version, log)
+    return { success, version, log }
+  }
+  record('in-progress', null, `installOsbornSpec: ${label}`)
+
+  const machine = await getFirstMachine(appName)
+  if (!machine) return finish(false, null, `No machine found for app ${appName}`)
+  const tgz = '/tmp/osborn-dev.tgz'
+  const run = async (step: string, cmd: string[], timeoutSec: number) => {
+    const r = await execInMachine(appName, machine.id, cmd, timeoutSec)
+    if (r.exitCode !== 0) throw new Error(`${step} failed (exit ${r.exitCode}): ${(r.stdErr || r.stdOut).substring(0, 400)}`)
+    return r.stdOut
   }
 
-  // 2. Verify the install landed by reading the binary's --version inside chroot.
-  const verify = await execInMachine(
-    appName,
-    machineId,
-    [
-      'chroot', '/workspace/root-chroot',
-      'env',
-      'PATH=/opt/npm-global/bin:/usr/local/bin:/usr/bin:/bin',
-      '/opt/npm-global/bin/osborn', '--version',
-    ],
-    15,
-  )
-  // osborn --version output format: "osborn vX.Y.Z" or just "X.Y.Z" — extract last token
-  const installedRaw = verify.stdOut.trim().split(/\s+/).pop() ?? ''
-  const installedVersion = installedRaw.replace(/^v/, '')
-  if (verify.exitCode !== 0 || !installedVersion) {
-    return {
-      success: false,
-      version: null,
-      log: `chroot osborn --version failed: exit=${verify.exitCode} stdout="${verify.stdOut.substring(0, 200)}" stderr="${verify.stdErr.substring(0, 200)}"`,
-    }
-  }
-  if (installedVersion !== targetVersion) {
-    return {
-      success: false,
-      version: installedVersion,
-      log: `chroot install reports v${installedVersion} but expected v${targetVersion}`,
-    }
+  try {
+    await run('download', ['curl', '-fsSL', '-o', tgz, spec.tarballUrl], 120)
+    const sum = (await run('sha256sum', ['sha256sum', tgz], 30)).trim().split(/\s+/)[0]
+    if (sum !== spec.sha256) throw new Error(`sha256 mismatch: got ${sum}, expected ${spec.sha256}`)
+    console.log(`[machines] installOsbornSpec: npm install -g ${label} on ${appName}`)
+    await run('npm install', ['env', 'NPM_CONFIG_PREFIX=/workspace/.npm-global', 'npm', 'install', '-g', tgz, '--no-audit', '--no-fund'], 600)
+    // Positional arg, not interpolation: the ref is caller-supplied text.
+    const marker = `ref=${spec.ref}\ngit=${spec.gitSha}\nsha256=${spec.sha256}\nversion=${expectVersion}\n`
+    await run('marker', ['sh', '-c', 'printf "%s" "$1" > /workspace/.osborn-dev-build', 'sh', marker], 10)
+  } catch (err) {
+    return finish(false, null, (err as Error).message)
   }
 
-  // 3. Write the manifest marker so the entrypoint's version-sync block on
-  //    subsequent boots is a no-op (it'll see WANT===CURRENT and skip).
-  //    Fire-and-forget — non-fatal if it fails.
-  execInMachine(
-    appName,
-    machineId,
-    ['sh', '-c', `echo ${targetVersion} > /workspace/.osborn-want-version`],
-    5,
-  ).catch(() => {})
-
-  // 4. Restart the machine so the entrypoint re-exec's osborn from the new
-  //    /opt/npm-global/bin/osborn (the running osborn still holds the old
-  //    code in memory; we need a process restart for the update to take
-  //    effect). The volume persists — credentials, sessions, skills stay put.
-  console.log(`[machines] in-chroot: restarting machine to load updated osborn binary`)
-  const restarted = await restartService(appName, userId)
-  if (!restarted) {
-    return {
-      success: false,
-      version: installedVersion,
-      log: `npm install succeeded (osborn@${installedVersion} on volume) but machine restart failed; next boot will pick up the new version automatically`,
-    }
+  if (!(await restartService(appName, userId))) {
+    return finish(false, null, 'Dev build installed on the volume but the machine did not come back healthy')
   }
-
-  // 5. Wait for /health, then confirm reported version matches target.
-  const previewUrl = `https://${appName}.fly.dev`
-  const healthy = await waitForHealth(previewUrl, 30)
-  if (!healthy) {
-    return {
-      success: false,
-      version: installedVersion,
-      log: `osborn@${installedVersion} installed on volume but /health did not respond within 30s post-restart`,
-    }
+  const installed = await readInstalledOsbornVersion(appName)
+  if (installed !== expectVersion) {
+    return finish(false, installed, `/health reports v${installed ?? 'unknown'} after restart, expected v${expectVersion}`)
   }
-  const reported = await readInstalledOsbornVersion(appName)
-  if (!reported) {
-    return {
-      success: false,
-      version: installedVersion,
-      log: 'Machine running but /health did not return a version after in-place update',
-    }
-  }
-  if (reported !== targetVersion) {
-    return {
-      success: false,
-      version: reported,
-      log: `agent reports v${reported} after restart, expected v${targetVersion} — in-place install may have been overridden`,
-    }
-  }
-
-  return {
-    success: true,
-    version: reported,
-    log: `In-place chroot update OK — osborn@${reported} on volume, no image swap needed`,
-  }
+  return finish(true, installed, `Installed dev build ${spec.ref} @ ${spec.gitSha} (osborn@${installed})`)
 }
 
 // REMOVED 2026-05-22: updateViaManifest function.
