@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath, stewardPushRecords, githubIssueBase, issueBaseFromRemote } = await import('../src/steward-verdict.js')
+const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath, stewardPushRecords, githubIssueBase, issueBaseFromRemote, agentResultRecord, stewardServedRecords } = await import('../src/steward-verdict.js')
 
 let pass = 0
 const t = (name: string, fn: () => unknown) => {
@@ -210,6 +210,48 @@ t('#224: the issue base is anchored to the github.com host', () => {
   assert.equal(issueBaseFromRemote('git@github.com:o/r.git'), 'https://github.com/o/r/issues/')
   assert.equal(issueBaseFromRemote('https://github.com/o/r'), 'https://github.com/o/r/issues/')
   assert.equal(issueBaseFromRemote('https://notgithub.com/o/r.git'), undefined)
+})
+
+t('#212: a sub-agent result is recorded in the same sidecar, capped, and replayed', () => {
+  assert.equal(agentResultRecord('writer', 'writer', '   '), null, 'empty return makes no entry')
+  assert.equal(agentResultRecord('', 'writer', 'x'), null, 'no agent name makes no entry')
+  const long = agentResultRecord('researcher', 'researcher', 'Found it.\n' + 'x'.repeat(5000), '2026-11-13T00:00:02.000Z')!
+  assert.equal(long.agent, 'researcher')
+  assert.equal(long.role, 'researcher')
+  assert.ok(long.result.startsWith('Found it.') && long.result.length < 4100 && long.result.endsWith('[truncated]'))
+  const wd = mkdtempSync(join(tmpdir(), 'agent-result-'))
+  const prev = process.env.CLAUDE_CONFIG_DIR
+  process.env.CLAUDE_CONFIG_DIR = wd
+  try {
+    const sid = 'sess-agent-result'
+    appendStewardRecord(sid, wd, { gate: 'advise', message: 'warn', at: '2026-11-13T00:00:01.000Z' })
+    appendStewardRecord(sid, wd, long)
+    const got: any[] = readStewardRecords(sid, wd)
+    assert.equal(got.length, 2)
+    assert.deepEqual(got[1], long)
+    const pushed: any[] = stewardPushRecords(got)
+    assert.equal(pushed[1].agent, 'researcher')
+    assert.ok(pushed[1].result.length < 700, 'push trims the result to stay under the packet limit')
+    assert.ok(got[1].result.length > 4000, 'stored record untouched')
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev
+    rmSync(wd, { recursive: true, force: true })
+  }
+})
+
+t('#212: push keeps the last 10 results apart from verdicts and gates', () => {
+  const recs: any[] = Array.from({ length: 13 }, (_, i) => ({ agent: 'writer', result: `r${i}`, at: '2026-11-13T00:00:00.000Z' }))
+  assert.deepEqual(stewardPushRecords(recs).map((r: any) => r.result), Array.from({ length: 10 }, (_, i) => `r${i + 3}`))
+})
+
+t('#212: a result is redacted, and /session-messages serves every verdict and gate but only the last 50 results', () => {
+  const r = agentResultRecord('writer', 'writer', 'done, key ANTHROPIC_API_KEY=sk-ant-api03-' + 'a'.repeat(90))!
+  assert.ok(!r.result.includes('sk-ant-api03-aaaa'), 'secret redacted')
+  const recs: any[] = [{ verdict: 'CLEAN', at: 'a' }, ...Array.from({ length: 60 }, (_, i) => ({ agent: 'writer', result: `r${i}`, at: 'b' })), { gate: 'deny', message: 'm', at: 'c' }]
+  const out = stewardServedRecords(recs)
+  assert.equal(out.filter((x: any) => 'result' in x).length, 50)
+  assert.ok(out.some((x: any) => 'verdict' in x) && out.some((x: any) => 'gate' in x))
+  assert.equal((out.find((x: any) => 'result' in x) as any).result, 'r10')
 })
 
 console.log(`\n${pass} passed`)

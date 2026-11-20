@@ -86,6 +86,7 @@ assert.ok(!installsSkillsSilently('steward', true))
 
 // Behaviours and chains.
 assert.ok(ROLES.writer.historyFirst && ROLES.steward.verdict)
+assert.ok(ROLES.writer.resultCard && ROLES.tester.resultCard && !ROLES.researcher.resultCard && !ROLES.steward.resultCard, '#212: only producers post a result card')
 for (const role of ROLE_NAMES) assert.equal(!!getChainReminder(role), !!ROLES[role].chain, `${role}: a chain needs a prompt file and only a chain has one`)
 const fork = getChainReminder('writer', 'my-writer')!
 assert.ok(fork.includes('`my-writer`') && !fork.includes('{{agent}}') && fork.includes('`steward`'), 'the reminder names the agent that finished')

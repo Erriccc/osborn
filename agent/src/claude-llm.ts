@@ -24,7 +24,7 @@ import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
-import { parseStewardVerdict, appendStewardRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
+import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
@@ -3305,6 +3305,13 @@ class ClaudeLLMStream extends llm.LLMStream {
               if (verdict) {
                 this.#recordSteward(verdict)
                 this.#eventEmitter.emit('steward_verdict', verdict)
+              } else if (atRole && ROLES[atRole].resultCard) {
+                // A writer's or tester's return as a transcript entry (#212), same sidecar.
+                const result = agentResultRecord(String(at), atRole, msg)
+                if (result) {
+                  this.#recordSteward(result)
+                  this.#eventEmitter.emit('agent_result', result)
+                }
               }
               // Pattern #1 verifier chaining — CORRECT timing (moved here from PostToolUse).
               // SubagentStop fires at REAL completion. When a chained producer (writer/researcher)

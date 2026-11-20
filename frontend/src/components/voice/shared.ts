@@ -235,6 +235,20 @@ export interface StewardGateRecord {
   message: string
   at: string
 }
+// A named sub-agent's return as a collapsible transcript entry (#212). Same sidecar as the
+// steward records (agent/src/steward-verdict.ts AgentResultRecord); the steward keeps its own card.
+export interface AgentResultRecord {
+  agent: string
+  role?: string
+  result: string
+  at: string
+}
+export const agentResultRow = (id: string, r: AgentResultRecord): ChatMessage => ({
+  id, role: 'system', content: `${r.agent}: ${r.result}`, timestamp: new Date(r.at), category: 'chat', agentResult: r,
+})
+/** Steward verdicts, gate events and agent results, as the agent serves them in its `steward` list. */
+export type SidecarRecord = StewardVerdict | StewardGateRecord | AgentResultRecord
+
 export const stewardGateLine = (g: Pick<StewardGateRecord, 'gate' | 'message'>) =>
   `Steward gate ${g.gate === 'deny' ? 'refused' : 'warned'}: ${g.message ?? ''}`
 /** The gate's chat row, live or rebuilt on reload: a system line that carries its record so it is cached. */
@@ -259,6 +273,8 @@ export interface ChatMessage {
   steward?: StewardVerdict
   // Present only on a steward gate line (plain system row, persisted like the card).
   stewardGate?: StewardGateRecord
+  // Present only on a sub-agent result row; renders AgentResultCard.
+  agentResult?: AgentResultRecord
   messageId?: string
   chunkIndex?: number
   liked?: boolean

@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { MarkdownMessage } from '../MarkdownMessage'
 import { FileCard } from '../chat/FileCard'
 import { userBubbleText } from '@/lib/chat-echo'
-import { stripProvenance, type ChatMessage, type CompactionMarker, type MessagePart, type SpeakingChunk, type StewardVerdict } from './shared'
+import { stripProvenance, type ChatMessage, type CompactionMarker, type MessagePart, type SpeakingChunk, type StewardVerdict, type AgentResultRecord } from './shared'
 
 // Phase 1 of "compaction integrity / visible memory": a persistent, expandable
 // marker that makes an otherwise-invisible context compaction VISIBLE in the
@@ -155,6 +155,31 @@ function StewardVerdictCard({ data }: { data: StewardVerdict }) {
         </details>
       )}
     </div>
+  )
+}
+
+// A named sub-agent's return (#212): name + role, first line, the rest collapsed.
+// The steward keeps StewardVerdictCard; this is the plain entry for every other agent.
+function AgentResultCard({ data }: { data: AgentResultRecord }) {
+  const text = data.result.trim()
+  const firstLine = text.split('\n').find(l => l.trim())?.trim() ?? ''
+  const more = text.length > firstLine.length
+  return (
+    <details className="group w-full max-w-xl rounded-lg border border-border-subtle bg-surface-2/40 px-3.5 py-2 text-xs leading-relaxed">
+      <summary className={`flex items-start gap-2 list-none [&::-webkit-details-marker]:hidden ${more ? 'cursor-pointer' : 'cursor-default'}`}>
+        <span className="text-[11px] font-semibold text-text-secondary mt-0.5 shrink-0">{data.agent}</span>
+        {data.role && data.role !== data.agent && (
+          <span className="px-1.5 py-0.5 rounded border border-border-subtle text-[10px] text-text-muted shrink-0">{data.role}</span>
+        )}
+        <span className="min-w-0 flex-1 truncate text-text-primary">{firstLine}</span>
+        {more && (
+          <svg className="w-3 h-3 mt-0.5 text-text-muted shrink-0 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2} aria-hidden>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+          </svg>
+        )}
+      </summary>
+      {more && <div className="mt-1.5 whitespace-pre-wrap break-words text-text-secondary">{text}</div>}
+    </details>
   )
 }
 
@@ -438,6 +463,10 @@ export const MessageBubble = React.memo(function MessageBubble({
 
   if (message.steward) {
     return <StewardVerdictCard data={message.steward} />
+  }
+
+  if (message.agentResult) {
+    return <AgentResultCard data={message.agentResult} />
   }
 
   // Date / prior-conversation dividers — centered hairline label (Slack-style),

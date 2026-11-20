@@ -5,6 +5,7 @@ import { execFileSync } from 'child_process'
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { getStorePath } from './session-store.js'
+import { redactSecrets } from './content/secret-rules.js'
 
 export type StewardVerdictKind = 'CLEAN' | 'REFACTORED' | 'BLOCK'
 
@@ -84,7 +85,23 @@ export interface StewardGateRecord {
   message: string
   at: string
 }
-export type StewardRecord = StewardVerdict | StewardGateRecord
+/** A named sub-agent's return (#212), shown as a collapsible transcript entry. Same sidecar, so a reload rebuilds it.
+ *  The steward's own return is a StewardVerdict instead. */
+export interface AgentResultRecord {
+  agent: string
+  role?: string
+  result: string
+  at: string
+}
+export type StewardRecord = StewardVerdict | StewardGateRecord | AgentResultRecord
+
+const MAX_RESULT = 4000
+const MAX_RESULT_PUSH = 600
+export function agentResultRecord(agent: string, role: string | null | undefined, result: string, at = new Date().toISOString()): AgentResultRecord | null {
+  const text = redactSecrets(String(result ?? ''), { assistant: true }).trim()
+  if (!agent || !text) return null
+  return { agent, ...(role ? { role } : {}), result: cap(text, MAX_RESULT), at }
+}
 
 const LABELS: Record<string, string> = {
   'VERDICT': 'verdict', 'REUSE MAP': 'reuse', 'INVENTORY': 'reuse', 'DUPLICATES': 'reuse', 'BEHAVIOUR': 'regressions', 'NET-NEW': 'netNew', 'REMOVED': 'removed',
@@ -174,8 +191,15 @@ export function parseStewardVerdict(text: string, at: string = new Date().toISOS
  *  verdicts out), file order, without `raw` and `impact` so it stays under the packet limit.
  *  `/session-messages` serves the full records. */
 export function stewardPushRecords(records: StewardRecord[], n = 10): StewardRecord[] {
-  const keep = new Set([...records.filter((r) => 'verdict' in r).slice(-n), ...records.filter((r) => 'gate' in r).slice(-n)])
-  return records.filter((r) => keep.has(r)).map((r) => ('verdict' in r ? { ...r, raw: undefined, impact: undefined } : r))
+  const keep = new Set([...records.filter((r) => 'verdict' in r).slice(-n), ...records.filter((r) => 'gate' in r).slice(-n), ...records.filter((r) => 'result' in r).slice(-n)])
+  return records.filter((r) => keep.has(r)).map((r) =>
+    'verdict' in r ? { ...r, raw: undefined, impact: undefined } : 'result' in r ? { ...r, result: cap(r.result, MAX_RESULT_PUSH) } : r)
+}
+
+/** `/session-messages`: every verdict and gate, but only the last `n` results (they are frequent and long). */
+export function stewardServedRecords(records: StewardRecord[], n = 50): StewardRecord[] {
+  const keep = new Set(records.filter((r) => 'result' in r).slice(-n))
+  return records.filter((r) => !('result' in r) || keep.has(r))
 }
 
 /** Sidecar path: next to session.db and compactions.jsonl. */
@@ -189,7 +213,7 @@ export function appendStewardRecord(sessionId: string, workingDir: string, v: St
   appendFileSync(p, JSON.stringify(v) + '\n', 'utf-8')
 }
 
-/** Every recorded verdict and gate event for a session, file order. Missing file or torn lines are skipped. */
+/** Every recorded verdict, gate event and agent result for a session, file order. Missing file or torn lines are skipped. */
 export function readStewardRecords(sessionId: string, workingDir: string): StewardRecord[] {
   const p = getStewardLogPath(sessionId, workingDir)
   if (!existsSync(p)) return []
@@ -197,7 +221,7 @@ export function readStewardRecords(sessionId: string, workingDir: string): Stewa
   for (const line of readFileSync(p, 'utf-8').split('\n')) {
     try {
       const o = JSON.parse(line)
-      if (o && (typeof o.verdict === 'string' || typeof o.gate === 'string') && typeof o.at === 'string') out.push(o)
+      if (o && (typeof o.verdict === 'string' || typeof o.gate === 'string' || (typeof o.agent === 'string' && typeof o.result === 'string')) && typeof o.at === 'string') out.push(o)
     } catch { /* blank or torn line */ }
   }
   return out

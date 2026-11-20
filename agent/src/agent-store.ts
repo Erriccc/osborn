@@ -57,6 +57,8 @@ interface RoleSpec {
   historyFirst?: boolean
   /** Its final message is parsed into a steward verdict card. */
   verdict?: boolean
+  /** Its final message shows in chat as a result entry (roles whose findings the orchestrator does not relay). */
+  resultCard?: boolean
   /** Verifier chain: who runs after it. The text pushed to the orchestrator when it
    *  finishes is a prompt: prompts/chain-after-<role>.md (getChainReminder). */
   chain?: Role[]
@@ -74,10 +76,11 @@ export const ROLES: Record<Role, RoleSpec> = {
     icon: 'list', write: 'workspace', chain: ['steward', 'writer'],
   },
   writer: {
+    resultCard: true,
     summary: 'Makes the code changes (each write goes through your permission settings); its work is tested, stewarded and reviewed.',
     icon: 'pen', write: 'anywhere', skillInstall: true, historyFirst: true, chain: ['tester', 'steward', 'reviewer'],
   },
-  tester: { summary: 'Writes and runs tests to check the work holds up. May write test files only.', icon: 'test', write: { extensions: /\.(test|spec)\.[jt]sx?$/, label: 'test', matchBasename: true } },
+  tester: { resultCard: true, summary: 'Writes and runs tests to check the work holds up. May write test files only.', icon: 'test', write: { extensions: /\.(test|spec)\.[jt]sx?$/, label: 'test', matchBasename: true } },
   steward: {
     summary: 'Keeps the code lean: reuses what exists and makes sure a change breaks nothing that depends on it.',
     icon: 'shield', write: 'anywhere',  // refactors the writer's diff in place
