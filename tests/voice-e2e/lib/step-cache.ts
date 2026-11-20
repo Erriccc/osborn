@@ -166,11 +166,14 @@ export async function actWithCache(
     return { cached: false, healed: false, did: describeAction(action) }
   }
   const newSel = (action as { selector?: string })?.selector
+  const target = newSel ? await describeTarget(newSel) : null
+  // describeTarget is page round-trips: the fence can fire while it runs.
+  if (fenced()) return { cached: false, healed: false, did: describeAction(action) }
   store[key] = {
     instruction,
     path: url.pathname,
     action,
-    target: newSel ? await describeTarget(newSel) : null,
+    target,
     resolvedAt: new Date().toISOString(),
     hits: 0,
     heals: (hit?.heals ?? 0) + (hit ? 1 : 0),
