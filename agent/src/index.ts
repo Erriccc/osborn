@@ -63,7 +63,7 @@ import { hasContentModelKey } from './content/content-llm.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
-import { readStewardRecords, stewardPushRecords } from './steward-verdict.js'
+import { readStewardRecords, stewardPushRecords, stewardServedRecords } from './steward-verdict.js'
 import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, ClientNoteQueue, parseFavoriteChanged, parseLegacyFavoriteNotice } from './transcript-wiring.js'
 import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
@@ -757,7 +757,7 @@ function startApiServer(workingDir: string, port: number): void {
         // pass their own cwd; honoured only if the session really lives there.
         const readDir = sessionMessagesDir(sessionId, url.searchParams.get('workingDirectory'), workingDir, sessionExists)
         const compactions = readCompactionMarkers(sessionId, readDir)
-        const steward = readStewardRecords(sessionId, readDir)
+        const steward = stewardServedRecords(readStewardRecords(sessionId, readDir))
         const dbPath = storeExists(sessionId, readDir)
         if (!dbPath) {
           res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -2734,7 +2734,7 @@ async function main() {
     'session_id', 'mcp_servers_changed', 'tool_use', 'tool_result',
     'assistant_text', 'assistant_result', 'tts_chunks', 'permission_request',
     'tts_say', 'session_resume_failed', 'checkpoint_captured',
-    'dispatch_rejected', 'task_completed', 'agent_started', 'steward_verdict', 'steward_gate', 'tool_blocked',
+    'dispatch_rejected', 'task_completed', 'agent_started', 'steward_verdict', 'steward_gate', 'agent_result', 'tool_blocked',
   ] as const
 
   // ── KEEP WORKING AFTER HANG-UP ──
@@ -3019,6 +3019,8 @@ async function main() {
     events.on('steward_gate', (d: any) => {
       sendToFrontend({ type: slotId ? 'background_steward' : 'steward_gate', ...(slotId ? { slotId, gate: d.decision } : { decision: d.decision }), message: d.message }).catch(() => {})
     })
+    // A named sub-agent's return (#212): the focused chat only; a background slot keeps it in its own sidecar.
+    if (!slotId) events.on('agent_result', (r: any) => { sendToFrontend({ type: 'agent_result', ...r }).catch(() => {}) })
   }
 
   // ============================================================
