@@ -33,7 +33,7 @@ import { DisconnectReason } from 'livekit-client'
 import '@livekit/components-styles'
 import { MIC_DENIED_EVENT, isMicDenied, reconcileMicDenied, type MicPermissionState } from '@/lib/mic-permission'
 import { TAB_LOCK_NAME, TAB_LOCK_RETRY_MS, controlsEnabled, lockOutcomeAfterRestore, shouldConnectOnTransition, shouldRetryLockProbe, tabGuardCopy, tabGuardReducer, type TabRole } from '@/lib/tab-guard'
-import { CONNECT_WATCHDOG_MS, connectTimeoutMessage, isAwaitingAgent, nextAuthRequired } from '@/lib/connect-gate'
+import { CONNECT_WATCHDOG_MS, connectProgressText, connectTimeoutMessage, isAwaitingAgent, nextAuthRequired, type AgentHealthProbe, type ConnectStage } from '@/lib/connect-gate'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 
 interface ChatSessionContextValue {
@@ -433,6 +433,32 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       console.log(`⏱️ [connect-timing] +${Date.now() - clickTs}ms ${label}`)
     ctMark('button clicked (connect start)')
 
+    // Progress text (#144): say which step we are on instead of a bare orb.
+    // While the machine/agent steps run, a ticker re-reads the agent's /health
+    // every few seconds so the text follows the real state.
+    let stage: ConnectStage = 'agent'
+    let probe: AgentHealthProbe | null = null
+    const showProgress = () => {
+      if (isCurrent()) setStatusMsg(connectProgressText(stage, probe, Date.now() - clickTs))
+    }
+    let ticking = true
+    let canProbe = false // only once the sandbox step has settled resolvedUrl
+    void (async () => {
+      while (ticking && isCurrent()) {
+        const url = resolvedUrl
+        const isMixed = window.location.protocol === 'https:' && url.startsWith('http:')
+        if (stage === 'agent' && canProbe && !isMixed) {
+          probe = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3000) })
+            .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+            .then((h) => ({ reachable: true, livekitStatus: h?.livekit?.status ?? null }))
+            .catch(() => ({ reachable: false }))
+        }
+        if (!ticking) break
+        showProgress()
+        await new Promise((r) => setTimeout(r, 3000))
+      }
+    })()
+
     try {
       // Step 0 — AUTH PRE-WARM (fix: a direct /chat load showed "Sign in to
       // connect to your agent" while the account was signed in; entering /chat
@@ -503,11 +529,8 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
             const sb = sandboxData.sandbox
             setActiveSandboxId(sb.id)
             if (sb.status !== 'running') {
-              setStatusMsg(
-                sb.status === 'warm'
-                  ? 'Resuming your workspace...'
-                  : 'Starting your workspace...',
-              )
+              stage = sb.status === 'warm' ? 'resuming' : 'starting'
+              showProgress()
               console.log(`[chat] Sandbox is ${sb.status} — starting it...`)
               const startRes = await fetch('/api/sandbox', {
                 method: 'POST',
@@ -540,7 +563,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // If effectiveMode === 'local', use the agentUrl from query param / localStorage as-is
 
       ctMark('sandbox checked/started')
-      setStatusMsg('Connecting to agent...')
+      stage = 'agent'
+      probe = null
+      canProbe = true
+      showProgress()
 
       // Step 2 (room-code) REMOVED (0.9.260 connect-latency fix): connect-room
       // below now self-wakes the machine + waits for health + returns the
@@ -669,15 +695,17 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       if (!isCurrent()) return
 
       ctMark('token minted — handing off to LiveKit room join')
+      ticking = false
       setToken(data.token)
       setRoomCode(data.roomCode)
       ctMark('token+roomCode set → LiveKit client mounting (WebRTC start)')
-      setStatusMsg(null)
+      setStatusMsg(connectProgressText('joining', null, Date.now() - clickTs))
     } catch (e) {
       if (!isCurrent()) return
       setError('Failed to connect to agent')
       setStatusMsg(null)
     } finally {
+      ticking = false
       if (isCurrent()) setConnecting(false)
     }
   }, [
@@ -861,12 +889,33 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     router.push('/dashboard')
   }, [router, captureSessionLog, connect])
 
+  // Drop the LiveKit room when the connect fails (#144). The error screen
+  // replaces VoiceRoom but the room lives here, so it kept the mic captured and
+  // stayed joined to the old room — and a Retry then handed the still-connected
+  // room a new token, which it ignores, so Retry sat on "Connecting" with no
+  // sign-in prompt until the watchdog fired again. Unmounting removes the
+  // room's listeners before it disconnects, so this is not a lifecycle drop.
+  const dropRoom = useCallback(() => {
+    setToken(null)
+    setRoomCode(null)
+    setConnected(false)
+    setAgentReady(false)
+  }, [])
+
+  // Retry / Reconnect: start from a clean slate so the pre-token screen shows
+  // the progress text and a fresh room mounts with the new token.
+  const retry = useCallback(() => {
+    dropRoom()
+    return connect()
+  }, [dropRoom, connect])
+
   const markAgentReady = useCallback(() => {
     // Reset activity clock on connection so the machine gets a full 15 min
     // grace period from the moment voice is ready.
     setLastActivityAt(Date.now())
     setConnected(true)
     setAgentReady(true)
+    setStatusMsg(null)
     // A clean ready = reconnect succeeded → reset the auto-rejoin budget.
     reconnectAttemptsRef.current = 0
   }, [])
@@ -908,9 +957,10 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       setError(connectTimeoutMessage(authRequired))
       setStatusMsg(null)
       setConnecting(false)
+      dropRoom()
     }, CONNECT_WATCHDOG_MS)
     return () => clearTimeout(t)
-  }, [connecting, agentReady, token, error, authRequired, authInProgress, statusMsg])
+  }, [connecting, agentReady, token, error, authRequired, authInProgress, statusMsg, dropRoom])
 
   // ── P1.8 (2026-10-24): foreground fast-rejoin + screen wake lock ──────────
   const connectedRef = useRef(connected)
@@ -997,7 +1047,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     codingAgent,
     preSelectedSessionId,
     seedPrompt,
-    reconnect: connect,
+    reconnect: retry,
     disconnect,
     markAgentReady,
     markAuthRequired,
