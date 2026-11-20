@@ -54,23 +54,28 @@ case "$FAKE_NPM" in
   ok)
     printf '{"name":"osborn","version":"%s"}\\n' "$v" > "$prefix/lib/node_modules/osborn/package.json"
     echo '#!/bin/sh' > "$prefix/lib/node_modules/osborn/bin/cli.js"
-    ln -sfn ../lib/node_modules/osborn/bin/cli.js "$prefix/bin/osborn"
+    /bin/ln -sfn ../lib/node_modules/osborn/bin/cli.js "$prefix/bin/osborn"
     echo "added 440 packages"; exit 0;;
-  enospc)
+  enospc|tmp-enospc)
     echo partial > "$prefix/lib/node_modules/osborn/half"
-    echo "npm error code ENOSPC"; echo "npm error syscall write"; echo "npm error nospc ENOSPC: no space left on device, write"; exit 228;;
+    # The volume filled up (df now says 5 MB), or only /tmp did (df unchanged).
+    if [ "$FAKE_NPM" = enospc ]; then echo 5 > "$FAKE_ROOT/free"; fi
+    echo "npm error code ENOSPC"; echo "npm error syscall write"; echo "npm error nospc ENOSPC: no space left on device, write"
+    echo "npm error A complete log of this run can be found in: /tmp/npm-cache/_logs/x-debug-0.log"; exit 228;;
   *)
-    echo "npm error code E404"; echo "npm error 404 Not Found - osborn@$v"; exit 1;;
+    echo "npm error code E404"; echo "npm error 404 Not Found - osborn@$v"
+    echo "npm error A complete log of this run can be found in: /tmp/npm-cache/_logs/x-debug-0.log"; exit 1;;
 esac
 `
 const fakeDf = `#!/bin/bash
 echo "Filesystem 1048576-blocks Used Available Capacity Mounted on"
-echo "/dev/vdb 30000 $((30000-FAKE_FREE)) $FAKE_FREE 99% /workspace"
+FREE=$(cat "$FAKE_ROOT/free" 2>/dev/null || echo "$FAKE_FREE")
+echo "/dev/vdb 30000 $((30000-FREE)) $FREE 99% /workspace"
 `
 
 interface Run { ws: string; out: string; status: Record<string, unknown> | null; tmpStatus: Record<string, unknown> | null; npmCalled: boolean; code: number }
 
-function run(name: string, opts: { free: number; npm?: string; volVersion?: string | null; image?: string; prep?: (ws: string) => void }): Run {
+function run(name: string, opts: { free: number; npm?: string; volVersion?: string | null; image?: string; prep?: (ws: string) => void; failLn?: boolean }): Run {
   const r = join(root, name)
   const ws = join(r, 'workspace')
   const tmp = join(r, 'tmp')
@@ -80,6 +85,7 @@ function run(name: string, opts: { free: number; npm?: string; volVersion?: stri
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'npm'), fakeNpm); chmodSync(join(bin, 'npm'), 0o755)
   writeFileSync(join(bin, 'df'), fakeDf); chmodSync(join(bin, 'df'), 0o755)
+  if (opts.failLn) { writeFileSync(join(bin, 'ln'), '#!/bin/sh\necho "ln: failed" >&2\nexit 1\n'); chmodSync(join(bin, 'ln'), 0o755) }
   const mods = join(ws, '.npm-global', 'lib', 'node_modules')
   if (opts.volVersion) {
     mkdirSync(join(mods, 'osborn', 'bin'), { recursive: true })
@@ -137,6 +143,16 @@ const volPkg = (ws: string) => readFileSync(join(ws, '.npm-global', 'lib', 'node
   assert.ok(!existsSync(join(r.ws, '.osborn-sync-stage')))
   assert.equal(r.status!.ok, false)
   assert.equal(r.status!.reason, 'disk_full')
+  assert.equal(r.status!.freeMb, 5, 'free space when the volume filled, not after the stage was removed')
+  assert.match(String(r.status!.detail), /ENOSPC/)
+  assert.doesNotMatch(String(r.status!.detail), /complete log of this run/)
+}
+{
+  // ENOSPC with room left on the volume: the npm cache in /tmp filled, not the volume.
+  const r = run('tmp-enospc', { free: 3000, npm: 'tmp-enospc', volVersion: '0.9.290' })
+  assert.equal(r.code, 0, r.out)
+  assert.match(volPkg(r.ws), /0\.9\.290/)
+  assert.equal(r.status!.reason, 'npm_failed')
   assert.match(String(r.status!.detail), /ENOSPC/)
 }
 {
@@ -145,6 +161,30 @@ const volPkg = (ws: string) => readFileSync(join(ws, '.npm-global', 'lib', 'node
   assert.match(volPkg(r.ws), /0\.9\.290/)
   assert.equal(r.status!.reason, 'npm_failed')
   assert.match(String(r.status!.detail), /404/)
+  assert.doesNotMatch(String(r.status!.detail), /complete log of this run/)
+}
+{
+  // Leftover staging dirs from installOsbornSpec / the rollback override are cleared
+  // before the free-space check, so they cannot read as a full disk.
+  const r = run('leftovers', {
+    free: 5000, volVersion: '0.9.290',
+    prep: (ws) => {
+      mkdirSync(join(ws, '.osborn-stage-abc123-x', 'lib'), { recursive: true })
+      mkdirSync(join(ws, '.osborn-rollback-stage', 'lib'), { recursive: true })
+    },
+  })
+  assert.ok(!existsSync(join(r.ws, '.osborn-stage-abc123-x')))
+  assert.ok(!existsSync(join(r.ws, '.osborn-rollback-stage')))
+  assert.equal(r.status!.reason, 'synced')
+}
+{
+  // A bin link that cannot be made does not abort the boot; the status is still written.
+  const r = run('bin-link-fails', {
+    free: 5000, volVersion: '0.9.290',
+    failLn: true,
+  })
+  assert.equal(r.code, 0, r.out)
+  assert.equal(r.status!.reason, 'synced')
 }
 {
   // A rollback placeholder (or no copy) never matches the image, so it resyncs.

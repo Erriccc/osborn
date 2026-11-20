@@ -265,7 +265,9 @@ VOL_OSBORN_VER=$(grep -m1 '"version"' "$SYNC_MODULES/osborn/package.json" 2>/dev
 [ -z "$VOL_OSBORN_VER" ] && VOL_OSBORN_VER=none
 if [ -n "$IMAGE_SEED_VERSION" ] && [ "$IMAGE_SEED_VERSION" != "$VOL_OSBORN_VER" ]; then
   echo "[sandbox-d] volume osborn@${VOL_OSBORN_VER} != image@${IMAGE_SEED_VERSION} -- syncing"
-  rm -rf "$SYNC_MODULES"/.osborn-* "$SYNC_STAGE" 2>/dev/null || true
+  # Also the leftovers of machines.ts installOsbornSpec / rollbackInitScript (idle at boot),
+  # so our own staging dirs cannot read as a full disk.
+  rm -rf "$SYNC_MODULES"/.osborn-* "$SYNC_STAGE" /workspace/.osborn-stage* /workspace/.osborn-rollback-stage 2>/dev/null || true
   SYNC_FREE=$(sync_free_mb)
   if [ -n "$SYNC_FREE" ] && [ "$SYNC_FREE" -lt "$SYNC_NEED_MB" ]; then
     echo "[sandbox-d] SYNC SKIPPED: disk full -- /workspace has ${SYNC_FREE} MB free, osborn needs ${SYNC_NEED_MB} MB; still on osborn@${VOL_OSBORN_VER}"
@@ -276,19 +278,25 @@ if [ -n "$IMAGE_SEED_VERSION" ] && [ "$IMAGE_SEED_VERSION" != "$VOL_OSBORN_VER" 
     if [ -e "$SYNC_MODULES/osborn" ]; then mv "$SYNC_MODULES/osborn" "$SYNC_MODULES/.osborn-old"; fi
     mv "$SYNC_STAGE/lib/node_modules/osborn" "$SYNC_MODULES/osborn"
     for l in "$SYNC_STAGE"/bin/*; do
-      if [ -L "$l" ]; then ln -sfn "$(readlink "$l")" "/workspace/.npm-global/bin/$(basename "$l")"; fi
+      if [ -L "$l" ]; then ln -sfn "$(readlink "$l")" "/workspace/.npm-global/bin/$(basename "$l")" || true; fi
     done
     rm -rf "$SYNC_MODULES/.osborn-old" "$SYNC_STAGE"
     echo "[sandbox-d] sync done: osborn@${IMAGE_SEED_VERSION} on volume"
     sync_status true synced "$(sync_free_mb)"
   else
-    SYNC_TAIL=$(tail -5 "$SYNC_LOG" 2>/dev/null || true)
+    # npm 10 ends with "A complete log of this run can be found in: ..." -- not the cause.
+    SYNC_TAIL=$( (grep -v 'complete log of this run' "$SYNC_LOG" || true) | tail -5)
+    # Measured before the stage is removed: ENOSPC is the volume's only when the
+    # volume is what filled up (the npm cache in /tmp can fill too).
+    SYNC_FREE=$(sync_free_mb)
     rm -rf "$SYNC_STAGE"
     SYNC_REASON=npm_failed
-    if grep -qiE 'ENOSPC|no space left' "$SYNC_LOG" 2>/dev/null; then SYNC_REASON=disk_full; fi
+    if grep -qiE 'ENOSPC|no space left' "$SYNC_LOG" 2>/dev/null && [ -n "$SYNC_FREE" ] && [ "$SYNC_FREE" -lt "$SYNC_NEED_MB" ]; then
+      SYNC_REASON=disk_full
+    fi
     echo "[sandbox-d] SYNC FAILED ($SYNC_REASON): still on osborn@${VOL_OSBORN_VER}; npm said:"
     echo "$SYNC_TAIL"
-    sync_status false "$SYNC_REASON" "$(sync_free_mb)" "$SYNC_TAIL"
+    sync_status false "$SYNC_REASON" "$SYNC_FREE" "$SYNC_TAIL"
   fi
 else
   echo "[sandbox-d] volume osborn@${VOL_OSBORN_VER} matches image -- no sync needed"

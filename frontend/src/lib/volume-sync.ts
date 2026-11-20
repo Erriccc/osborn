@@ -28,8 +28,10 @@ export function volumeSyncProblem(s: VolumeSyncStatus | null | undefined, forVer
     const sizes = free && need ? ` (${free} free, needs ${need})` : free ? ` (${free} free)` : ''
     return `the machine's disk is full${sizes}. Free space or grow the volume, then press Update again.`
   }
-  const lastLine = (s.detail ?? '').trim().split('\n').pop()?.trim()
-  return `the machine could not install v${s.image ?? '?'}${lastLine ? ` (${lastLine})` : ''}. Press Update again; if it fails again, check the machine log.`
+  // npm's cause: its `npm error code …` line, else its first `npm error` line, else the last line.
+  const lines = (s.detail ?? '').split('\n').map((l) => l.trim()).filter((l) => l && !/complete log of this run/.test(l))
+  const cause = lines.find((l) => /^npm (error|ERR!) code /.test(l)) ?? lines.find((l) => /^npm (error|ERR!)/.test(l)) ?? lines.at(-1)
+  return `the machine could not install v${s.image ?? '?'}${cause ? ` (${cause})` : ''}. Press Update again; if it fails again, check the machine log.`
 }
 
 /**

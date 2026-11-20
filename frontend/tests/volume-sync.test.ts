@@ -15,9 +15,15 @@ assert.equal(
 assert.equal(volumeSyncProblem({ ...diskFull, freeMb: null, needMb: null }), "the machine's disk is full. Free space or grow the volume, then press Update again.")
 assert.equal(volumeSyncProblem({ ...diskFull, freeMb: -3 }), "the machine's disk is full (0 MB free, needs 2,048 MB). Free space or grow the volume, then press Update again.")
 assert.equal(
-  volumeSyncProblem({ ...diskFull, reason: 'npm_failed', detail: 'npm error code E404\nnpm error 404 Not Found - osborn@0.9.295\n' }),
-  'the machine could not install v0.9.295 (npm error 404 Not Found - osborn@0.9.295). Press Update again; if it fails again, check the machine log.',
+  volumeSyncProblem({ ...diskFull, reason: 'npm_failed', detail: 'npm error code E404\nnpm error 404 Not Found - osborn@0.9.295\nnpm error A complete log of this run can be found in: /tmp/npm-cache/_logs/x.log\n' }),
+  'the machine could not install v0.9.295 (npm error code E404). Press Update again; if it fails again, check the machine log.',
 )
+assert.match(
+  volumeSyncProblem({ ...diskFull, reason: 'npm_failed', detail: 'added 3 packages\nnpm error network socket hang up\nnpm error A complete log of this run can be found in: /x.log' })!,
+  /\(npm error network socket hang up\)/,
+  'no code line: the first npm error line, never the log pointer',
+)
+assert.match(volumeSyncProblem({ ...diskFull, reason: 'npm_failed', detail: 'Killed' })!, /\(Killed\)/, 'no npm error line: the last line')
 assert.equal(volumeSyncProblem({ ...diskFull, ok: true, reason: 'synced' }), null, 'a good sync is no problem')
 assert.equal(volumeSyncProblem(null), null, 'older agents send no volumeSync')
 assert.equal(volumeSyncProblem(diskFull, '0.9.296'), null, 'a failure for another image does not count')
