@@ -158,3 +158,48 @@ export function connectProgressText(stage: ConnectStage, health: AgentHealthProb
   else text = 'Connecting to your agent…'
   return elapsedMs >= SLOW_START_HINT_MS ? `${text} The first start can take a minute or two.` : text
 }
+
+/**
+ * Is the page in a room the agent is in? `roomState` is the mounted LiveKit
+ * Room's ConnectionState ('connected', 'reconnecting', …) and `remoteCount` its
+ * remote participants. A Room that reconnects after the tab was suspended can
+ * report 'connected' in an EMPTY room: the agent left while the tab was away.
+ */
+export function roomHasAgent(roomState: string | null, remoteCount: number): boolean {
+  return roomState === 'connected' && remoteCount > 0
+}
+
+export interface RoomLivenessState {
+  /** this tab controls the session (tab guard 'active'). */
+  tabActive: boolean
+  /** the session has been live at least once on this page. */
+  everConnected: boolean
+  idleStopped: boolean
+  /** a connect() is already in flight. */
+  connecting: boolean
+  /** agent_ready fired for the current join. */
+  agentReady: boolean
+  /** ConnectionState of the mounted LiveKit Room; null when none is mounted. */
+  roomState: string | null
+  remoteCount: number
+  attempts: number
+  maxAttempts: number
+}
+
+/**
+ * What to do when the tab comes back to the foreground or the room reports a
+ * change: 'live' / 'wait' = nothing; 'rejoin' = connect() again (connect-room
+ * brings the agent back); 'lost' = the rejoin budget is spent, so stop showing
+ * a live call. While LiveKit is still reconnecting, or a join is under way
+ * (token handed off, agent_ready not yet in: the connect watchdog bounds that),
+ * it waits; its Reconnected / Disconnected event asks again.
+ */
+export function roomVerdict(s: RoomLivenessState): 'live' | 'wait' | 'rejoin' | 'lost' {
+  if (!s.tabActive || !s.everConnected || s.idleStopped || s.connecting) return 'wait'
+  if (s.roomState !== null) {
+    if (!s.agentReady) return 'wait'
+    if (s.roomState === 'connecting' || s.roomState === 'reconnecting' || s.roomState === 'signalReconnecting') return 'wait'
+    if (roomHasAgent(s.roomState, s.remoteCount)) return 'live'
+  }
+  return s.attempts < s.maxAttempts ? 'rejoin' : 'lost'
+}

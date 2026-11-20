@@ -16,8 +16,11 @@ import {
   isAwaitingAgent,
   isOAuthInProgress,
   nextAuthRequired,
+  roomHasAgent,
+  roomVerdict,
   shouldAutoOpenAuthModal,
   type ConnectWaitState,
+  type RoomLivenessState,
 } from '../src/lib/connect-gate'
 
 const results: [string, boolean, string?][] = []
@@ -239,6 +242,71 @@ t('VoiceRoom: claude_auth_optional makes sign-in optional and startable', () => 
   ok(voiceRoom.includes('relyingOnFallback={claudeAuthEverRequired || claudeAuthOptional}'), 'health notice knows about the fallback')
 
   ok(/if \(!authOptionalRef\.current\) \{\s*setClaudeAuthEverRequired\(true\)/.test(voiceRoom), 'an optional sign-in URL never marks the session as blocked')
+})
+
+// ── Rejoin on return (tab suspended, agent left the room) ────────────────
+const live: RoomLivenessState = {
+  tabActive: true, everConnected: true, idleStopped: false, connecting: false, agentReady: true,
+  roomState: 'connected', remoteCount: 1, attempts: 0, maxAttempts: 3,
+}
+
+t('roomHasAgent: only a connected room with a remote participant', () => {
+  eq(roomHasAgent('connected', 1), true, 'connected with the agent')
+  eq(roomHasAgent('connected', 0), false, 'connected but empty')
+  eq(roomHasAgent('reconnecting', 1), false, 'reconnecting')
+  eq(roomHasAgent('disconnected', 1), false, 'disconnected')
+  eq(roomHasAgent(null, 0), false, 'no room')
+})
+
+t('roomVerdict: the incident — back from suspension to an empty connected room rejoins', () => {
+  // `connected` / agentReady still true from before the suspension.
+  eq(roomVerdict({ ...live, remoteCount: 0 }), 'rejoin', 'empty room after resume')
+  eq(roomVerdict({ ...live, roomState: 'disconnected' }), 'rejoin', 'room disconnected while hidden')
+})
+
+t('roomVerdict: a healthy session stays put', () => {
+  eq(roomVerdict(live), 'live', 'agent present')
+})
+
+t('roomVerdict: waits while LiveKit or a connect is still working', () => {
+  eq(roomVerdict({ ...live, roomState: 'reconnecting', remoteCount: 0 }), 'wait', 'reconnecting')
+  eq(roomVerdict({ ...live, roomState: 'signalReconnecting', remoteCount: 0 }), 'wait', 'signal reconnecting')
+  eq(roomVerdict({ ...live, roomState: 'connecting', remoteCount: 0 }), 'wait', 'connecting')
+  eq(roomVerdict({ ...live, connecting: true, remoteCount: 0 }), 'wait', 'connect() in flight')
+  eq(roomVerdict({ ...live, agentReady: false, remoteCount: 0 }), 'wait', 'join under way (watchdog bounds it)')
+})
+
+t('roomVerdict: never acts for a standby, cold, or idle-stopped tab', () => {
+  eq(roomVerdict({ ...live, tabActive: false, remoteCount: 0 }), 'wait', 'another tab controls the session')
+  eq(roomVerdict({ ...live, everConnected: false, roomState: null, remoteCount: 0 }), 'wait', 'never connected')
+  eq(roomVerdict({ ...live, idleStopped: true, roomState: null, remoteCount: 0 }), 'wait', 'idle stopped')
+})
+
+t('roomVerdict: no room mounted after a live session rejoins; a spent budget is lost', () => {
+  eq(roomVerdict({ ...live, roomState: null, remoteCount: 0, agentReady: false }), 'rejoin', 'room dropped')
+  eq(roomVerdict({ ...live, remoteCount: 0, attempts: 3 }), 'lost', 'budget spent')
+})
+
+t('provider: foreground + room events ask roomVerdict, not the sticky `connected` flag', () => {
+  const check = provider.slice(provider.indexOf('const checkRoom = useCallback'), provider.indexOf('}, [rejoin, dropRoom])'))
+  ok(check.includes('roomVerdict('), 'checkRoom uses roomVerdict')
+  ok(check.includes('room.remoteParticipants.size'), 'counts who is in the room')
+  ok(!/connectedRef\.current/.test(provider), 'no gate on the provider `connected` flag')
+  ok(/visibilitychange', onVisible/.test(provider) && provider.includes("checkRoom('[foreground]"), 'foreground asks checkRoom')
+  ok(provider.includes('RoomEvent.Reconnected') && provider.includes('RoomEvent.ParticipantDisconnected'), 'room events ask again')
+  ok(provider.includes('<RoomHandle onRoom={setLiveRoom} />'), 'the mounted room is handed to the provider')
+  const rejoin = provider.slice(provider.indexOf('const rejoin = useCallback'), provider.indexOf('}, [connect])', provider.indexOf('const rejoin = useCallback')))
+  ok(rejoin.includes('setConnected(false)') && rejoin.includes('connect()'), 'rejoin hides the live call, then connects')
+  ok(/rejoin\(`Network disconnect/.test(provider), 'the network-drop path uses the same rejoin')
+})
+
+t('VoiceRoom: typed messages queue while no agent is in the room', () => {
+  const send = voiceRoom.slice(voiceRoom.indexOf('const handleSendText = useCallback'), voiceRoom.indexOf('}, [sendUserText])'))
+  ok(!send.includes('sendToAgent('), 'user_text never goes straight to the data channel')
+  ok((send.match(/sendUserText\(/g) || []).length === 3, 'all three user_text sends go through sendUserText')
+  ok(/roomHasAgent\(room\.state, room\.remoteParticipants\.size\)/.test(voiceRoom), 'checks the room before sending')
+  ok(/onAgentReadyRef\.current\?\.\(\)\s*flushQueuedUserTextRef\.current\(\)/.test(voiceRoom), 'flushes on agent_ready')
+  ok(voiceRoom.includes('onRoomCheck={checkRoom}'), 'asks the provider to rejoin')
 })
 
 // ── Report ────────────────────────────────────────────────────────────────

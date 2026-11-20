@@ -35,7 +35,7 @@ import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/li
 import { backgroundSessionTitle } from '@/lib/rooms'
 import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
 import { isRedundantFinal } from '@/lib/claude-output'
-import { isAuthGateTerminal } from '@/lib/connect-gate'
+import { isAuthGateTerminal, roomHasAgent } from '@/lib/connect-gate'
 import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
 import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
@@ -258,6 +258,7 @@ function VoiceRoomInner({
   onAuthResolved,
   onAuthInProgress,
   onVoiceActivity,
+  onRoomCheck,
   waitingMode,
   preSelectedSessionId,
   agentUrl,
@@ -272,6 +273,8 @@ function VoiceRoomInner({
   /** Sign-in modal open on an active OAuth step (holds off the connect watchdog). */
   onAuthInProgress?: (inProgress: boolean) => void
   onVoiceActivity?: () => void
+  /** No agent in the room to send to: have the provider check and rejoin. */
+  onRoomCheck?: () => void
   waitingMode?: boolean
   preSelectedSessionId?: string | null
   agentUrl?: string
@@ -1631,6 +1634,39 @@ function VoiceRoomInner({
 
   const { send: sendToAgent } = useDataChannel('user-input')
 
+  // A typed message is only sent into a room the agent is in. Otherwise (the tab
+  // came back from suspension to an empty or dropped room) it waits here while
+  // the provider rejoins, and goes out on agent_ready or a reconnect that finds
+  // the agent, instead of being published into an empty room and lost.
+  const queuedUserTextRef = useRef<Uint8Array[]>([])
+  const onRoomCheckRef = useRef(onRoomCheck)
+  onRoomCheckRef.current = onRoomCheck
+  const sendUserText = useCallback((bytes: Uint8Array) => {
+    if (queuedUserTextRef.current.length === 0 && roomHasAgent(room.state, room.remoteParticipants.size)) {
+      sendToAgent(bytes, { reliable: true })
+      return
+    }
+    if (queuedUserTextRef.current.length === 0) {
+      addMessageRef.current?.('system', 'Reconnecting to your agent. Your message will send when it is back.')
+    }
+    queuedUserTextRef.current.push(bytes)
+    console.log(`📥 No agent in the room — message queued (${queuedUserTextRef.current.length})`)
+    onRoomCheckRef.current?.()
+  }, [room, sendToAgent])
+  const flushQueuedUserText = useCallback(() => {
+    if (queuedUserTextRef.current.length === 0 || !roomHasAgent(room.state, room.remoteParticipants.size)) return
+    const queued = queuedUserTextRef.current
+    queuedUserTextRef.current = []
+    console.log(`📤 Sending ${queued.length} queued message(s)`)
+    for (const bytes of queued) sendToAgent(bytes, { reliable: true })
+  }, [room, sendToAgent])
+  const flushQueuedUserTextRef = useRef(flushQueuedUserText)
+  flushQueuedUserTextRef.current = flushQueuedUserText
+  useEffect(() => {
+    room.on(RoomEvent.Reconnected, flushQueuedUserText)
+    return () => { room.off(RoomEvent.Reconnected, flushQueuedUserText) }
+  }, [room, flushQueuedUserText])
+
   // ── Outputs drawer data flow (L4; UI#13/19) ──────────────────────────────
   // Re-list the session workspace with REPLACE semantics on open, on focus and
   // after file events; fetch a file body only when it is previewed (no storm).
@@ -1955,6 +1991,7 @@ function VoiceRoomInner({
         // via agent_started, so this only drops dead rows.
         setBackgroundFlows([])
         onAgentReadyRef.current?.()
+        flushQueuedUserTextRef.current()
         // Store sessions from agent_ready if provided
         if (data.sessions && Array.isArray(data.sessions)) {
           setSessions(data.sessions)
@@ -3257,7 +3294,7 @@ function VoiceRoomInner({
               clientMsgId,
             })
             const encoder = new TextEncoder()
-            sendToAgent(encoder.encode(uploadedPayload), { reliable: true })
+            sendUserText(encoder.encode(uploadedPayload))
             addMessageRef.current?.('system', `Large message uploaded (${(text.length / 1024).toFixed(1)} KB)`)
             return
           }
@@ -3270,12 +3307,12 @@ function VoiceRoomInner({
       const truncated = text.substring(0, 50000) + '\n...[truncated — message exceeded size limit]'
       const smallPayload = JSON.stringify({ type: 'user_text', content: truncated, clientMsgId })
       const encoder = new TextEncoder()
-      sendToAgent(encoder.encode(smallPayload), { reliable: true })
+      sendUserText(encoder.encode(smallPayload))
     } else {
       const encoder = new TextEncoder()
-      sendToAgent(encoder.encode(payloadStr), { reliable: true })
+      sendUserText(encoder.encode(payloadStr))
     }
-  }, [sendToAgent])
+  }, [sendUserText])
 
   const [likedMessageIds, setLikedMessageIds] = useState<Set<string>>(new Set())
 
@@ -5061,7 +5098,7 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, preSelectedSessionId, agentUrl, seedPrompt, isController } =
+  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, checkRoom, preSelectedSessionId, agentUrl, seedPrompt, isController } =
     useChatSession()
 
   return (
@@ -5072,6 +5109,7 @@ export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
       onAuthResolved={markAuthResolved}
       onAuthInProgress={markAuthInProgress}
       onVoiceActivity={markVoiceActivity}
+      onRoomCheck={checkRoom}
       waitingMode={waitingMode}
       preSelectedSessionId={preSelectedSessionId}
       agentUrl={agentUrl}

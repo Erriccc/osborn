@@ -28,12 +28,12 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { liveSessionKey, sessionParamsFromSearch, takeoverSessionUrl } from '@/lib/chat-url'
-import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
-import { DisconnectReason } from 'livekit-client'
+import { LiveKitRoom, RoomAudioRenderer, useRoomContext } from '@livekit/components-react'
+import { DisconnectReason, RoomEvent, type Room } from 'livekit-client'
 import '@livekit/components-styles'
 import { MIC_DENIED_EVENT, isMicDenied, reconcileMicDenied, type MicPermissionState } from '@/lib/mic-permission'
 import { TAB_LOCK_NAME, TAB_LOCK_RETRY_MS, controlsEnabled, lockOutcomeAfterRestore, shouldConnectOnTransition, shouldRetryLockProbe, tabGuardCopy, tabGuardReducer, type TabRole } from '@/lib/tab-guard'
-import { CONNECT_WATCHDOG_MS, connectProgressText, connectTimeoutMessage, isAwaitingAgent, nextAuthRequired, type AgentHealthProbe, type ConnectStage } from '@/lib/connect-gate'
+import { CONNECT_WATCHDOG_MS, connectProgressText, connectTimeoutMessage, isAwaitingAgent, nextAuthRequired, roomVerdict, type AgentHealthProbe, type ConnectStage } from '@/lib/connect-gate'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { isLocalAgentUrl } from '@/lib/agent-read'
 
@@ -74,6 +74,9 @@ interface ChatSessionContextValue {
   // thinking/speaking). Resets the idle-stop timer — voice is the primary
   // activity signal; DOM events are removed as they're unreliable on mobile.
   markVoiceActivity: () => void
+  // Re-check that the page is in a room the agent is in, and rejoin if not
+  // (VoiceRoom calls it when a typed message finds no agent to send to).
+  checkRoom: () => void
   // True while THIS tab controls the session (bug 619af155). A second tab
   // stays out of the room until the user takes over.
   isController: boolean
@@ -107,6 +110,16 @@ function currentNavigationType(): string | null {
     const legacy = (performance as unknown as { navigation?: { type?: number } }).navigation
     if (legacy?.type === 1) return 'reload'
   } catch { /* no Performance API */ }
+  return null
+}
+
+// Hands the mounted LiveKit Room up to the provider, which sits outside <LiveKitRoom>.
+function RoomHandle({ onRoom }: { onRoom: (room: Room | null) => void }) {
+  const room = useRoomContext()
+  useEffect(() => {
+    onRoom(room)
+    return () => onRoom(null)
+  }, [room, onRoom])
   return null
 }
 
@@ -845,6 +858,20 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   // spin the full connect() flow forever. Reset on a successful ready.
   const reconnectAttemptsRef = useRef(0)
   const MAX_AUTO_RECONNECTS = 3
+  const connectingRef = useRef(connecting)
+  connectingRef.current = connecting
+
+  // One rejoin path for every "the room is gone" signal. `connected` goes false
+  // so the page shows its "Reconnecting…" overlay over the call controls and
+  // composer instead of a live call; agent_ready (markAgentReady) restores it.
+  const rejoin = useCallback((why: string) => {
+    reconnectAttemptsRef.current += 1
+    connectingRef.current = true // a second signal in the same tick must not rejoin twice
+    console.log(`🔁 ${why} — rejoin attempt ${reconnectAttemptsRef.current}/${MAX_AUTO_RECONNECTS}`)
+    setConnected(false)
+    setStatusMsg('Reconnecting…')
+    void connect()
+  }, [connect])
 
   // LiveKit lifecycle disconnect — now REASON-GATED (reconnect-survival Phase 0b).
   // `onDisconnected` hands us a DisconnectReason; the old code bounced to the
@@ -881,16 +908,13 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     }
     // Network-class drop → try to rejoin the same room (bounded), don't bounce.
     if (reconnectAttemptsRef.current < MAX_AUTO_RECONNECTS) {
-      reconnectAttemptsRef.current += 1
-      console.log(`🔁 Network disconnect (reason=${reason ?? 'unknown'}) — auto-rejoin attempt ${reconnectAttemptsRef.current}/${MAX_AUTO_RECONNECTS}`)
-      setStatusMsg('Reconnecting…')
-      void connect()
+      rejoin(`Network disconnect (reason=${reason ?? 'unknown'})`)
       return
     }
     console.log('🔁 Auto-rejoin attempts exhausted — returning to dashboard')
     captureSessionLog()
     router.push('/dashboard')
-  }, [router, captureSessionLog, connect])
+  }, [router, captureSessionLog, rejoin])
 
   // Retry / Reconnect: start from a clean slate so the pre-token screen shows
   // the progress text and a fresh room mounts with the new token.
@@ -953,39 +977,73 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   }, [connecting, agentReady, token, error, authRequired, authInProgress, statusMsg, dropRoom])
 
   // ── P1.8 (2026-10-24): foreground fast-rejoin + screen wake lock ──────────
-  const connectedRef = useRef(connected)
-  connectedRef.current = connected
   const idleStoppedRef = useRef(idleStopped)
   idleStoppedRef.current = idleStopped
+  const agentReadyRef = useRef(agentReady)
+  agentReadyRef.current = agentReady
   // Set once a session has been live at least once — gates foreground rejoins
   // so a cold tab merely brought to focus never tries to connect.
   const everConnectedRef = useRef(false)
   useEffect(() => {
     if (connected) everConnectedRef.current = true
   }, [connected])
+  const [liveRoom, setLiveRoom] = useState<Room | null>(null)
+  const liveRoomRef = useRef<Room | null>(null)
+  liveRoomRef.current = liveRoom
+
+  // Is the page still in a room the agent is in? Asked on foreground and on
+  // room events. `connected` is NOT the answer: it only means agent_ready fired
+  // once, and nothing clears it when the tab is suspended. A suspended iPad tab
+  // comes back to a Room that reconnected into an empty room (the agent left
+  // after 20s alone), still `connected`, so this used to see a live session and
+  // never rejoin while typed messages went nowhere.
+  const checkRoom = useCallback((why: string) => {
+    const room = liveRoomRef.current
+    const verdict = roomVerdict({
+      tabActive: tabRoleRef.current === 'active',
+      everConnected: everConnectedRef.current,
+      idleStopped: idleStoppedRef.current,
+      connecting: connectingRef.current,
+      agentReady: agentReadyRef.current,
+      roomState: room ? room.state : null,
+      remoteCount: room ? room.remoteParticipants.size : 0,
+      attempts: reconnectAttemptsRef.current,
+      maxAttempts: MAX_AUTO_RECONNECTS,
+    })
+    if (verdict === 'rejoin') rejoin(why)
+    else if (verdict === 'lost' && room) {
+      // Budget spent: land on the page's "Session paused" screen (Reconnect),
+      // never a live-looking call with no agent behind it.
+      console.log(`🔁 ${why} — rejoin attempts exhausted, showing the paused screen`)
+      dropRoom()
+      setStatusMsg(null)
+    }
+  }, [rejoin, dropRoom])
 
   // Foreground fast-rejoin: iOS suspends JS while backgrounded, so a drop
   // that happened mid-background may never have fired its auto-rejoin — and
-  // LiveKit can surface a zombie `connected` after resume. If the session was
-  // live before hiding and is now dead (and not idle-stopped), rejoin
-  // immediately instead of waiting for the user to notice the silence.
+  // LiveKit can surface a zombie or empty `connected` room after resume.
   useEffect(() => {
     const onVisible = () => {
-      if (document.visibilityState !== 'visible') return
-      if (tabRoleRef.current !== 'active') return
-      if (!everConnectedRef.current) return
-      if (connectedRef.current || idleStoppedRef.current) return
-      if (reconnectAttemptsRef.current >= MAX_AUTO_RECONNECTS) return
-      reconnectAttemptsRef.current += 1
-      console.log(
-        `🔁 [foreground] session dropped while backgrounded — rejoin attempt ${reconnectAttemptsRef.current}/${MAX_AUTO_RECONNECTS}`,
-      )
-      setStatusMsg('Reconnecting…')
-      void connect()
+      if (document.visibilityState === 'visible') checkRoom('[foreground] session dropped while backgrounded')
     }
     document.addEventListener('visibilitychange', onVisible)
     return () => document.removeEventListener('visibilitychange', onVisible)
-  }, [connect])
+  }, [checkRoom])
+
+  // LiveKit settles a resumed tab after the visibility event: a reconnect that
+  // lands in a room without the agent, or the agent leaving, asks again.
+  useEffect(() => {
+    if (!liveRoom) return
+    const onReconnected = () => checkRoom('room reconnected')
+    const onParticipantLeft = () => checkRoom('agent left the room')
+    liveRoom.on(RoomEvent.Reconnected, onReconnected).on(RoomEvent.ParticipantDisconnected, onParticipantLeft)
+    return () => {
+      liveRoom.off(RoomEvent.Reconnected, onReconnected).off(RoomEvent.ParticipantDisconnected, onParticipantLeft)
+    }
+  }, [liveRoom, checkRoom])
+
+  const checkRoomForSend = useCallback(() => checkRoom('message with no agent in the room'), [checkRoom])
 
   // Screen wake lock while a session is live: a phone that sleeps mid-voice-
   // session suspends WebRTC + SSE and burns a full reconnect cycle. Held for
@@ -1044,6 +1102,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     markAuthResolved,
     markAuthInProgress,
     markVoiceActivity,
+    checkRoom: checkRoomForSend,
     isController: controlsEnabled(tabRole),
   }
 
@@ -1175,6 +1234,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
           className="w-full flex justify-center"
         >
           <RoomAudioRenderer />
+          <RoomHandle onRoom={setLiveRoom} />
           {children}
         </LiveKitRoom>
       ) : (
