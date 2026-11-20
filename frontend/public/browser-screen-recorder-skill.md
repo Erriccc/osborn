@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 60
+Version: 61
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v61
+- **`/say` bounds copying and decoding the recording too, and copies only what is new.** Each turn copies just the audio recorded since the last peek out of the page; a decode that runs out of the turn's time returns "nothing transcribed: decoding the recording ran out of time" instead of hanging. A tab whose recording is past the 30-min decode cap says so in the `/say` warning, and `GET /status` shows `ears` (recording age against the cap) and `capturePaused` (idle screen-capture pause, which a `/status` read does not wake). Say tasks carry `hearSpan` and `clipSpan` (wall-clock ms) so a transcript and its clip can be compared.
 
 ## What's new in v60
 - **A timed-out act no longer overlaps the next one or writes the action cache.** One still running 15s after its deadline is waited for by the next brain action (for what is left of the action lock) and refused with a clear error if it never stops; a late finish is never cached, and the marks now say "finished late" or "failed late" apart from a clean stop.

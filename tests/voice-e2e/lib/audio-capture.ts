@@ -252,15 +252,62 @@ export function recordingMsAt(clock: AudioClock, wallMs: number): number {
   return f1 + (wallMs - w1) * rate
 }
 
-export async function peekCapture(page: Page): Promise<{ base64: string; sinceStartMs: number; captureStartedAt: number; clock: AudioClock }> {
-  return await page.evaluate(async () => {
+/** Longest page-audio recording the engine decodes for a turn; past it the clip goes without page audio. */
+export const AUDIO_DECODE_CAP_MS = 30 * 60 * 1000
+
+/**
+ * How long a /say turn may spend copying and decoding the page's recording,
+ * given the ms left before the turn deadline. null: too little left to decode
+ * at all. Hearing always keeps 10s after the decode (#199).
+ */
+export function decodeBudgetMs(leftMs: number): number | null {
+  if (leftMs < 15000) return null
+  return Math.min(35000, leftMs - 10000)
+}
+
+/** The recording's age in whole minutes, and whether it is past the decode cap (#185). */
+export function recordingAge(startedAt: number | null | undefined, now: number): { minutes: number; overCap: boolean } | null {
+  if (!startedAt) return null
+  const ms = Math.max(0, now - startedAt)
+  return { minutes: Math.floor(ms / 60000), overCap: ms > AUDIO_DECODE_CAP_MS }
+}
+
+/** What Node already holds of one tab's recording: its first `chunks` chunks, concatenated. */
+export type PeekCache = { startedAt: number; chunks: number; bytes: Buffer }
+
+/**
+ * Adds the chunks a peek copied (from chunk `from` on) to what was held. A
+ * different recording (re-armed ears, reloaded page) or a gap starts over;
+ * null means the peek must be repeated from chunk 0.
+ */
+export function mergePeek(held: PeekCache | undefined, got: { startedAt: number; from: number; total: number; bytes: Buffer }): PeekCache | null {
+  if (got.from === 0) return { startedAt: got.startedAt, chunks: got.total, bytes: got.bytes }
+  if (!held || held.startedAt !== got.startedAt || held.chunks !== got.from) return null
+  return { startedAt: got.startedAt, chunks: got.total, bytes: Buffer.concat([held.bytes, got.bytes]) }
+}
+
+// The recording only grows, so each peek copies just the chunks added since the
+// last one out of the page (#165): copying the whole recording on every turn
+// grew with the capture's age.
+const peekHeld = new WeakMap<Page, PeekCache>()
+
+/** What to keep after a peek: past the decode cap nothing is held, and every peek copies it all again. */
+export function heldAfterPeek(merged: PeekCache, sinceStartMs: number): PeekCache | undefined {
+  return sinceStartMs > AUDIO_DECODE_CAP_MS ? undefined : merged
+}
+
+export async function peekCapture(page: Page): Promise<{ bytes: Buffer; sinceStartMs: number; captureStartedAt: number; clock: AudioClock }> {
+  const copy = (held: PeekCache | undefined) => page.evaluate(async ({ from, startedAt }) => {
     const cap = (window as any).__osbornCapture
     if (!cap) throw new Error('startCapture was never called')
     cap.rec.requestData?.() // flush the in-flight chunk
     await new Promise((r) => setTimeout(r, 120))
     const clk = (window as any).__osbornClock
     clk?.sample()
-    const blob = new Blob(cap.chunks, { type: 'audio/webm' })
+    // Another recording than the one Node holds: copy it all.
+    const start = cap.startedAt === startedAt && from <= cap.chunks.length ? from : 0
+    const total = cap.chunks.length
+    const blob = new Blob(cap.chunks.slice(start, total), { type: 'audio/webm' })
     const buf = await blob.arrayBuffer()
     let bin = ''
     const bytes = new Uint8Array(buf)
@@ -270,9 +317,18 @@ export async function peekCapture(page: Page): Promise<{ base64: string; sinceSt
     // the clock's only sample when nothing has been tapped yet.
     const anchor = (window as any).__osbornAudioAnchor ?? cap.startedAt
     const fileZeroAt = Math.max(anchor, cap.startedAt)
-    return { base64: btoa(bin), sinceStartMs: Date.now() - cap.startedAt, captureStartedAt: cap.startedAt,
+    return { base64: btoa(bin), from: start, total, sinceStartMs: Date.now() - cap.startedAt, captureStartedAt: cap.startedAt,
       clock: (clk?.clock?.length ? clk.clock : [[fileZeroAt, 0]]) as Array<[number, number]> }
-  })
+  }, { from: held?.chunks ?? 0, startedAt: held?.startedAt ?? 0 })
+  let got = await copy(peekHeld.get(page))
+  let merged = mergePeek(peekHeld.get(page), { startedAt: got.captureStartedAt, from: got.from, total: got.total, bytes: Buffer.from(got.base64, 'base64') })
+  if (!merged) {  // two peeks raced on one tab: copy it all
+    got = await copy(undefined)
+    merged = mergePeek(undefined, { startedAt: got.captureStartedAt, from: 0, total: got.total, bytes: Buffer.from(got.base64, 'base64') })!
+  }
+  const keep = heldAfterPeek(merged, got.sinceStartMs)
+  if (keep) peekHeld.set(page, keep); else peekHeld.delete(page)
+  return { bytes: merged.bytes, sinceStartMs: got.sinceStartMs, captureStartedAt: got.captureStartedAt, clock: got.clock }
 }
 
 export async function stopCapture(page: Page): Promise<{ base64: string; durationMs: number }> {
