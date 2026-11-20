@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 62
+Version: 63
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v63
+- `/say` and `/act` take `clip: false` to skip the clip entirely (no frames cut, nothing encoded; `clipUrl` is null). A `/say` transcript (`heard`) runs until hearing began, so it may run a little past the clip's end; the task's `hearSpan` gives that span.
 
 ## What's new in v62
 - **`ears.audioClock` reports on every tab, not only once page audio was tapped.** It was null on a page with only the synthetic mic. `/say` `timings` add `audio` (the utterance's length): `play` well over `audio` means the tab's audio ran slow, and `/say` warns about it the same way as a low `audioClock`.

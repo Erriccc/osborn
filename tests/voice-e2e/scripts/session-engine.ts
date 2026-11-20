@@ -1592,9 +1592,9 @@ async function main() {
         if (!post) return  // answered inside the lock (refused, invalid, or failed)
         const { page, opened, n, t0, r, effect, warning, nag } = post
         const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000, takenSince(driver, page) ?? 0)
-        const actRange = live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page, isPersonDriver(driver)).catch(() => null) : null
+        const actRange = body.clip !== false && live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page, isPersonDriver(driver)).catch(() => null) : null
         const clip = actRange?.path ?? null
-        const clipError = clip ? null : (live ? (live.clipFailure() ?? 'clip failed') : 'live stream unavailable — no clips this session')
+        const clipError = clip || body.clip === false ? null : (live ? (live.clipFailure() ?? 'clip failed') : 'live stream unavailable — no clips this session')
         if (clip) mark(`clip: ${clip}`)
         const shot = await reqShot(n, 'act', opened && !opened.isClosed() ? opened : page)
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
@@ -1693,7 +1693,9 @@ async function main() {
           // the reply (#215), and GET /clip?n waits for them. waitClip:true restores
           // the old in-reply clip.
           const tClip = Date.now()
-          const rangeJob = live?.clipRange ? live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), Math.max(t0 - 1000, takenSince(driver, page) ?? 0), tClip, page, isPersonDriver(driver)).catch(() => null) : Promise.resolve(null)
+          // clip:false asks for no clip: no frames are cut and nothing is encoded (#185).
+          const wantClip = body.clip !== false
+          const rangeJob = wantClip && live?.clipRange ? live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-say.mp4`), Math.max(t0 - 1000, takenSince(driver, page) ?? 0), tClip, page, isPersonDriver(driver)).catch(() => null) : Promise.resolve(null)
           let hearError: string | null = null
           // Skip decoding and hearing when the ears clearly heard nothing this
           // turn: no page audio ever tapped, or no sound since speaking (#201).
@@ -1708,14 +1710,16 @@ async function main() {
           // under 15s left, and a decode that runs out of time skips hearing rather
           // than copying the whole recording a second time for the raw fallback.
           const decodeMs = nothingToHear ? null : decodeBudgetMs(left(0))
+          // The decoded recording is copied right after this moment, so hearing covers
+          // speaking until then, past the clip's cut (tClip) when the reply runs on.
+          const tHear = Date.now()
           const decoding = decodeMs == null ? null : peekAudioToWav(page)
           const decoded = !decoding ? null : await withTimeout(decoding, decodeMs!, `decoding the recording ran out of time (${Math.round(decodeMs! / 1000)}s)`)
             .catch((e) => { hearError = (e as Error).message; void decoding.then((a) => { if (a) rmSync(a.wav, { force: true }) }); return null })
           lap('decode')
-          // Wall-clock span the transcript covers: speaking until the recording was copied (#185);
-          // null when hearing has to copy it again itself (no decode).
           const hearing = !nothingToHear && !hearError
-          const hearSpan = hearing && decoded ? [t0, Date.now()] : null
+          // null when hearing has to copy the recording again itself (no decode).
+          const hearSpan = hearing && decoded ? [t0, tHear] : null
           const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
           const budget = left(5000)
           const heard = !hearing ? '' : await withTimeout(decoded ? hearFromWav(decoded.wav, recordingMsAt(decoded.clock, t0)).catch(hearRaw) : hearRaw(),
@@ -1725,9 +1729,12 @@ async function main() {
           const finishClip = async () => {
             const range = await rangeJob
             const clipWhy = range ? null : live?.clipFailure?.()  // read now: another request's clip overwrites it
-            timings.clip = Date.now() - tClip
-            const encodeMs = live?.lastEncodeMs?.(); if (encodeMs != null) timings.encode = encodeMs  // part of clip
-            if (!range) clipError = live ? (clipWhy ?? 'clip failed') : 'live stream unavailable — no clips this session'
+            if (wantClip) {
+              timings.clip = Date.now() - tClip
+              const encodeMs = live?.lastEncodeMs?.(); if (encodeMs != null) timings.encode = encodeMs  // part of clip
+            }
+            if (!wantClip) { /* no clip to report or mix */ }
+            else if (!range) clipError = live ? (clipWhy ?? 'clip failed') : 'live stream unavailable — no clips this session'
             else {
               clip = range.path; clipSpan = [range.startMs, range.endMs]
               const tMix = Date.now()
@@ -1750,7 +1757,7 @@ async function main() {
             : ears.armedNow ? 'nothing was heard; the ears were armed on this tab just before speaking, so audio that started earlier was not captured'
             : 'nothing was heard in the listen window — raise listenMs if the reply comes late'
           const shot = await reqShot(n, 'say', page)
-          const window = stampTask(n, 'say', t0, null, shot, body.text, heard, page, true)
+          const window = stampTask(n, 'say', t0, null, shot, body.text, heard, page, wantClip)
           ;(window as any).timings = timings; (window as any).voice = voice; (window as any).hearSpan = hearSpan
           const clipDone = finishClip().catch((e) => { clipError = `clip failed — ${(e as Error).message.slice(0, 120)}` }).then(() => {
             ;(window as any).clip = clip; (window as any).clipPending = false; (window as any).clipError = clipError; (window as any).clipAudio = audio; (window as any).clipSpan = clipSpan; writeManifest()
@@ -1760,7 +1767,7 @@ async function main() {
           timings.total = Date.now() - tReq
           writeManifest()
           addStep('say', String(body.text))
-          const clipPending = !body.waitClip
+          const clipPending = wantClip && !body.waitClip
           // How fast the page's audio ran (1 = real time). Under ~0.9 the page itself
           // heard and played audio slowed down: say so rather than hide it.
           const audioClock = earsAfter.audioClock ?? null
@@ -1770,7 +1777,7 @@ async function main() {
           const playRate = timings.audio && played ? Math.round((timings.audio / played) * 100) / 100 : null
           const slowRate = audioClock != null && audioClock < 0.9 ? audioClock : playRate != null && playRate < 0.75 ? playRate : null
           const clockWarning = slowRate != null ? `audio in this tab ran at ${slowRate}x real time (CPU starved): speaking took ${Math.round((played ?? 0) / 100) / 10}s for ${Math.round((timings.audio ?? 0) / 100) / 10}s of audio, the recording is time-compressed against the video, and the page may have heard and played audio slowed down` : null
-          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: [sayWarning, capWarning, clockWarning].filter(Boolean).join('; ') || null, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
+          return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: [sayWarning, capWarning, clockWarning].filter(Boolean).join('; ') || null, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: wantClip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: wantClip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
       if (path === '/hear') {
