@@ -24,7 +24,7 @@
 | `POST /shot` | on-demand screenshot of your tab; recorded as a task, so it returns `task` and public `evidence` links to paste into an issue |
 | `POST /tab {op: open\|navigate\|switch\|close\|claim\|release\|cast\|uncast, url?, i?, viewport?, reuse?}` (owner = your `x-driver-id`) | tab ops. `cast` shares one of your tabs on the public live view (a meeting's camera), `uncast` stops it; replies carry `cast` (the cast tab's index or null). `open` REUSES a same-site tab unless `reuse:false`; `viewport:"mobile"` = emulated iPhone 13 and `"tablet"` = iPad (gen 7) (own context: touch, mobile UA, device pixels, same sign-ins; closed with its last tab), `{width,height}` = desktop window resized; owners guard against other directors (409) |
 | `POST /journey {op: start\|end\|list, name?, goal?, save?, cleanup?}` | journey framing — see below |
-| (all replies) | JSON replies, `/events` and webhooks are redacted (`••••`); `/eval` values and `/shot` `jpegB64` are raw — read raw URLs with `/eval location.href` |
+| (all replies) | JSON replies, `/events` and webhooks are redacted (`••••`); `/eval` values and `/shot` `jpegB64` are raw — read raw URLs with `/eval location.href`. Run files (`manifest.json`, `scenario.yaml`) and saved journeys are written redacted, and a step carrying a token-shaped value or typing into a password field is never cached in `actions.json` (an older such entry is dropped on its next use) |
 | `POST /brain` | re-init a detached Stagehand in place |
 | `POST /recover` | reload the active tab |
 | `POST /end {shutdown?, keep?}` | closes YOUR tabs; shuts the engine down (bounded, manifest safe) only when no other driver has a tab open, or with `{"shutdown": true}`; `{"keep": true}` never stops it |

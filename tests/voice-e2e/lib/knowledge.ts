@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, appendFileSync, readdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { redactJson } from './devtools'
 
 /**
  * Per-site knowledge base — the agent's "digital profile" of each website.
@@ -47,7 +48,7 @@ export function addSiteFinding(hostname: string, finding: string) {
   appendFileSync(f, `\n- ${finding} _(${new Date().toISOString().slice(0, 10)})_\n`)
 }
 
-/** Promote a proven step sequence into the site's journey library. */
+/** Promote a proven step sequence into the site's journey library (redacted: the folder is meant to be shared). */
 export function saveJourney(hostname: string, name: string, journey: {
   goal?: string | null; startUrl: string; auth: string; savedAt: string
   steps: Array<{ kind: string; value: string }>
@@ -58,14 +59,14 @@ export function saveJourney(hostname: string, name: string, journey: {
   const f = join(dir, `${slug}.yaml`)
   const y = [
     `name: ${slug}`,
-    journey.goal ? `goal: ${JSON.stringify(journey.goal)}` : null,
+    journey.goal ? `goal: ${redactJson(journey.goal)}` : null,
     `site: ${hostname}`,
-    `startUrl: ${JSON.stringify(journey.startUrl)}`,
+    `startUrl: ${redactJson(journey.startUrl)}`,
     'preconditions:',
     `  auth: ${journey.auth}`,
     `savedAt: ${journey.savedAt}`,
     'steps:',
-    ...journey.steps.map((s) => `  - ${s.kind}: ${JSON.stringify(s.value)}`),
+    ...journey.steps.map((s) => `  - ${s.kind}: ${redactJson(s.value)}`),
   ].filter(Boolean).join('\n')
   writeFileSync(f, y + '\n')
   return f
