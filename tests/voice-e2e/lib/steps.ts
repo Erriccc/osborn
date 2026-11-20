@@ -72,7 +72,7 @@ export async function enterFreshRoom(
   }
   await Promise.race([
     gateText.waitFor({ state: 'visible', timeout: 45_000 }).catch(() => {}),
-    page.waitForFunction(() => (window as any).__mic?.ready === true, undefined, { timeout: 45_000 }).catch(() => {}),
+    waitForMicOpen(page, 45_000).catch(() => {}),
   ])
   await dismiss()
   await waitForMicOpen(page, 90_000)

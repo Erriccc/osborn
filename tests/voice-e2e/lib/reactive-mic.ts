@@ -87,21 +87,19 @@ export async function installReactiveMic(page: Page) {
   })
 }
 
-/** Resolves once the app has actually opened the mic (getUserMedia called). */
+/** In-page: has the app opened the mic (getUserMedia called)? */
+const micReady = () => (window as any).__mic?.ready === true
+
+/** Resolves once the app has actually opened the mic. */
 export async function waitForMicOpen(page: Page, timeoutMs = 60_000) {
-  await page.waitForFunction(() => (window as any).__mic?.ready === true, undefined, { timeout: timeoutMs })
+  await page.waitForFunction(micReady, undefined, { timeout: timeoutMs })
 }
 
 /** The one no-mic error, tagged so callers test `isNoMic(e)` and never match the message text. */
-export function noMicError(): Error {
+function noMicError(): Error {
   return Object.assign(new Error('app has not opened the mic yet — call waitForMicOpen first'), { code: 'no_mic' })
 }
 export function isNoMic(e: unknown): boolean { return (e as { code?: unknown } | null)?.code === 'no_mic' }
-
-/** One cheap evaluate: has the app opened the mic? Throws the tagged no-mic error if not. */
-async function assertMicOpen(page: Page): Promise<void> {
-  if (!(await page.evaluate(() => (window as any).__mic?.ready === true))) throw noMicError()
-}
 
 /** Play a WAV file into the fake mic. Resolves when the utterance finishes, with the audio's length and the time it took to play (start to end, in the page). */
 export async function speakWav(page: Page, wavPath: string): Promise<{ audioMs: number; playedMs: number }> {
@@ -145,7 +143,7 @@ export async function speakText(page: Page, text: string, opts?: { keepWav?: str
   const base = join(tmpdir(), `osborn-utt-${Date.now()}-${Math.floor(Math.random() * 1e6)}`)
   const wav = `${base}.wav`
   try {
-    await assertMicOpen(page)  // before the paid TTS call
+    if (!(await page.evaluate(micReady))) throw noMicError()  // before the paid TTS call
     const t = Date.now()
     const provider = await synthesize(text, base)
     const synthMs = Date.now() - t
