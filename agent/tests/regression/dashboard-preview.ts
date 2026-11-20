@@ -93,6 +93,15 @@ writeFileSync(join(dir, `${stale}.jsonl`), [
   ...Array.from({ length: 2 }, () => toolLine(300 * 1024)),
 ].join('\n') + '\n')
 
+// D10 — same, but the tail's tool output is dated: that time wins over the head's turn.
+const datedTail = uuid(9)
+writeFileSync(join(dir, `${datedTail}.jsonl`), [
+  JSON.stringify({ type: 'summary', cwd: PROJECT }),
+  ...Array.from({ length: 6 }, (_, i) => JSON.stringify({ type: 'user', timestamp: '2026-08-07T16:36:07.563Z', message: { role: 'user', content: `old q${i}` } })),
+  ...Array.from({ length: 2 }, () => toolLine(300 * 1024)),
+  JSON.stringify({ type: 'system', subtype: 'tool', timestamp: '2026-11-20T04:04:00.000Z', junk: 'x' }),
+].join('\n') + '\n')
+
 const t0 = Date.now()
 const sessions = await listSessions(PROJECT)
 const ms = Date.now() - t0
@@ -118,6 +127,9 @@ check('D8', !!sp && sp.messageCount > 2 && sp.messageCount <= 80, `sparse-window
 
 const st = ((await listAllClaudeSessions()) as any[]).find((s) => s.sessionId === stale)
 check('D9', !!st && st.lastActivityAt === undefined, `no tail timestamp leaves lastActivityAt unset, not the head's old turn (got ${st?.lastActivityAt})`)
+
+const dt = ((await listAllClaudeSessions()) as any[]).find((s) => s.sessionId === datedTail)
+check('D10', !!dt && dt.lastActivityAt === '2026-11-20T04:04:00.000Z', `a dated tool record in the tail wins over the head's turn (got ${dt?.lastActivityAt})`)
 
 rmSync(PROJECT, { recursive: true, force: true })
 void HOME
