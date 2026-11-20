@@ -687,6 +687,7 @@ interface PreviewAcc {
   aiTitle?: string
   firstTs?: string
   lastTs?: string
+  anyTs?: string // last timestamp on any record (tool results included)
   /** message.id of the last counted assistant record (split messages count once). */
   lastAsstId?: string
 }
@@ -714,6 +715,7 @@ function previewUserText(content: unknown): string | null {
 function accumulatePreviewEntry(acc: PreviewAcc, entry: any): void {
   if (!entry || typeof entry !== 'object') return
   if (!acc.firstTs && typeof entry.timestamp === 'string' && entry.timestamp) acc.firstTs = entry.timestamp
+  if (typeof entry.timestamp === 'string' && entry.timestamp) acc.anyTs = entry.timestamp
   if (entry.type === 'ai-title' && typeof entry.aiTitle === 'string') {
     const t = cleanTurnText(entry.aiTitle, 'assistant')
     if (t) acc.aiTitle = t.substring(0, PREVIEW_TITLE_CHARS)
@@ -818,9 +820,9 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
         title: tail.aiTitle ?? head.aiTitle ?? head.firstUser,
         messageCount,
         firstTs: head.firstTs,
-        // No timestamped turn in the tail sample: leave it unset so callers use the file's mtime,
-        // never the head's (often months-old) first turn.
-        lastActivityAt: tail.lastTs,
+        // No dated turn in the tail sample: any dated record there (a tool result), else unset
+        // so callers use the file's mtime — never the head sample's turn.
+        lastActivityAt: tail.lastTs ?? tail.anyTs,
       }
     } finally {
       closeSync(fd)
