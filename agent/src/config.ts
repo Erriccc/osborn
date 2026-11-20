@@ -818,7 +818,9 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
         title: tail.aiTitle ?? head.aiTitle ?? head.firstUser,
         messageCount,
         firstTs: head.firstTs,
-        lastActivityAt: tail.lastTs ?? head.lastTs,
+        // No timestamped turn in the tail sample: leave it unset so callers use the file's mtime,
+        // never the head's (often months-old) first turn.
+        lastActivityAt: tail.lastTs,
       }
     } finally {
       closeSync(fd)
@@ -967,8 +969,8 @@ interface SessionManifestEntry {
 interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
 // Older manifests are discarded on load. v2: sanitized preview fields. v3: the
 // large-file messageCount estimate changed, and unchanged files are never re-read.
-// v4: the large-file count is the sampled lower bound.
-const SESSION_MANIFEST_VERSION = 4
+// v4: the large-file count is the sampled lower bound. v5: no head fallback for last activity.
+const SESSION_MANIFEST_VERSION = 5
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')
 }

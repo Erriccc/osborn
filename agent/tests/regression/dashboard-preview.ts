@@ -21,7 +21,7 @@ import { check, finish, sandboxHome } from './_shared.js'
 
 const HOME = sandboxHome()
 
-const { listSessions, getSessionDir } = await import('../../src/config.js')
+const { listSessions, listAllClaudeSessions, getSessionDir } = await import('../../src/config.js')
 
 const PROJECT = '/tmp/osborn-dash-test-project'
 const dir = getSessionDir(PROJECT)
@@ -84,6 +84,15 @@ writeFileSync(join(dir, `${sparse}.jsonl`), [
   ...turns('tail'),
 ].join('\n') + '\n')
 
+// D9 — dated turns only in the head, a tail of huge untimestamped tool output: the last
+// activity must not fall back to the head's (old) turn time.
+const stale = uuid(8)
+writeFileSync(join(dir, `${stale}.jsonl`), [
+  JSON.stringify({ type: 'summary', cwd: PROJECT }),
+  ...Array.from({ length: 6 }, (_, i) => JSON.stringify({ type: 'user', timestamp: '2026-08-07T16:36:07.563Z', message: { role: 'user', content: `old q${i}` } })),
+  ...Array.from({ length: 2 }, () => toolLine(300 * 1024)),
+].join('\n') + '\n')
+
 const t0 = Date.now()
 const sessions = await listSessions(PROJECT)
 const ms = Date.now() - t0
@@ -106,6 +115,9 @@ check('D7', byId.has(toolOnly), 'tool-only large transcript surfaces rather than
 
 const sp = byId.get(sparse)
 check('D8', !!sp && sp.messageCount > 2 && sp.messageCount <= 80, `sparse-window large session is never inflated past its 80 turns (got ${sp?.messageCount})`)
+
+const st = ((await listAllClaudeSessions()) as any[]).find((s) => s.sessionId === stale)
+check('D9', !!st && st.lastActivityAt === undefined, `no tail timestamp leaves lastActivityAt unset, not the head's old turn (got ${st?.lastActivityAt})`)
 
 rmSync(PROJECT, { recursive: true, force: true })
 void HOME
