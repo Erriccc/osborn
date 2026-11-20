@@ -11,6 +11,9 @@
 ## Removed
 <!-- What was cut (dead code, unreachable guards, duplicates) and why. "None" if nothing. -->
 
+## User time
+<!-- Saves / costs the user time because … (waiting, clicks, questions, repeats). -->
+
 ## Tested
 
 ## Steward
