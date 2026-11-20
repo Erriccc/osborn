@@ -307,6 +307,8 @@ function VoiceRoomInner({
   // current step finishes (session_switch_pending). Separate from the resume
   // chip, which clears on the first assistant message.
   const [switchPending, dispatchSwitchPending] = useReducer(switchPendingReducer, null)
+  // Rooms search: one query for the rail (xl+) and the bar (below xl), both mounted.
+  const [roomsQuery, setRoomsQuery] = useState('')
   useEffect(() => {
     if (!resumeChip) return
     const left = Math.max(0, resumeChip.startedAt + RESUME_CHIP_TIMEOUT_MS - Date.now())
@@ -4069,6 +4071,8 @@ function VoiceRoomInner({
         disabled={!agentConnected}
         liveTitle={firstUserMessage}
         pendingId={switchPending?.sessionId ?? null}
+        query={roomsQuery}
+        onQueryChange={setRoomsQuery}
       />
       {/* Chat column. No xl:min-w floor: at the 1280px xl boundary the 240px
           rooms rail plus a shrink-0 aside dragged to MAX_PANEL_WIDTH_PCT (70%,
@@ -4503,6 +4507,8 @@ function VoiceRoomInner({
           disabled={!agentConnected}
           liveTitle={firstUserMessage}
           pendingId={switchPending?.sessionId ?? null}
+          query={roomsQuery}
+          onQueryChange={setRoomsQuery}
         />
 
         {/* Prominent compaction banner — sits above chat during PreCompact→PostCompact window.

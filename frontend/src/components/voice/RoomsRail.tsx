@@ -25,9 +25,9 @@
 // tablet, so the conversation keeps full width instead of a three-column
 // squeeze, issue #118) and nothing else changes.
 
-import { useEffect, useMemo, useState } from 'react'
-import { buildRoomRows, groupRoomsByProject, roomAvatar, roomIdentityLabel, SEARCH_IDLE_CAP, type RoomRow, type RoomStatus } from '@/lib/rooms'
-import { prepareSessions, sessionMatchesQuery } from '@/lib/session-list'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { buildRoomRows, groupRoomsByProject, roomAvatar, roomIdentityLabel, roomSearchOptions, type RoomRow, type RoomStatus } from '@/lib/rooms'
+import { prepareSessions } from '@/lib/session-list'
 import type { SessionInfo, SlotInfo } from './shared'
 
 export type { RoomStatus }
@@ -135,6 +135,103 @@ function RoomRowButton({
   )
 }
 
+/** The session search field — the rail's, and the bar's when it is opened.
+ * `size="md"` is the touch size (40px+, 16px text so iOS does not zoom). */
+function SessionSearchInput({
+  value,
+  onChange,
+  onClear,
+  onKeyDown,
+  showClear = !!value,
+  autoFocus,
+  size = 'sm',
+}: {
+  value: string
+  onChange: (v: string) => void
+  onClear: () => void
+  onKeyDown?: (e: KeyboardEvent<HTMLInputElement>) => void
+  showClear?: boolean
+  autoFocus?: boolean
+  size?: 'sm' | 'md'
+}) {
+  const md = size === 'md'
+  return (
+    <div className="relative flex-1 min-w-0">
+      <svg className={`${md ? 'w-4 h-4 left-2.5' : 'w-3.5 h-3.5 left-2'} absolute top-1/2 -translate-y-1/2 text-gray-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
+      </svg>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={onKeyDown}
+        autoFocus={autoFocus}
+        placeholder="Search sessions"
+        aria-label="Search sessions"
+        className={`w-full rounded-lg bg-gray-800/60 border border-gray-800 text-gray-200 placeholder-gray-500 outline-none focus:border-amber-500/40 ${
+          md ? 'min-h-10 pl-9 pr-10 py-2 text-base' : 'pl-7 pr-7 py-1.5 text-[12px]'
+        }`}
+      />
+      {showClear && (
+        <button
+          onClick={onClear}
+          aria-label="Clear search"
+          className={`absolute top-1/2 -translate-y-1/2 rounded text-gray-500 hover:text-gray-200 ${md ? 'right-1 p-2' : 'right-1.5 p-0.5'}`}
+        >
+          <svg className={md ? 'w-4 h-4' : 'w-3.5 h-3.5'} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      )}
+    </div>
+  )
+}
+
+/** The rail's list body: Live + Running pinned, the empty state, then the
+ * Recent rows grouped by project. The bar's search dropdown renders the same. */
+function RoomResults({
+  rooms,
+  searching,
+  disabled,
+  onSwitchRoom,
+}: {
+  rooms: Room[]
+  searching: boolean
+  disabled?: boolean
+  onSwitchRoom: (room: Room) => void
+}) {
+  const topRooms = rooms.filter((r) => r.status !== 'idle')
+  const idleRooms = rooms.filter((r) => r.status === 'idle')
+  const idleByProject = groupRoomsByProject(idleRooms)
+  return (
+    <>
+      {/* Live + Running — pinned above the grouped recents. */}
+      {topRooms.map((room) => (
+        <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+      ))}
+      {/* One empty state. A query only filters the IDLE rows, so judge it on
+          those — a live session makes `rooms` non-empty, which would both
+          suppress "no matches" and claim the user has no sessions. */}
+      {(searching ? idleRooms.length === 0 : rooms.length === 0) && (
+        <p className="text-[11px] text-gray-500 text-center py-6 px-2 leading-relaxed">
+          {searching ? 'No sessions match your search.' : 'No other sessions yet. Start one with “New room”.'}
+        </p>
+      )}
+      {/* Recent — grouped by project. */}
+      {idleByProject.map(({ project, rooms: group }) => (
+        <div key={project} className="pt-1.5">
+          {/* No group colour dot: rows in the "workspace"/"Other" buckets
+              hash their own title, so no one colour can match them all. */}
+          <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">{project}</div>
+          {group.map((room) => (
+            <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
+          ))}
+        </div>
+      ))}
+    </>
+  )
+}
+
 interface RoomsProps {
   sessions: SessionInfo[]
   slots: SlotInfo[]
@@ -150,6 +247,10 @@ interface RoomsProps {
   liveTitle?: string | null
   /** Session a deferred switch is waiting to open (shows "Switching…"). */
   pendingId?: string | null
+  /** The session search query — one state for the rail AND the bar (both are
+   * mounted, shown by breakpoint), so it survives a resize across xl. */
+  query: string
+  onQueryChange: (query: string) => void
 }
 
 const COLLAPSE_KEY = 'vn-rooms-collapsed'
@@ -169,9 +270,10 @@ export function RoomsSidebar({
   disabled,
   liveTitle,
   pendingId,
+  query,
+  onQueryChange,
 }: RoomsProps) {
   const [collapsed, setCollapsed] = useState(false)
-  const [query, setQuery] = useState('')
   const [hideSystem, setHideSystem] = useState(false)
   useEffect(() => {
     try {
@@ -207,14 +309,9 @@ export function RoomsSidebar({
     slots,
     liveFallbackTitle: liveTitle,
     pendingId,
-    maxIdle: q ? SEARCH_IDLE_CAP : undefined,
-    match: q ? (s) => sessionMatchesQuery(s, q) : undefined,
+    ...roomSearchOptions(q),
   })
   const backgroundCount = rooms.filter((r) => r.status === 'background').length
-  // Live + Running stay pinned at the top; Recent (idle) rows group by project.
-  const topRooms = rooms.filter((r) => r.status !== 'idle')
-  const idleRooms = rooms.filter((r) => r.status === 'idle')
-  const idleByProject = useMemo(() => groupRoomsByProject(idleRooms), [idleRooms])
 
   if (collapsed) {
     return (
@@ -308,56 +405,13 @@ export function RoomsSidebar({
       {/* Search — without it the idle cap made anything past the 12 most recent
           unreachable from /chat. */}
       <div className="px-2 py-2 border-b border-gray-800/60 shrink-0">
-        <div className="relative">
-          <svg className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-            <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
-          </svg>
-          <input
-            type="text"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search sessions"
-            aria-label="Search sessions"
-            className="w-full pl-7 pr-7 py-1.5 rounded-lg bg-gray-800/60 border border-gray-800 text-[12px] text-gray-200 placeholder-gray-500 outline-none focus:border-amber-500/40"
-          />
-          {query && (
-            <button
-              onClick={() => setQuery('')}
-              aria-label="Clear search"
-              className="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded text-gray-500 hover:text-gray-200"
-            >
-              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          )}
+        <div className="flex">
+          <SessionSearchInput value={query} onChange={onQueryChange} onClear={() => onQueryChange('')} />
         </div>
       </div>
 
       <div className="flex-1 min-h-0 overflow-y-auto p-1.5 space-y-0.5">
-        {/* Live + Running — pinned above the grouped recents. */}
-        {topRooms.map((room) => (
-          <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
-        ))}
-        {/* One empty state. A query only filters the IDLE rows, so judge it on
-            those — a live session makes `rooms` non-empty, which would both
-            suppress "no matches" and claim the user has no sessions. */}
-        {(q ? idleRooms.length === 0 : rooms.length === 0) && (
-          <p className="text-[11px] text-gray-500 text-center py-6 px-2 leading-relaxed">
-            {q ? 'No sessions match your search.' : 'No other sessions yet. Start one with “New room”.'}
-          </p>
-        )}
-        {/* Recent — grouped by project. */}
-        {idleByProject.map(({ project, rooms: group }) => (
-          <div key={project} className="pt-1.5">
-            {/* No group colour dot: rows in the "workspace"/"Other" buckets
-                hash their own title, so no one colour can match them all. */}
-            <div className="px-2 pb-0.5 text-[9px] font-semibold uppercase tracking-wider text-gray-600 truncate">{project}</div>
-            {group.map((room) => (
-              <RoomRowButton key={room.id} room={room} disabled={disabled} onSwitchRoom={onSwitchRoom} />
-            ))}
-          </div>
-        ))}
+        <RoomResults rooms={rooms} searching={!!q} disabled={disabled} onSwitchRoom={onSwitchRoom} />
       </div>
 
       <div className="p-2 border-t border-gray-800/60 shrink-0 space-y-1.5">
@@ -390,6 +444,10 @@ export function RoomsSidebar({
 }
 
 // ── Below xl (phone + tablet): slim horizontal room switcher (2+ rooms) ────
+// Search (#176): a magnifier at the leading edge swaps the chip row for the
+// rail's input; a live query hangs a dropdown of the rail's rows under the bar.
+// Picking a result, Clear, Escape or a tap outside close it AND clear the query,
+// so the chips are never left filtered with no visible cause.
 export function RoomsBar({
   sessions,
   slots,
@@ -399,55 +457,117 @@ export function RoomsBar({
   disabled,
   liveTitle,
   pendingId,
+  query,
+  onQueryChange,
 }: RoomsProps) {
   // #107: fold duplicate copies of the same session into one chip (no "three
   // identical rows"). NOTHING is filtered out here: this switcher has no toggle
   // of its own, so a filter it hardcoded could empty the rail with no way back
   // (the desktop sidebar at least owns the toggle). Dedupe only.
   const prepared = useMemo(() => prepareSessions(sessions), [sessions])
-  const rooms = buildRoomRows(prepared.sessions, currentSessionId, { slots, liveFallbackTitle: liveTitle, pendingId })
+  const rowOpts = { slots, liveFallbackTitle: liveTitle, pendingId }
+  const rooms = buildRoomRows(prepared.sessions, currentSessionId, rowOpts)
+  const q = query.trim()
+  const results = q ? buildRoomRows(prepared.sessions, currentSessionId, { ...rowOpts, ...roomSearchOptions(q) }) : []
+  const [searchOpen, setSearchOpen] = useState(false)
+  // A query typed in the rail keeps the bar open after a resize below xl.
+  const expanded = searchOpen || query !== ''
+  const barRef = useRef<HTMLDivElement>(null)
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false)
+    onQueryChange('')
+  }, [onQueryChange])
+  useEffect(() => {
+    if (!expanded) return
+    const onPointerDown = (e: PointerEvent) => {
+      const el = barRef.current
+      // offsetParent is null while the bar is display:none (xl+), where the
+      // rail owns the query and a click elsewhere must not clear it.
+      if (!el || el.offsetParent === null || el.contains(e.target as Node)) return
+      closeSearch()
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    return () => document.removeEventListener('pointerdown', onPointerDown)
+  }, [expanded, closeSearch])
   // Keep the voice screen clean (3-6-9): no rail when there is nowhere to
   // switch to — i.e. only when the user genuinely has a single room, never
   // because a filter removed the rest. nav/switchers don't count toward the
   // primary-action budget.
   if (rooms.length <= 1) return null
+  const pick = (room: Room) => {
+    onSwitchRoom(room)
+    closeSearch()
+  }
   return (
-    <div className="xl:hidden flex items-center gap-1.5 px-3 py-1.5 overflow-x-auto scrollbar-none border-b border-gray-800/50 bg-gray-900/40">
-      {rooms.map((room) => {
-        const isLive = room.status === 'live'
-        return (
+    <div ref={barRef} className="xl:hidden relative border-b border-gray-800/50 bg-gray-900/40">
+      {expanded ? (
+        <div className="flex items-center px-3 py-1.5">
+          <SessionSearchInput
+            value={query}
+            onChange={onQueryChange}
+            onClear={closeSearch}
+            onKeyDown={(e) => { if (e.key === 'Escape') closeSearch() }}
+            showClear
+            autoFocus={searchOpen}
+            size="md"
+          />
+        </div>
+      ) : (
+        <div className="flex items-center gap-1.5 px-3 py-1.5">
           <button
-            key={room.id}
-            onClick={() => !isLive && !disabled && onSwitchRoom(room)}
-            disabled={isLive || disabled}
-            title={`${room.title}${room.time ? ` · ${room.time}` : ''}`}
-            aria-current={isLive ? 'true' : undefined}
-            className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap border transition-colors ${
-              isLive
-                ? 'bg-amber-500/15 text-amber-200 border-amber-500/30'
-                : 'bg-gray-800/50 text-gray-300 border-gray-700/50 hover:bg-gray-800 disabled:opacity-50'
-            }`}
+            onClick={() => setSearchOpen(true)}
+            aria-label="Search sessions"
+            title="Search sessions"
+            className="shrink-0 flex items-center justify-center min-h-8 min-w-8 w-8 h-8 rounded-full bg-gray-800/50 text-gray-400 border border-gray-700/50 hover:bg-gray-800 hover:text-gray-200 transition-colors"
           >
-            <StatusDot status={room.status} />
-            <span className="max-w-[9rem] truncate">{room.title}</span>
-            {isLive ? (
-              <span className="text-[9px] font-semibold uppercase tracking-wide text-amber-300">Live</span>
-            ) : room.time ? (
-              <span className="text-[10px] text-gray-500">{room.time}</span>
-            ) : null}
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
+            </svg>
           </button>
-        )
-      })}
-      <button
-        onClick={onNewRoom}
-        aria-label="New room"
-        title="New room"
-        className="shrink-0 flex items-center justify-center min-h-8 min-w-8 w-8 h-8 rounded-full bg-gray-800/50 text-amber-300 border border-gray-700/50 hover:bg-amber-500/15 transition-colors"
-      >
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
-        </svg>
-      </button>
+          <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto scrollbar-none">
+            {rooms.map((room) => {
+              const isLive = room.status === 'live'
+              return (
+                <button
+                  key={room.id}
+                  onClick={() => !isLive && !disabled && onSwitchRoom(room)}
+                  disabled={isLive || disabled}
+                  title={`${room.title}${room.time ? ` · ${room.time}` : ''}`}
+                  aria-current={isLive ? 'true' : undefined}
+                  className={`shrink-0 flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap border transition-colors ${
+                    isLive
+                      ? 'bg-amber-500/15 text-amber-200 border-amber-500/30'
+                      : 'bg-gray-800/50 text-gray-300 border-gray-700/50 hover:bg-gray-800 disabled:opacity-50'
+                  }`}
+                >
+                  <StatusDot status={room.status} />
+                  <span className="max-w-[9rem] truncate">{room.title}</span>
+                  {isLive ? (
+                    <span className="text-[9px] font-semibold uppercase tracking-wide text-amber-300">Live</span>
+                  ) : room.time ? (
+                    <span className="text-[10px] text-gray-500">{room.time}</span>
+                  ) : null}
+                </button>
+              )
+            })}
+            <button
+              onClick={onNewRoom}
+              aria-label="New room"
+              title="New room"
+              className="shrink-0 flex items-center justify-center min-h-8 min-w-8 w-8 h-8 rounded-full bg-gray-800/50 text-amber-300 border border-gray-700/50 hover:bg-amber-500/15 transition-colors"
+            >
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+      {expanded && q && (
+        <div className="absolute inset-x-0 top-full z-30 max-h-[50dvh] overflow-y-auto p-1.5 space-y-0.5 bg-gray-900 border-b border-gray-800/60 shadow-xl shadow-black/40">
+          <RoomResults rooms={results} searching disabled={disabled} onSwitchRoom={pick} />
+        </div>
+      )}
     </div>
   )
 }
