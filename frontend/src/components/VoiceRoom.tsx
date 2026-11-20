@@ -2629,8 +2629,11 @@ function VoiceRoomInner({
         // already dismissed it this session. The terminal banner + watchdog state
         // (onAuthRequired / everRequired) update regardless.
         if (shouldAutoOpenAuthModal('claude_auth_required', authPromptDismissedRef.current)) setClaudeAuthStatus('required')
-        setClaudeAuthEverRequired(true)
-        onAuthRequired?.()
+        // The on-demand flow (claude_auth_start) also opens with this message.
+        if (!authOptionalRef.current) {
+          setClaudeAuthEverRequired(true)
+          onAuthRequired?.()
+        }
       } else if (data.type === 'claude_auth_url') {
         console.log('🔗 Claude auth URL received')
         // Keep the URL ready even when the modal stays closed, so the banner's
