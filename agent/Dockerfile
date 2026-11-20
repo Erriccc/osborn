@@ -6,7 +6,7 @@
 # Build:  fly deploy
 # Local:  docker build -t osborn-agent . && docker run -p 8741:8741 --env-file .env osborn-agent
 
-ARG NODE_VERSION=20
+ARG NODE_VERSION=24
 FROM node:${NODE_VERSION}-slim AS base
 WORKDIR /app
 ENV NODE_ENV=production

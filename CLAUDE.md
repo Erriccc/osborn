@@ -28,7 +28,7 @@ npm run lint   # ESLint via next lint
 Tests in `agent/tests/*.test.ts` are standalone `node:assert` scripts. `cd agent && node ../frontend/scripts/run-tests.mjs . skill-secrets` runs them all (CI does so on PRs touching `agent/**`); run one on its own with `npx tsx`, for example `npx tsx agent/tests/meeting-tts.test.ts` (also `meeting-tts-adversarial.test.ts` and `meeting-tts-adversarial-2.test.ts`).
 
 ### Deployment
-Frontend deploys to Railway (nixpacks, Node 22). Build: `cd frontend && npm install && npm run build`. Start: `cd frontend && npm run start`.
+Frontend deploys to Railway (nixpacks, Node 24). Build: `cd frontend && npm install && npm run build`. Start: `cd frontend && npm run start`.
 
 ### Required Environment
 

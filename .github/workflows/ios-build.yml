@@ -45,11 +45,11 @@ jobs:
       run:
         working-directory: frontend/native
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 24
 
       - name: Install native deps (Capacitor CLI + plugins)
         run: npm ci
@@ -106,7 +106,7 @@ jobs:
           # Companion dSYMs, when present
           find build/DerivedData/Build/Products -name '*.dSYM' -maxdepth 3 -exec cp -R {} build/artifact/ \; 2>/dev/null || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: VoiceNative-unsigned-${{ github.sha }}
           path: frontend/native/build/artifact/
@@ -121,7 +121,7 @@ jobs:
       # app regression). Runs AFTER the build artifact uploads. Modern Maestro
       # drives the simulator via its embedded XCTest runner (no idb-companion).
       - name: Set up JDK (Maestro runs on the JVM)
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -159,7 +159,7 @@ jobs:
 
       - name: Upload Maestro artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: cap-maestro-${{ github.sha }}
           path: frontend/native/maestro-output/
