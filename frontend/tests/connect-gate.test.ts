@@ -16,8 +16,18 @@ import {
   isAwaitingAgent,
   isOAuthInProgress,
   nextAuthRequired,
+  AGENT_IDENTITY,
+  flushQueue,
+  isAgentIdentity,
+  rejoinMode,
+  roomHasAgent,
+  roomVerdict,
+  sendOrQueue,
   shouldAutoOpenAuthModal,
+  unsentNotice,
   type ConnectWaitState,
+  type QueuedText,
+  type RoomLivenessState,
 } from '../src/lib/connect-gate'
 
 const results: [string, boolean, string?][] = []
@@ -239,6 +249,132 @@ t('VoiceRoom: claude_auth_optional makes sign-in optional and startable', () => 
   ok(voiceRoom.includes('relyingOnFallback={claudeAuthEverRequired || claudeAuthOptional}'), 'health notice knows about the fallback')
 
   ok(/if \(!authOptionalRef\.current\) \{\s*setClaudeAuthEverRequired\(true\)/.test(voiceRoom), 'an optional sign-in URL never marks the session as blocked')
+})
+
+// ── Rejoin on return (tab suspended, agent left the room) ────────────────
+const live: RoomLivenessState = {
+  tabActive: true, everConnected: true, idleStopped: false, connecting: false, agentReady: true,
+  roomState: 'connected', agentInRoom: true, attempts: 0, maxAttempts: 3,
+}
+
+t('agent presence is by identity, not by any remote participant', () => {
+  eq(AGENT_IDENTITY, 'osborn-agent', 'the identity agent/src/index.ts mints')
+  eq(isAgentIdentity('osborn-agent'), true, 'the agent')
+  eq(isAgentIdentity('meeting-canvas'), false, 'the meeting canvas is not the agent')
+  eq(isAgentIdentity('user-123'), false, 'a user')
+  eq(isAgentIdentity(undefined), false, 'nothing')
+  eq(roomHasAgent('connected', true), true, 'connected with the agent')
+  eq(roomHasAgent('connected', false), false, 'connected, only the meeting canvas left')
+  eq(roomHasAgent('reconnecting', true), false, 'reconnecting')
+  eq(roomHasAgent(null, false), false, 'no room')
+})
+
+t('roomVerdict: the incident — back from suspension to a room without the agent rejoins', () => {
+  // `connected` / agentReady still true from before the suspension.
+  eq(roomVerdict({ ...live, agentInRoom: false }), 'rejoin', 'connected room the agent left')
+  eq(roomVerdict({ ...live, roomState: 'disconnected', agentInRoom: false }), 'rejoin', 'room disconnected while hidden')
+})
+
+t('roomVerdict: a healthy session stays put', () => {
+  eq(roomVerdict(live), 'live', 'agent present')
+})
+
+t('roomVerdict: a LiveKit full reconnect is not the agent leaving', () => {
+  // handleRestarting drops every remote participant, then sets 'reconnecting';
+  // the deferred check sees the new state and waits.
+  eq(roomVerdict({ ...live, roomState: 'reconnecting', agentInRoom: false }), 'wait', 'reconnecting')
+  eq(roomVerdict({ ...live, roomState: 'signalReconnecting', agentInRoom: false }), 'wait', 'signal reconnecting')
+  eq(roomVerdict({ ...live, roomState: 'connecting', agentInRoom: false }), 'wait', 'connecting')
+})
+
+t('roomVerdict: waits while a connect is in flight or a join awaits agent_ready', () => {
+  eq(roomVerdict({ ...live, connecting: true, agentInRoom: false }), 'wait', 'connect() in flight')
+  eq(roomVerdict({ ...live, agentReady: false, agentInRoom: false }), 'wait', 'join under way (watchdog bounds it)')
+})
+
+t('roomVerdict: never acts for a standby, cold, or idle-stopped tab', () => {
+  eq(roomVerdict({ ...live, tabActive: false, agentInRoom: false }), 'wait', 'another tab controls the session')
+  eq(roomVerdict({ ...live, everConnected: false, roomState: null, agentInRoom: false }), 'wait', 'never connected')
+  eq(roomVerdict({ ...live, idleStopped: true, roomState: null, agentInRoom: false }), 'wait', 'idle stopped')
+})
+
+t('roomVerdict: no room mounted after a live session rejoins; a spent budget is lost', () => {
+  eq(roomVerdict({ ...live, roomState: null, agentInRoom: false, agentReady: false }), 'rejoin', 'room dropped')
+  eq(roomVerdict({ ...live, agentInRoom: false, attempts: 3 }), 'lost', 'budget spent')
+})
+
+t('rejoinMode: a still-connected room is remounted; a disconnected one takes the token in place', () => {
+  eq(rejoinMode('connected'), 'remount', 'connected rooms ignore a new token and connect-room hands out a new room')
+  eq(rejoinMode('reconnecting'), 'remount', 'not disconnected')
+  eq(rejoinMode('disconnected'), 'in-place', 'network drop keeps the chat mounted')
+  eq(rejoinMode(null), 'in-place', 'no room: just connect')
+})
+
+t('queue: typed text waits for the agent, survives a remount, and goes out in order', () => {
+  const m = (text: string): QueuedText<string> => ({ text, payload: `p:${text}` })
+  let r = sendOrQueue<string>([], m('a'), true)
+  eq(r.send.length, 1, 'live + empty queue sends at once'); eq(r.queued, false, 'not queued')
+  r = sendOrQueue<string>([], m('a'), false)
+  eq(r.queued, true, 'no agent: queued'); eq(r.queue.length, 1, 'one waiting')
+  // The queue is a value the provider keeps; the chat remounting changes nothing.
+  const kept = r.queue
+  r = sendOrQueue<string>(kept, m('b'), true)
+  eq(r.send.length, 0, 'a new message never jumps ahead of queued ones'); eq(r.queue.map((q) => q.text).join(), 'a,b', 'order kept')
+  const notYet = flushQueue(r.queue, false)
+  eq(notYet.send.length, 0, 'no flush without a sender'); eq(notYet.queue.length, 2, 'still kept')
+  const f = flushQueue(notYet.queue, true)
+  eq(f.send.map((q) => q.payload).join(), 'p:a,p:b', 'flushed in order through the new sender'); eq(f.queue.length, 0, 'emptied')
+})
+
+t('queue: giving up is never silent', () => {
+  eq(unsentNotice([]), null, 'nothing queued, nothing to say')
+  ok(/not sent/.test(unsentNotice([{ text: 'hi', payload: 1 }]) || ''), 'one message: not sent')
+  ok(/2 messages were not sent/.test(unsentNotice([{ text: 'a', payload: 1 }, { text: 'b', payload: 2 }]) || ''), 'counts them')
+})
+
+t('provider: rejoin, queue and foreground are wired', () => {
+  const check = provider.slice(provider.indexOf('const checkRoom = useCallback'), provider.indexOf('}, [rejoin, dropRoom, flushQueuedText, giveUpQueuedText])'))
+  ok(check.includes('roomVerdict(') && check.includes('agentInRoom(room)'), 'checkRoom asks roomVerdict with identity-based presence')
+  ok(!/connectedRef\.current/.test(provider), 'no gate on the provider `connected` flag')
+  ok(provider.includes("checkRoom(chatRef.current?.room ?? null, '[foreground]"), 'foreground asks checkRoom')
+  ok(!provider.includes('RoomHandle') && !provider.includes('liveRoom'), 'no second room handle in the provider')
+  const rejoin = provider.slice(provider.indexOf('const rejoin = useCallback'), provider.indexOf('}, [connect, dropRoom])'))
+  ok(/mode === 'remount'\) dropRoom\(\)/.test(rejoin) && rejoin.includes('setRejoining(true)') && rejoin.includes('connect()'), 'remount drops the room; in place keeps the chat')
+  ok(!rejoin.includes('setConnected(false)'), 'an in-place rejoin keeps the chat (and the draft) mounted')
+  ok(/rejoin\('disconnected', `Network disconnect/.test(provider), 'the network-drop path rejoins in place')
+  const ready = provider.slice(provider.indexOf('const markAgentReady = useCallback'), provider.indexOf('}, [flushQueuedText])'))
+  ok(ready.includes('setRejoining(false)') && ready.includes('flushQueuedText()'), 'agent_ready ends the rejoin and sends the queue')
+  ok((provider.match(/giveUpQueuedText\(\)/g) || []).length >= 3, 'watchdog, idle stop and a spent budget report unsent text')
+})
+
+t('VoiceRoom: typed messages go through the provider; room events ask it', () => {
+  const send = voiceRoom.slice(voiceRoom.indexOf('const handleSendText = useCallback'), voiceRoom.indexOf('}, [sendUserText])'))
+  ok(!send.includes('sendToAgent('), 'user_text never goes straight to the data channel')
+  ok((send.match(/sendUserText\?\.\(text, /g) || []).length === 3, 'all three user_text sends go through the provider')
+  ok(voiceRoom.includes("onRoomCheckRef.current?.(room, 'room reconnected')"), 'Reconnected asks the provider')
+  ok(/if \(isAgentIdentity\(p\.identity\)\) setTimeout\(/.test(voiceRoom), 'only the agent leaving counts, checked after LiveKit settles')
+  ok(voiceRoom.includes('registerChat?.({'), 'registers the room and sender')
+  ok(voiceRoom.includes('draft={composerDraft}'), 'the composer keeps its text across a remount')
+})
+
+t('page: the rejoin overlay covers the call controls without unmounting the chat', () => {
+  const page = fs.readFileSync(path.join(root, 'src/app/chat/page.tsx'), 'utf8')
+  ok(page.includes('<VoiceRoom waitingMode={!connected} />') && page.includes('(!connected || rejoining) && ('), 'overlay on rejoining, waitingMode only on !connected')
+})
+
+t('remount: the seed is sent once and the chat mounts into the live session', () => {
+  ok(/const seedSent = useRef\(false\)/.test(provider) && provider.includes('    seedSent,'), 'seed-sent lives in the provider')
+  ok(/const seedSentRef = seedSent \?\? localSeedSent/.test(voiceRoom) && voiceRoom.includes('seedSent={seedSent}'), 'VoiceRoom uses the provider flag')
+  const getter = provider.slice(provider.indexOf('const liveSessionId = useCallback'), provider.indexOf('}, [preSelectedSessionId])', provider.indexOf('const liveSessionId = useCallback')))
+  ok(getter.includes('sessionParamsFromSearch(window.location.search).sessionId') && getter.includes('live || preSelectedSessionId'), 'live URL session, else the launch value')
+  ok(provider.includes('const connectSessionId = liveSessionId()'), 'connect() resumes the same session')
+  ok(voiceRoom.includes('const [preSelectedSessionId] = useState(liveSessionId)'), 'each chat mount reads the live session once')
+  ok(!/useChatSession\(\)[^;]*\bpreSelectedSessionId\b/.test(voiceRoom.slice(voiceRoom.indexOf('export default function VoiceRoom'))), 'not the launch value')
+})
+
+t('a sign-in prompt during a rejoin is not hidden by the overlay', () => {
+  const auth = provider.slice(provider.indexOf('const markAuthRequired = useCallback'), provider.indexOf('}, [])', provider.indexOf('const markAuthRequired = useCallback')))
+  ok(auth.includes('setRejoining(false)'), 'markAuthRequired clears rejoining')
 })
 
 // ── Report ────────────────────────────────────────────────────────────────

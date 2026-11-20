@@ -22,6 +22,7 @@ export default function ChatPage() {
   const {
     connecting,
     connected,
+    rejoining,
     error,
     statusMsg,
     token,
@@ -113,7 +114,8 @@ export default function ChatPage() {
         `}</style>
         <main className="h-[100dvh] w-full overflow-hidden bg-[var(--background)] relative pt-[env(safe-area-inset-top)]">
           <VoiceRoom waitingMode={!connected} />
-          {!connected && (
+          {/* A rejoin keeps VoiceRoom (and the composer's text) mounted underneath. */}
+          {(!connected || rejoining) && (
             <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-[var(--background)]">
               <div className="flex flex-col items-center gap-6">
                 <div className="relative w-20 h-20">

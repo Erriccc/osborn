@@ -26,7 +26,7 @@ import { chatUrlForSession, liveSessionKey, liveSessionRecord, pinnedSessionCwd,
 import { cacheTranscript, readCachedTranscript, reconcileReplay } from '@/lib/transcript-cache'
 import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
-import { useChatSession } from './ChatSessionProvider'
+import { useChatSession, type ChatHandle } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
 import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type StewardGateRecord, stewardGateLine, stewardGateRow, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
@@ -35,7 +35,7 @@ import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/li
 import { backgroundSessionTitle } from '@/lib/rooms'
 import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
 import { isRedundantFinal } from '@/lib/claude-output'
-import { isAuthGateTerminal } from '@/lib/connect-gate'
+import { isAgentIdentity, isAuthGateTerminal } from '@/lib/connect-gate'
 import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
 import { dropControlUserItems, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
@@ -258,6 +258,11 @@ function VoiceRoomInner({
   onAuthResolved,
   onAuthInProgress,
   onVoiceActivity,
+  onRoomCheck,
+  registerChat,
+  sendUserText,
+  composerDraft,
+  seedSent,
   waitingMode,
   preSelectedSessionId,
   agentUrl,
@@ -272,6 +277,16 @@ function VoiceRoomInner({
   /** Sign-in modal open on an active OAuth step (holds off the connect watchdog). */
   onAuthInProgress?: (inProgress: boolean) => void
   onVoiceActivity?: () => void
+  /** The room changed (reconnected, the agent left): have the provider check it. */
+  onRoomCheck?: (room: ReturnType<typeof useRoomContext>, why: string) => void
+  /** Hands the provider this room, its sender and a system-line writer. */
+  registerChat?: (chat: ChatHandle) => () => void
+  /** Typed user_text goes through the provider, which queues it while no agent is in the room. */
+  sendUserText?: (text: string, payload: Uint8Array) => void
+  /** The composer's text, kept across a remount. */
+  composerDraft?: React.MutableRefObject<string>
+  /** The seed prompt has been sent (held by the provider, so a remount does not resend it). */
+  seedSent?: React.MutableRefObject<boolean>
   waitingMode?: boolean
   preSelectedSessionId?: string | null
   agentUrl?: string
@@ -1343,7 +1358,11 @@ function VoiceRoomInner({
       setAgentState('idle')
     }
     const onReconnecting = () => log('RoomReconnecting')
-    const onReconnected = () => log('RoomReconnected')
+    const onReconnected = () => {
+      log('RoomReconnected')
+      // A reconnect can land in a room the agent left; if it is there, queued text goes out.
+      onRoomCheckRef.current?.(room, 'room reconnected')
+    }
     const onConnState = (s: ConnectionState) => {
       log('ConnectionStateChanged', { state: s })
       if (s === ConnectionState.Connected) {
@@ -1407,8 +1426,13 @@ function VoiceRoomInner({
     }
     const onParticipantConnected = (p: any) =>
       log('ParticipantConnected', { identity: p.identity, isAgent: !p.isLocal })
-    const onParticipantDisconnected = (p: any) =>
+    const onParticipantDisconnected = (p: any) => {
       log('ParticipantDisconnected', { identity: p.identity, isAgent: !p.isLocal })
+      // Only the agent leaving matters (not the meeting canvas). Deferred: a
+      // LiveKit full reconnect drops every remote participant BEFORE it flips
+      // the state to reconnecting, which must not read as the agent leaving.
+      if (isAgentIdentity(p.identity)) setTimeout(() => onRoomCheckRef.current?.(room, 'agent left the room'), 0)
+    }
 
     // 0.9.71: high-value FE-only events not present in BE @livekit/rtc-node 0.13.x —
     // surface them so any audio/interruption regression has a paired signal here.
@@ -1630,6 +1654,16 @@ function VoiceRoomInner({
   }, [agentState, state, micEnabled, isMuted])
 
   const { send: sendToAgent } = useDataChannel('user-input')
+  const onRoomCheckRef = useRef(onRoomCheck)
+  onRoomCheckRef.current = onRoomCheck
+
+  // Hand the provider this room, a sender and a system-line writer: it owns the
+  // queue of typed messages waiting for the agent, which outlives a remount.
+  useEffect(() => registerChat?.({
+    room,
+    send: (payload) => sendToAgent(payload, { reliable: true }),
+    notify: (text) => addMessageRef.current?.('system', text),
+  }), [registerChat, room, sendToAgent])
 
   // ── Outputs drawer data flow (L4; UI#13/19) ──────────────────────────────
   // Re-list the session workspace with REPLACE semantics on open, on focus and
@@ -3257,7 +3291,7 @@ function VoiceRoomInner({
               clientMsgId,
             })
             const encoder = new TextEncoder()
-            sendToAgent(encoder.encode(uploadedPayload), { reliable: true })
+            sendUserText?.(text, encoder.encode(uploadedPayload))
             addMessageRef.current?.('system', `Large message uploaded (${(text.length / 1024).toFixed(1)} KB)`)
             return
           }
@@ -3270,12 +3304,12 @@ function VoiceRoomInner({
       const truncated = text.substring(0, 50000) + '\n...[truncated — message exceeded size limit]'
       const smallPayload = JSON.stringify({ type: 'user_text', content: truncated, clientMsgId })
       const encoder = new TextEncoder()
-      sendToAgent(encoder.encode(smallPayload), { reliable: true })
+      sendUserText?.(text, encoder.encode(smallPayload))
     } else {
       const encoder = new TextEncoder()
-      sendToAgent(encoder.encode(payloadStr), { reliable: true })
+      sendUserText?.(text, encoder.encode(payloadStr))
     }
-  }, [sendToAgent])
+  }, [sendUserText])
 
   const [likedMessageIds, setLikedMessageIds] = useState<Set<string>>(new Set())
 
@@ -3360,7 +3394,8 @@ function VoiceRoomInner({
   // preSelectedSessionId) as soon as the agent is connected. This is the whole
   // "Talk about it" / seeded-chat mechanism: no new API, no new route — the
   // same /chat flow + the existing send path, just pre-filled.
-  const seedSentRef = useRef(false)
+  const localSeedSent = useRef(false)
+  const seedSentRef = seedSent ?? localSeedSent
   useEffect(() => {
     if (seedSentRef.current) return
     if (!seedPrompt || preSelectedSessionId) return
@@ -3369,7 +3404,7 @@ function VoiceRoomInner({
     handleSendText(seedPrompt)
     // Clear the stashed seed so a page refresh doesn't re-send it.
     try { sessionStorage.removeItem('voice-native-seed') } catch {}
-  }, [agentConnected, seedPrompt, preSelectedSessionId, handleSendText])
+  }, [agentConnected, seedPrompt, preSelectedSessionId, handleSendText, seedSentRef])
 
   // Wraps toggleFavorite so the agent learns about the change (on AND off).
   // Nothing is sent when the server write rolled the star back.
@@ -4772,6 +4807,7 @@ function VoiceRoomInner({
         <div {...{ [PANEL_ANCHOR_ATTR]: '' }} className="shrink-0">
         {/* Input */}
         <TextInput
+          draft={composerDraft}
           onSend={handleSendText}
           attachedFiles={attachedFiles}
           onAttachFile={handleAttachFile}
@@ -5061,8 +5097,13 @@ function VoiceRoomInner({
  * prop-drilled connection info.
  */
 export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
-  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, preSelectedSessionId, agentUrl, seedPrompt, isController } =
+  const { disconnect, markAgentReady, markAuthRequired, markAuthResolved, markAuthInProgress, markVoiceActivity, checkRoom, registerChat, sendUserText, composerDraft, seedSent, liveSessionId, agentUrl, seedPrompt, isController } =
     useChatSession()
+  // The session this chat mounts into, read once per mount: on a fresh load it
+  // is the launch value; a remount after an in-place switch gets the live one,
+  // so the cache paint, hydration and prior_messages guard follow the session
+  // the agent is running (#149), not the one the page opened with.
+  const [preSelectedSessionId] = useState(liveSessionId)
 
   return (
     <VoiceRoomInner
@@ -5072,6 +5113,11 @@ export default function VoiceRoom({ waitingMode }: VoiceRoomProps) {
       onAuthResolved={markAuthResolved}
       onAuthInProgress={markAuthInProgress}
       onVoiceActivity={markVoiceActivity}
+      onRoomCheck={checkRoom}
+      registerChat={registerChat}
+      sendUserText={sendUserText}
+      composerDraft={composerDraft}
+      seedSent={seedSent}
       waitingMode={waitingMode}
       preSelectedSessionId={preSelectedSessionId}
       agentUrl={agentUrl}
