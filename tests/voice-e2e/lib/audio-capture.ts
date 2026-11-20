@@ -144,10 +144,20 @@ export async function startElementCapture(page: Page): Promise<void> {
     const clock: Array<[number, number]> = []
     let anchorCtxMs: number | null = null
     const sampleClock = () => { if (anchorCtxMs != null) clock.push([Date.now(), ctx.currentTime * 1000 - anchorCtxMs]) }
-    // rate(): how fast the recording advanced over the last 30s (1 = real time).
+    // rate(): how fast this tab's audio ran over the last 30s (1 = real time).
+    // Sampled from arming, not from the first tapped source: a page that never
+    // plays audio (only the synthetic mic) still shows how fast its audio ran,
+    // which is what slows the tester's own speech when the CPU is starved.
+    const pace: Array<[number, number]> = []
+    const samplePace = () => {
+      // A suspended context is not a slow one: drop the samples so no interval spans the pause.
+      if (ctx.state !== 'running') { pace.length = 0; return }
+      pace.push([Date.now(), ctx.currentTime * 1000])
+      if (pace.length > 120) pace.splice(0, pace.length - 120)
+    }
     const rate = () => {
-      if (clock.length < 2) return null
-      const e = clock[clock.length - 1], b = clock.find((x) => x[0] >= e[0] - 30000) ?? clock[0]
+      if (pace.length < 2) return null
+      const e = pace[pace.length - 1], b = pace.find((x) => x[0] >= e[0] - 30000) ?? pace[0]
       return e[0] > b[0] ? Math.round(((e[1] - b[1]) / (e[0] - b[0])) * 100) / 100 : null
     }
     ;(window as any).__osbornClock = { clock, sample: sampleClock, rate }
@@ -216,14 +226,14 @@ export async function startElementCapture(page: Page): Promise<void> {
     }
     scan()
     let ticks = 0
-    const interval = setInterval(() => { scan(); if (++ticks % 2 === 0) sampleClock() }, 500) // late srcObject + clock
+    const interval = setInterval(() => { scan(); if (++ticks % 2 === 0) { sampleClock(); samplePace() } }, 500) // late srcObject + clock
     const observer = new MutationObserver(scan)
     observer.observe(document.documentElement, { childList: true, subtree: true })
     const rec = new MediaRecorder(dest.stream, { mimeType: 'audio/webm;codecs=opus' })
     const chunks: Blob[] = []
     rec.ondataavailable = (e) => { if (e.data.size > 0) chunks.push(e.data) }
     rec.start(250)
-    void ctx.resume()
+    void ctx.resume().then(samplePace)
     ;(window as any).__osbornCapture = { rec, chunks, startedAt: Date.now(), cleanup: () => { clearInterval(interval); observer.disconnect() } }
   })
 }
