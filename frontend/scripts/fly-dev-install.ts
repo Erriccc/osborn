@@ -7,7 +7,8 @@
  * entrypoint reinstalls from npm when the volume version differs from the
  * image's), sends the tarball over Fly exec and installs it with
  * installOsbornSpec. Do not press Update on the dashboard while it runs.
- * Rollback: see .claude/skills/osborn-ops/SKILL.md (Dev iteration).
+ * Rollback always goes to the last RELEASED build, never an earlier dev build:
+ * see .claude/skills/osborn-ops/SKILL.md (Dev iteration).
  *
  * Env (frontend/.env.local): FLY_API_TOKEN. With NEXT_PUBLIC_SUPABASE_URL and
  * SUPABASE_SERVICE_ROLE_KEY it also prints the machine's owner.
@@ -17,7 +18,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { DEV_INSTALL_TIMEOUT_SEC, installOsbornSpec, readImageOsbornVersion, readInstalledOsbornVersion } from '../src/lib/machines'
+import { DEV_INSTALL_TIMEOUT_SEC, installOsbornSpec, readImageOsbornVersion } from '../src/lib/machines'
 import { serviceClient } from '../src/lib/sandbox-claims'
 
 const envFile = resolve(__dirname, '../.env.local')
@@ -53,17 +54,15 @@ async function main(): Promise<void> {
 
   const repo = run('git', ['rev-parse', '--show-toplevel'], __dirname)
   const gitSha = run('git', ['rev-parse', '--verify', `${ref}^{commit}`], repo)
-  const version = await readInstalledOsbornVersion(app)
-  if (!version) die(`${app}: /health did not report a version (is the machine running?)`)
-  const imageVersion = await readImageOsbornVersion(app)
-  if (imageVersion !== version) {
-    die(`${app}: /health reports v${version} but the image carries v${imageVersion ?? 'unknown'}; update the machine first`)
-  }
+  // installOsbornSpec re-checks the image and /health versions at install time.
+  const version = await readImageOsbornVersion(app)
+  if (!version) die(`${app}: could not read the image's osborn version (is the machine running?)`)
   const { userId, owner } = await ownersOf(app)
 
-  console.log(`app:     ${app}\nowner:   ${owner}\nrunning: osborn@${version}\nbuild:   ${ref} @ ${gitSha} (packed as ${version})`)
+  console.log(`app:     ${app}\nowner:   ${owner}\nimage:   osborn@${version}\nbuild:   ${ref} @ ${gitSha} (packed as ${version})`)
   // The agent exposes no busy signal over HTTP (busy_state is data-channel only).
   console.warn('WARNING: cannot tell whether the agent is mid-task; the restart ends any running turn.')
+  console.log(`rollback: goes to the last released build (osborn@${version} from npm or the volume's released backup), never an earlier dev build`)
   if (!yes) die('refusing without --yes')
 
   const tmp = mkdtempSync(join(tmpdir(), 'osborn-dev-'))
@@ -87,7 +86,7 @@ async function main(): Promise<void> {
     const sha256 = createHash('sha256').update(tarball).digest('hex')
 
     console.log(`installing ${tgzName} (${tarball.length} bytes, sha256 ${sha256}) on ${app}; npm install may take up to ${DEV_INSTALL_TIMEOUT_SEC / 60} min (on a timeout npm can still be running on the machine)...`)
-    const result = await installOsbornSpec(app, { tarball, sha256, devSha: gitSha }, userId, version)
+    const result = await installOsbornSpec(app, { tarball, sha256, devSha: gitSha, version }, userId)
     console.log(result.log)
     if (!result.success) process.exitCode = 1
   } finally {

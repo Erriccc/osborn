@@ -9,7 +9,10 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 
 process.env.OSBORN_KNOWLEDGE_DIR = mkdtempSync(join(tmpdir(), 'step-cache-test-'))
-const { actWithCache, fencedCall } = await import('./step-cache.ts')
+const { actWithCache, fencedCall, zombieGate } = await import('./step-cache.ts')
+const { readFileSync, existsSync } = await import('fs')
+const actionsFile = join(process.env.OSBORN_KNOWLEDGE_DIR, 'example.com', 'actions.json')
+const cached = (): Record<string, any> => existsSync(actionsFile) ? JSON.parse(readFileSync(actionsFile, 'utf8')) : {}
 
 const page = { url: () => 'https://example.com/form', locator: () => ({ first: () => ({ count: async () => 0 }) }) } as any
 
@@ -56,20 +59,152 @@ test('#174: a timed-out call holds its caller until the in-flight action has sto
   const run = fencedCall((signal) => actWithCache(brain, page, 'submit the form', signal), {
     timeoutMs: 20, settleMs: 1000, why: 'brain call timed out',
     onTimeout: () => { order.push('brain closed'); setTimeout(() => finishAct(), 30) },  // closing ends the act
-    stopped: (ok) => order.push(`stopped=${ok}`),
-    onLate: (r) => late.push(r),
+    settled: (end) => order.push(`settled=${end}`),
+    onLate: (l) => late.push(l),
   }).catch((e) => { order.push('lock released'); throw e })
   await assert.rejects(run, /timed out/)
-  assert.deepEqual(order, ['brain closed', 'act stopped', 'stopped=true', 'lock released'])
+  assert.deepEqual(order, ['brain closed', 'act stopped', 'settled=late', 'lock released'])
   assert.equal(late.length, 1)  // the late finish is reported, not silent
 })
 
 test('#174: a call that will not stop releases the caller after the settle wait, and says so', async () => {
-  let stopped: boolean | undefined
+  let end: string | undefined
   const t0 = Date.now()
-  await assert.rejects(fencedCall(() => new Promise(() => {}), { timeoutMs: 10, settleMs: 40, why: 'timed out', stopped: (ok) => { stopped = ok } }), /timed out/)
-  assert.equal(stopped, false)
+  await assert.rejects(fencedCall(() => new Promise(() => {}), { timeoutMs: 10, settleMs: 40, why: 'timed out', settled: (e) => { end = e } }), /timed out/)
+  assert.equal(end, 'running')
   assert.ok(Date.now() - t0 >= 45)
+})
+
+test('#421: an act that finishes after the timeout writes nothing to the action cache', async () => {
+  let finishAct!: () => void
+  const brain = {
+    observe: async () => [{ method: 'click', description: 'Late', selector: 'xpath=/html/body/button' }],
+    act: () => new Promise<void>((done) => { finishAct = done }),
+  }
+  const late: any[] = []
+  await assert.rejects(fencedCall((signal) => actWithCache(brain, page, 'press the late button', signal), {
+    timeoutMs: 20, settleMs: 500, why: 'brain call timed out',
+    onTimeout: () => { setTimeout(() => finishAct(), 10) },
+    onLate: (l) => late.push(l),
+  }), /timed out/)
+  assert.equal(late.length, 1)
+  assert.equal(late[0].ok, true)
+  assert.equal(cached()['/form :: press the late button'], undefined)
+})
+
+test('#421: a cached replay that finishes after the timeout bumps no hit counter', async () => {
+  const brain = { observe: async () => [{ method: 'click', description: 'Again' }], act: async (): Promise<void> => {} }
+  await actWithCache(brain, page, 'press again')  // resolves and caches it
+  assert.equal(cached()['/form :: press again'].hits, 0)
+  let finishAct!: () => void
+  brain.act = () => new Promise<void>((done) => { finishAct = done })
+  await assert.rejects(fencedCall((signal) => actWithCache(brain, page, 'press again', signal), {
+    timeoutMs: 20, settleMs: 500, why: 'brain call timed out', onTimeout: () => { setTimeout(() => finishAct(), 10) },
+  }), /timed out/)
+  assert.equal(cached()['/form :: press again'].hits, 0)
+})
+
+test('#421: a late rejection is reported, and only a stop at the fence counts as stopped', async () => {
+  const late: any[] = []
+  let end: string | undefined
+  let fail!: () => void
+  await assert.rejects(fencedCall(() => new Promise((_, rej) => { fail = () => rej(new Error('selector matched nothing')) }), {
+    timeoutMs: 10, settleMs: 500, why: 'timed out', onTimeout: () => { setTimeout(() => fail(), 10) },
+    settled: (e) => { end = e }, onLate: (l) => late.push(l),
+  }), /timed out/)
+  assert.equal(end, 'late')
+  assert.equal(late.length, 1)
+  assert.equal(late[0].ok, false)
+  assert.match(String(late[0].error), /matched nothing/)
+
+  // the brain close cutting the call off is a stop, not a late failure
+  late.length = 0
+  for (const [msg, closeFirst] of [['CDP connection closed', false], ['some other error', true]] as const) {
+    let cut!: () => void
+    let closeDone!: () => void
+    await assert.rejects(fencedCall(() => new Promise((_, rej) => { cut = () => rej(new Error(msg)) }), {
+      timeoutMs: 10, settleMs: 500, why: 'timed out',
+      onTimeout: () => { setTimeout(() => { if (closeFirst) { closeDone(); setTimeout(cut, 5) } else { cut(); closeDone() } }, 10); return new Promise((done) => { closeDone = () => done(null) }) },
+      settled: (e) => { end = e }, onLate: (l) => late.push(l),
+    }), /timed out/)
+    assert.equal(end, 'stopped', msg)
+  }
+  assert.equal(late.length, 0)
+
+  // a call that stops at its own fence check never started an action after the deadline
+  let release!: () => void
+  const brain = { observe: () => new Promise((done) => { release = () => done([{ method: 'click', description: 'X' }]) }), act: async () => { throw new Error('must not act') } }
+  late.length = 0
+  await assert.rejects(fencedCall((signal) => actWithCache(brain, page, 'press x', signal), {
+    timeoutMs: 10, settleMs: 500, why: 'timed out', onTimeout: () => { release() },
+    settled: (e) => { end = e }, onLate: (l) => late.push(l),
+  }), /timed out/)
+  assert.equal(end, 'stopped')
+  assert.equal(late.length, 0)
+})
+
+test('#421: the settle wait includes the brain close', async () => {
+  const order: string[] = []
+  let closedAs: boolean | undefined
+  await assert.rejects(fencedCall(() => new Promise<number>(() => {}), {
+    timeoutMs: 10, settleMs: 40, why: 'timed out',
+    onTimeout: () => new Promise((done) => setTimeout(() => { order.push('closed'); done(null) }, 20)),
+    settled: (_, closed) => { closedAs = closed; order.push('settled') },
+  }), /timed out/)
+  assert.deepEqual(order, ['closed', 'settled'])
+  assert.equal(closedAs, true)
+  await assert.rejects(fencedCall(() => new Promise<number>(() => {}), {
+    timeoutMs: 10, settleMs: 30, why: 'timed out', onTimeout: () => new Promise(() => {}), settled: (_, closed) => { closedAs = closed },
+  }), /timed out/)
+  assert.equal(closedAs, false)
+})
+
+test('#421: the next brain call waits for a zombie, and is refused if it will not stop in its budget', async () => {
+  const gate = zombieGate()
+  await gate.wait(0, 'act')  // nothing tracked: no wait
+  let finish!: () => void
+  gate.track(new Promise<void>((done) => { finish = done }))
+  assert.equal(gate.pending, true)
+  await assert.rejects(gate.wait(30, 'act'), /act refused: a timed-out brain call/)
+  setTimeout(() => finish(), 20)
+  await gate.wait(1000, 'act')  // waits it out
+  assert.equal(gate.pending, false)
+  // a zombie that rejects still clears; two zombies are both waited for
+  let failA!: () => void
+  let finishB!: () => void
+  gate.track(new Promise<void>((_, rej) => { failA = () => rej(new Error('x')) }))
+  gate.track(new Promise<void>((done) => { finishB = done }))
+  failA()
+  await assert.rejects(gate.wait(30, 'brain re-init'), /brain re-init refused/)
+  finishB()
+  await gate.wait(1000, 'act')
+  assert.equal(gate.pending, false)
+})
+
+test('#421: a zombie whose brain has closed no longer blocks, even if its call never settles', async () => {
+  const gate = zombieGate()
+  let closeDone!: () => void
+  gate.track(new Promise(() => {}), new Promise((done) => { closeDone = () => done(null) }))
+  await assert.rejects(gate.wait(20, 'act'), /act refused/)
+  closeDone()
+  await gate.wait(1000, 'act')
+  assert.equal(gate.pending, false)
+  // a close that failed leaves the call able to act: still waited for
+  gate.track(new Promise(() => {}), Promise.reject(new Error('close failed')))
+  await new Promise((r) => setTimeout(r, 5))
+  await assert.rejects(gate.wait(20, 'act'), /act refused/)
+})
+
+test('#421: a zombie older than the cap is dropped, and the drop is reported', async () => {
+  const drops: number[] = []
+  const gate = zombieGate({ maxAgeMs: 30, onDrop: (age) => drops.push(age) })
+  gate.track(new Promise(() => {}))
+  await assert.rejects(gate.wait(10, 'brain re-init'), /brain re-init refused: a timed-out brain call was still running/)
+  await new Promise((r) => setTimeout(r, 30))
+  await gate.wait(0, 'brain re-init')
+  assert.equal(gate.pending, false)
+  assert.equal(drops.length, 1)
+  assert.ok(drops[0] > 30)
 })
 
 test('fencedCall: a call within the deadline returns, and its own error passes through unfenced', async () => {

@@ -206,6 +206,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 ## What's new in v61
 - **`/say` bounds copying and decoding the recording too, and copies only what is new.** Each turn copies just the audio recorded since the last peek out of the page; a decode that runs out of the turn's time returns "nothing transcribed: decoding the recording ran out of time" instead of hanging. A tab whose recording is past the 30-min decode cap says so in the `/say` warning, and `GET /status` shows `ears` (recording age against the cap) and `capturePaused` (idle screen-capture pause, which a `/status` read does not wake). Say tasks carry `hearSpan` and `clipSpan` (wall-clock ms) so a transcript and its clip can be compared.
 
+## What's new in v60
+- **A timed-out act no longer overlaps the next one or writes the action cache.** One still running 15s after its deadline is waited for by the next brain action (for what is left of the action lock) and refused with a clear error if it never stops; a late finish is never cached, and the marks now say "finished late" or "failed late" apart from a clean stop.
+
 ## What's new in v59
 - **A timed-out act holds the action lock until it has stopped.** Past `OSBORN_BRAIN_TIMEOUT_MS` the engine cancels the call and waits up to 15s for it to stop before the next action runs; a call still running after that is logged in the run's marks.
 
