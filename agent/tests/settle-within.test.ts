@@ -25,6 +25,9 @@ const run = async () => {
   const t2 = Date.now()
   await closeSessionBounded({ close: () => new Promise(() => {}) }, { closeMs: 50 })
   assert.ok(Date.now() - t2 < 1000, 'a close that never settles is released after the bound')
+  await closeSessionBounded({ close: () => new Promise(() => {}) }, { closeMs: 20 })
+  await closeSessionBounded({ close: () => new Promise(() => {}), get sessionHost() { throw new Error('x') } }, { closeMs: 20 })
+  await closeSessionBounded({ close: () => new Promise(() => {}), sessionHost: {} }, { closeMs: 20 })
   console.log('settle-within: ok')
 }
 run().catch((e) => { console.error(e); process.exit(1) })

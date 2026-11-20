@@ -2483,6 +2483,7 @@ async function main() {
 
   // Track state
   let pendingSessionClose: Promise<void> | null = null  // Tracks async session close for reconnect safety
+  let joinSeq = 0  // Newest join wins: joins queued behind a slow close must not all build a session
   let currentSession: voice.AgentSession | null = null
   // 0.9.81: callable handler reference — see registration site for why.
   let participantConnectedHandler: ((p: RemoteParticipant) => Promise<void>) | null = null
@@ -5583,9 +5584,14 @@ async function main() {
 
     // Wait for previous session's byte stream handler to fully deregister.
     // Quick reconnects (< ~6s) crash with "byte stream handler already set" without this.
+    const mySeq = ++joinSeq
     if (pendingSessionClose) {
       console.log('⏳ Waiting for previous session to fully close...')
       await pendingSessionClose
+    }
+    if (mySeq !== joinSeq) {
+      console.log('⏭️ join superseded by a newer join — skipping')
+      return
     }
 
     // Clean up any existing session before creating a new one
@@ -5739,6 +5745,7 @@ async function main() {
     // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession
     let agent: voice.Agent
+    let myLLM: any = null  // the brain this join built or claimed (for a superseded join to release)
 
     // KEEP-WARM re-attach (default-OFF via OSBORN_KEEP_WARM): if the warm slot
     // holds exactly this session and the grace hasn't lapsed, reuse the live
@@ -5752,6 +5759,7 @@ async function main() {
       // Re-attached: its requests follow whoever holds it now (a browser or app, or a new call).
       if (reused === phoneParkedBrain) phoneParkedBrain = null
       if (pendingSessionClose) { try { await pendingSessionClose } catch {} }
+      myLLM = reused
       const result = await createDirectSession(resumeSessionId, reused)
       session = result.session
       agent = result.agent
@@ -5798,9 +5806,18 @@ async function main() {
         takeVoiceAction: takePhoneVoiceAction,
       })
       // Pass pipelineLLM to createDirectSession so it uses it instead of creating a new ClaudeLLM
+      myLLM = pipelineLLM
       const result = await createDirectSession(resumeSessionId, pipelineLLM)
       session = result.session
       agent = result.agent
+    }
+    if (mySeq !== joinSeq) {
+      console.log('⏭️ join superseded by a newer join — closing the session it built')
+      await closeSessionBounded(session)
+      try { session.removeAllListeners() } catch {}
+      try { myLLM?.abortQuery?.() ?? myLLM?.abortAgent?.() } catch {}
+      if (currentLLM === myLLM) currentLLM = null
+      return
     }
     currentSession = session
     currentAgent = agent  // Store for updateChatCtx() context injection
@@ -6544,7 +6561,6 @@ async function main() {
       if (isPhoneCaller) await greetViaVoice(approvalModeAnnouncement(approvalMode, { toolsOn: PHONE_TOOLS_ENABLED, keypadOn: PHONE_KEYPAD_APPROVALS_ENABLED }))
     } catch (err) {
       console.error('❌ Failed to start session:', err)
-      sendToFrontend({ type: 'agent_state', state: 'error' })
     }
   }
 
@@ -6582,11 +6598,12 @@ async function main() {
       const sessionToClose = currentSession
       currentSession = null
       // Track async close so new connections can wait for byte stream handler to be released
-      pendingSessionClose = (async () => {
+      const p: Promise<void> = (async () => {
         await closeSessionBounded(sessionToClose)
         try { sessionToClose.removeAllListeners() } catch {}
-        pendingSessionClose = null
+        if (pendingSessionClose === p) pendingSessionClose = null
       })()
+      pendingSessionClose = p
     }
     currentAgent = null
 
