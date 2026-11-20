@@ -950,7 +950,7 @@ export async function extractCwd(filePath: string): Promise<string> {
 // In-memory cache for the session list — invalidated on new session creation or import.
 // Avoids re-crawling all JSONL files on every agent connect / dashboard load.
 // `scanned` is the scan limit the list was built with (Infinity once it covered every file): a
-// list built for a small limit must not answer a larger one (#166 — a 1-row scan left /sessions empty).
+// list built for a small limit must not answer a larger one.
 let _sessionListCache: { data: ClaudeSessionEntry[]; expiresAt: number; scanned: number; subagents: boolean } | null = null
 const SESSION_LIST_TTL_MS = 300_000
 
@@ -1004,7 +1004,8 @@ function saveSessionManifest(m: SessionManifest): void {
  */
 export async function listAllClaudeSessions(limit = 1000, includeSubagents = false): Promise<ClaudeSessionEntry[]> {
   if (_sessionListCache && Date.now() < _sessionListCache.expiresAt
-    && _sessionListCache.scanned >= limit && (_sessionListCache.subagents || !includeSubagents)) {
+    && _sessionListCache.scanned >= limit
+    && (_sessionListCache.subagents === includeSubagents || (_sessionListCache.scanned === Infinity && !includeSubagents))) {
     const cached = includeSubagents
       ? _sessionListCache.data
       : _sessionListCache.data.filter(s => !s.projectSlug.endsWith('-subagents'))

@@ -6,6 +6,7 @@ import { join } from 'node:path'
 
 const home = mkdtempSync(join(tmpdir(), 'session-list-cache-'))
 process.env.HOME = home
+delete process.env.CLAUDE_CONFIG_DIR
 const dir = join(home, '.claude', 'projects', '-tmp')
 mkdirSync(dir, { recursive: true })
 const line = (role: string, text: string) => JSON.stringify({ type: role, cwd: '/tmp', timestamp: new Date().toISOString(), message: { role, content: text } })
