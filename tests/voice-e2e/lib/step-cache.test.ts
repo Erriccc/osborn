@@ -214,3 +214,21 @@ test('fencedCall: a call within the deadline returns, and its own error passes t
   await assert.rejects(fencedCall(async () => { throw new Error('boom') }, o), /boom/)
   assert.equal(fenced, 0)
 })
+
+test('#426: a timeout during describeTarget (after the act) writes nothing to the action cache', async () => {
+  const fence = new AbortController()
+  let release!: () => void
+  let inCount!: () => void
+  const counting = new Promise<void>((r) => { inCount = r })
+  const slowPage = { url: () => 'https://example.com/form', locator: () => ({ first: () => ({
+    count: () => { inCount(); return new Promise<number>((r) => { release = () => r(1) }) },
+    getAttribute: async () => null, textContent: async () => 'x',
+  }) }) } as any
+  const brain = { observe: async () => [{ method: 'click', description: 'Go', selector: '#go' }], act: async () => {} }
+  const call = actWithCache(brain, slowPage, 'press go repro', fence.signal)
+  await counting
+  fence.abort(new Error('brain call timed out'))
+  release()
+  await call
+  assert.equal(cached()['/form :: press go repro'], undefined)
+})

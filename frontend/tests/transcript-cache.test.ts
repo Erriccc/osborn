@@ -64,6 +64,15 @@ t('#254: a steward gate line is cached with its record, a plain system notice is
   eq(items[0].stewardGate, gate, 'gate record passed through')
 })
 
+t('#212: a sub-agent result entry is cached with its record', () => {
+  const agentResult = { agent: 'researcher', role: 'researcher', result: 'Found the bug in x.ts', at: '2026-11-13T00:00:00.000Z' }
+  const items = serializeTranscript([
+    msg({ id: 'r1', role: 'system', content: 'researcher: Found the bug in x.ts', agentResult }),
+  ])
+  eq(items.map(i => i.id), ['r1'], 'kept ids')
+  eq(items[0].agentResult, agentResult, 'record passed through')
+})
+
 t('serialize drops synthetic day/Today dividers, keeps real messages', () => {
   const items = serializeTranscript([
     msg({ id: 'prior-day-Nov 11-sess', role: 'assistant', content: '── Nov 11 ──' }),
