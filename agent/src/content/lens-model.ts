@@ -55,7 +55,7 @@ export async function getModelInfo(id = lensModel()): Promise<ModelInfo | null> 
   const timer = setTimeout(() => ctrl.abort(), META_TIMEOUT_MS)
   try {
     const resp = await fetch(`${OPENROUTER}/models`, { signal: ctrl.signal, headers: key ? { Authorization: `Bearer ${key}` } : {} })
-    if (key && (resp.status === 401 || resp.status === 403)) {
+    if (key && resp.status === 401) {
       markOpenRouterRejected(resp.status)
       if (contentProviderId() === 'zai') return zaiModelInfo()
     }

@@ -343,7 +343,7 @@ await t('provider: OpenRouter 401 → the same call is served by z.ai (GLM codin
   }))
 await t('provider: a rejected OpenRouter key is remembered — the next run goes straight to z.ai', () =>
   withKeys({ OPENROUTER_API_KEY: 'or-rejected', ZAI_API_KEY: 'zai-key-2' }, async () => {
-    openRouterStatus = 403
+    openRouterStatus = 401
     assert.equal((await zaiRun()).status, 'written')
     sent.length = 0
     assert.equal((await zaiRun()).status, 'written')

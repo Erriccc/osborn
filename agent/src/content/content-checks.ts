@@ -205,14 +205,15 @@ function cachePath(projectDir: string | null, key: string): string | null {
   return projectDir ? join(projectDir, CHECK_CACHE_DIR, `${key}.json`) : null
 }
 
-/** Pinned LLM judge with a content-addressed cache. Throws CapError / Error. */
-async function pinnedJudge(kind: 'truth' | 'audience', system: string, user: string, ctx: CheckContext): Promise<{ flags: string[]; provider: string; cacheKey: string; cached: boolean }> {
+/** Pinned LLM judge with a content-addressed cache (exported for tests). Throws CapError / Error. */
+export async function pinnedJudge(kind: 'truth' | 'audience', system: string, user: string, ctx: CheckContext): Promise<{ flags: string[]; provider: string; cacheKey: string; cached: boolean }> {
   const key = createHash('sha256').update(JSON.stringify({ kind, system, user, model: CHECK_MODEL, provider: CHECK_PROVIDER })).digest('hex')
   const p = cachePath(ctx.projectDir, key)
   if (p) {
     try {
       const c = JSON.parse(readFileSync(p, 'utf-8'))
-      if (c?.key === key && Array.isArray(c.flags)) return { flags: c.flags, provider: String(c.provider), cacheKey: key, cached: true }
+      // Only a verdict the pinned judge itself gave counts (never another provider's).
+      if (c?.key === key && Array.isArray(c.flags) && c.provider === CHECK_PROVIDER_NAME) return { flags: c.flags, provider: String(c.provider), cacheKey: key, cached: true }
     } catch {
       /* miss */
     }

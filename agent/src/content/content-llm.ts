@@ -4,8 +4,9 @@
  * Claude subscription / Anthropic SDK.
  *
  * Providers (contentProviders), tried in order per call:
- *   1. OpenRouter, when OPENROUTER_API_KEY is set. A 401/403 (key rejected) marks
- *      it rejected for the rest of the process and the same call moves on.
+ *   1. OpenRouter, when OPENROUTER_API_KEY is set. A 401 (key rejected) marks it
+ *      rejected for the rest of the process and the same call moves on; a 403
+ *      (moderation or edge block) only fails that call.
  *   2. z.ai, when Z_AI_PERSONAL_API_KEY or ZAI_API_KEY is set (same precedence as
  *      claude-auth.ts tier 3): the GLM Coding Plan's OpenAI-compatible endpoint
  *      https://api.z.ai/api/coding/paas/v4 (docs.z.ai/devpack/quick-start; the plain
@@ -15,6 +16,8 @@
  *      a flat subscription, but z.ai calls are still priced at ZAI_NOMINAL_PRICE so the
  *      caps below keep binding (they pace the sweep against the plan's usage quota).
  *   Neither key → hasContentModelKey() is false and callers report "no-key".
+ *   A provider-pinned call (the content step's judges) runs on OpenRouter only and
+ *   is refused when OpenRouter is unavailable: z.ai cannot honour the pin.
  *
  * Flags:
  *   OSBORN_CONTENT_PIPELINE  default ON; 0/off/false/no = off. OSBORN_CONTENT_LENS=0 also turns it off.
@@ -310,7 +313,11 @@ export const NO_CONTENT_KEY = 'no content model key (OPENROUTER_API_KEY, Z_AI_PE
 
 let openRouterRejected = false
 
-/** Remember for the rest of the process that OpenRouter rejected the key (401/403); later calls skip it. */
+/**
+ * Remember for the rest of the process that OpenRouter rejected the key (HTTP 401); later calls skip it.
+ * A 403 is not a dead key (moderation-flagged input or an edge block; claude-auth.ts classifyProbeStatus
+ * treats it as ambiguous too): it fails that one call and never comes here.
+ */
 export function markOpenRouterRejected(status: number): void {
   if (openRouterRejected) return
   openRouterRejected = true
@@ -337,8 +344,11 @@ export const hasContentModelKey = (env: NodeJS.ProcessEnv = process.env): boolea
 export const contentProviderId = (): ContentProviderId | null => contentProviders()[0]?.id ?? null
 /** The OpenRouter key while OpenRouter is still in play (for its /models lookup). */
 export const openRouterKey = (): string | null => contentProviders().find(p => p.id === 'openrouter')?.key ?? null
-/** Extra output tokens a call needs on the provider it will try first (z.ai reasoning headroom). */
-export const extraOutputTokens = (): number => (contentProviderId() === 'zai' ? ZAI_REASONING_HEADROOM : 0)
+/**
+ * Extra output tokens to reserve for a call: z.ai's reasoning headroom whenever a z.ai
+ * key exists, since z.ai may serve it (an OpenRouter 401 falls through mid-call).
+ */
+export const extraOutputTokens = (): number => (zaiApiKey() ? ZAI_REASONING_HEADROOM : 0)
 
 /** An OpenRouter chat-completions body → the z.ai one: GLM model, no OpenRouter-only fields, low reasoning. */
 function zaiBody(b: Record<string, any>): Record<string, unknown> {
@@ -362,12 +372,13 @@ export interface ContentChatReply {
 
 /**
  * THE content model call: POST an OpenRouter-shaped chat-completions body to the
- * first provider that takes it (see the header). A 401/403 from OpenRouter falls
- * through to z.ai in the same call; any other non-OK status throws "<provider> HTTP <n>".
+ * first provider that takes it (see the header). A 401 from OpenRouter falls
+ * through to z.ai in the same call; any other non-OK status (403 included) throws
+ * "<provider> HTTP <n>". `openRouterOnly` (a provider-pinned call) never reaches z.ai.
  */
-export async function contentChat(body: Record<string, any>, opts: { signal?: AbortSignal; fetchImpl?: typeof fetch } = {}): Promise<ContentChatReply> {
-  const list = contentProviders()
-  if (!list.length) throw new Error(NO_CONTENT_KEY)
+export async function contentChat(body: Record<string, any>, opts: { signal?: AbortSignal; fetchImpl?: typeof fetch; openRouterOnly?: boolean } = {}): Promise<ContentChatReply> {
+  const list = contentProviders().filter(p => !opts.openRouterOnly || p.id === 'openrouter')
+  if (!list.length) throw new Error(opts.openRouterOnly ? 'pinned call: OpenRouter is not available (unset or key rejected); z.ai cannot honour the pin' : NO_CONTENT_KEY)
   let rejected = 0
   for (const p of list) {
     const sent = p.id === 'zai' ? zaiBody(body) : body
@@ -377,7 +388,7 @@ export async function contentChat(body: Record<string, any>, opts: { signal?: Ab
       headers: { Authorization: `Bearer ${p.key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(sent),
     })
-    if (p.id === 'openrouter' && (resp.status === 401 || resp.status === 403)) {
+    if (p.id === 'openrouter' && resp.status === 401) {
       markOpenRouterRejected((rejected = resp.status))
       continue
     }
@@ -385,7 +396,7 @@ export async function contentChat(body: Record<string, any>, opts: { signal?: Ab
     const data: any = await resp.json()
     return { data, provider: p.id, served: p.id === 'zai' ? 'z.ai' : String(data?.provider ?? ''), model: String(sent.model) }
   }
-  throw new Error(`OpenRouter HTTP ${rejected} (key rejected) and no z.ai key`)
+  throw new Error(`OpenRouter HTTP ${rejected} (key rejected) and ${opts.openRouterOnly ? 'the call is pinned to OpenRouter' : 'no z.ai key'}`)
 }
 
 export interface ContentLlmOptions {
@@ -400,9 +411,16 @@ export async function llmJson(o: ContentLlmOptions, call: LlmCall): Promise<LlmR
   const model = call.model ?? genModel()
   const system = o.scrub(call.system)
   const user = o.scrub(call.user)
-  const price = contentProviderId() === 'zai' ? ZAI_NOMINAL_PRICE : priceFor(model)
+  // A pin names an OpenRouter upstream; z.ai has one upstream and cannot honour it. Refuse before spending.
+  if (call.pin && !openRouterKey()) {
+    throw new Error(`${call.what}: pinned to ${call.pin.name} on OpenRouter, which is not available (unset or key rejected)`)
+  }
+  // Size the reservation for whichever provider may serve: z.ai can take over mid-call when a z.ai key exists.
+  const zaiMay = !call.pin && !!zaiApiKey()
+  const base = contentProviderId() === 'zai' ? ZAI_NOMINAL_PRICE : priceFor(model)
+  const price = zaiMay ? { p: Math.max(base.p, ZAI_NOMINAL_PRICE.p), c: Math.max(base.c, ZAI_NOMINAL_PRICE.c) } : base
   const estPrompt = Math.ceil((system.length + user.length) / 3.5)
-  const worst = estPrompt * price.p + (call.maxOut + extraOutputTokens()) * price.c
+  const worst = estPrompt * price.p + (call.maxOut + (zaiMay ? ZAI_REASONING_HEADROOM : 0)) * price.c
   const res = o.guard.reserve(worst)
   o.guard.calls++
   const ctrl = new AbortController()
@@ -420,7 +438,7 @@ export async function llmJson(o: ContentLlmOptions, call: LlmCall): Promise<LlmR
       provider: call.pin ? { order: [call.pin.endpoint], allow_fallbacks: false } : { sort: 'price' },
     }
     if (!call.pin) body.reasoning = { enabled: false }
-    const reply = await contentChat(body, { signal: ctrl.signal, fetchImpl: o.fetchImpl })
+    const reply = await contentChat(body, { signal: ctrl.signal, fetchImpl: o.fetchImpl, openRouterOnly: !!call.pin })
     const data = reply.data
     const p = reply.provider === 'zai' ? ZAI_NOMINAL_PRICE : priceFor(model)
     const pt = Number(data?.usage?.prompt_tokens) || estPrompt
@@ -429,8 +447,7 @@ export async function llmJson(o: ContentLlmOptions, call: LlmCall): Promise<LlmR
     const cost = Number.isFinite(reported) && reported > 0 ? reported : pt * p.p + ct * p.c
     o.guard.settle(res, cost)
     o.log?.(`${call.what}: via ${reply.provider} (${reply.served || '?'}, ${reply.model})`)
-    // A pin names an OpenRouter upstream; z.ai has one upstream, so the pin cannot apply there.
-    if (call.pin && reply.provider === 'openrouter' && reply.served !== call.pin.name) {
+    if (call.pin && (reply.provider !== 'openrouter' || reply.served !== call.pin.name)) {
       throw new Error(`${call.what}: served by ${reply.served || '?'}, expected pinned ${call.pin.name}`)
     }
     const content = String(data?.choices?.[0]?.message?.content ?? '')
