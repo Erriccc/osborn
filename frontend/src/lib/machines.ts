@@ -1398,6 +1398,58 @@ export async function readImageOsbornVersion(appName: string): Promise<string | 
 }
 
 /**
+ * Stop, replace the machine's config, start it and wait for /health (the
+ * same sequence updateOsbornImpl uses for an image swap).
+ */
+async function bootWithConfig(appName: string, machineId: string, config: Record<string, unknown>, userId: string): Promise<boolean> {
+  await stopMachineCold(appName)
+  await api('POST', `/v1/apps/${appName}/machines/${machineId}`, { config })
+  const settled = await waitForReplacementComplete(appName, machineId, 300)
+  if (!settled) return false
+  if (settled === 'started') return waitForHealth(`https://${appName}.fly.dev`, 30)
+  return (await startSandbox(appName, userId))?.status === 'running'
+}
+
+/**
+ * Put the pre-dev-build copy (.osborn-prev) back on a machine that will not
+ * come up, without exec: boot once with an init override that moves it back
+ * before the machine's own init, then restore the original config. The bin
+ * links are relative into lib/node_modules/osborn, so they resolve again.
+ */
+async function rollbackDevBuild(appName: string, userId: string, devSha: string): Promise<string> {
+  const machine = await getFirstMachine(appName)
+  if (!machine?.config) return 'Rollback failed: could not read the machine config; the machine may be stopped with the dev build on it'
+  const original = machine.config as Record<string, unknown>
+  const init = (original.init ?? {}) as Record<string, unknown>
+  const origExec = (init.exec as string[] | undefined) ?? ['/entrypoint.sh']
+  const M = VOLUME_MODULES
+  const restore = `if [ -d ${M}/.osborn-prev ]; then rm -rf ${M}/osborn && mv ${M}/.osborn-prev ${M}/osborn; fi; exec "$@"`
+  const override = { ...original, init: { ...init, exec: ['sh', '-c', restore, 'sh', ...origExec] } }
+  let overrideOk = false
+  try {
+    overrideOk = await bootWithConfig(appName, machine.id, override, userId)
+  } catch (err) {
+    console.warn(`[machines] rollbackDevBuild: override boot failed: ${(err as Error).message}`)
+  }
+  let restoredConfig = false
+  let healthy = false
+  try {
+    healthy = await bootWithConfig(appName, machine.id, original, userId)
+    restoredConfig = true
+  } catch (err) {
+    console.warn(`[machines] rollbackDevBuild: config restore failed: ${(err as Error).message}`)
+  }
+  if (!restoredConfig) {
+    return `Rollback INCOMPLETE: the machine config still carries the rollback init override (${overrideOk ? 'previous build was moved back' : 'override boot also failed'}); restore init.exec to ${JSON.stringify(origExec)} by hand`
+  }
+  if (!healthy) return `Rollback failed: original config restored but the machine is not healthy (${overrideOk ? 'override boot was healthy' : 'override boot was not healthy either'})`
+  const r = await execInMachine(appName, machine.id, ['node', '-p', `require('${M}/osborn/package.json').osbornDevSha`], 15)
+  if (r.exitCode !== 0) return 'Rollback uncertain: machine is healthy but the installed package could not be read'
+  if (r.stdOut.trim() === devSha) return 'Rollback failed: machine is healthy but still runs the dev build (no .osborn-prev to restore)'
+  return 'Rolled back: the previous build is restored and the machine is healthy'
+}
+
+/**
  * Install a packed osborn tarball (frontend/scripts/fly-dev-install.ts) on a
  * running machine's volume, without npm publish or an image swap: send it in
  * base64 chunks over exec, verify its sha256, npm install it into a staging
@@ -1462,10 +1514,11 @@ export async function installOsbornSpec(
     return fail(`${(err as Error).message}${swapped ? `; ${onVolume}` : ''}`)
   }
 
-  if (!(await restartService(appName, userId))) {
-    return fail(`Restart did not come back healthy; the machine may be stopped. Dev build ${onVolume}`)
+  const installed = (await restartService(appName, userId)) ? await readInstalledOsbornVersion(appName) : null
+  if (!installed) {
+    console.warn(`[machines] installOsbornSpec: ${appName} not healthy after restart; rolling back without exec`)
+    return fail(`Dev build did not come up healthy after restart. ${await rollbackDevBuild(appName, userId, spec.devSha)}`)
   }
-  const installed = await readInstalledOsbornVersion(appName)
   const devSha = await run('verify', ['node', '-p', `require('${VOLUME_MODULES}/osborn/package.json').osbornDevSha`], 15).catch(() => '')
   const bin = await run('verify', ['sh', '-c', 'readlink -f "$(command -v osborn)"'], 15).catch(() => '')
   if (installed !== expectVersion || devSha !== spec.devSha || !bin.startsWith(`${VOLUME_PREFIX}/`)) {
