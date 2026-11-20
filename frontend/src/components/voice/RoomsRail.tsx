@@ -25,7 +25,8 @@
 // tablet, so the conversation keeps full width instead of a three-column
 // squeeze, issue #118) and nothing else changes.
 
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useMenuDismiss } from '@/lib/use-menu-dismiss'
 import { buildRoomRows, groupRoomsByProject, roomAvatar, roomIdentityLabel, roomSearchOptions, type RoomRow, type RoomStatus } from '@/lib/rooms'
 import { prepareSessions } from '@/lib/session-list'
 import type { SessionInfo, SlotInfo } from './shared'
@@ -150,7 +151,6 @@ function SessionSearchInput({
   value,
   onChange,
   onClear,
-  onKeyDown,
   showClear = !!value,
   autoFocus,
   size = 'sm',
@@ -158,7 +158,6 @@ function SessionSearchInput({
   value: string
   onChange: (v: string) => void
   onClear: () => void
-  onKeyDown?: (e: KeyboardEvent<HTMLInputElement>) => void
   showClear?: boolean
   autoFocus?: boolean
   size?: 'sm' | 'md'
@@ -171,7 +170,6 @@ function SessionSearchInput({
         type="text"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        onKeyDown={onKeyDown}
         autoFocus={autoFocus}
         placeholder="Search sessions"
         aria-label="Search sessions"
@@ -486,18 +484,9 @@ export function RoomsBar({
     setSearchOpen(false)
     onQueryChange('')
   }, [onQueryChange])
-  useEffect(() => {
-    if (!expanded) return
-    const onPointerDown = (e: PointerEvent) => {
-      const el = barRef.current
-      // offsetParent is null while the bar is display:none (xl+), where the
-      // rail owns the query and a click elsewhere must not clear it.
-      if (!el || el.offsetParent === null || el.contains(e.target as Node)) return
-      closeSearch()
-    }
-    document.addEventListener('pointerdown', onPointerDown)
-    return () => document.removeEventListener('pointerdown', onPointerDown)
-  }, [expanded, closeSearch])
+  // offsetParent is null while the bar is display:none (xl+), where the rail
+  // owns the query and Escape or a click elsewhere must not clear it.
+  useMenuDismiss(expanded, () => { if (barRef.current?.offsetParent) closeSearch() }, [barRef])
   // Keep the voice screen clean (3-6-9): no rail when there is nowhere to
   // switch to — i.e. only when the user genuinely has a single room, never
   // because a filter removed the rest. nav/switchers don't count toward the
@@ -515,7 +504,6 @@ export function RoomsBar({
             value={query}
             onChange={onQueryChange}
             onClear={closeSearch}
-            onKeyDown={(e) => { if (e.key === 'Escape') closeSearch() }}
             showClear
             autoFocus={searchOpen}
             size="md"
@@ -571,7 +559,7 @@ export function RoomsBar({
         </div>
       )}
       {expanded && q && (
-        <div className="absolute inset-x-0 top-full z-30 max-h-[50dvh] overflow-y-auto p-1.5 space-y-0.5 bg-gray-900 border-b border-gray-800/60 shadow-xl shadow-black/40">
+        <div className="absolute inset-x-0 top-full z-30 max-h-[min(50dvh,calc(100dvh-14rem))] overflow-y-auto p-1.5 space-y-0.5 bg-gray-900 border-b border-gray-800/60 shadow-xl shadow-black/40">
           <RoomResults rooms={results} searching disabled={disabled} onSwitchRoom={pick} />
         </div>
       )}
