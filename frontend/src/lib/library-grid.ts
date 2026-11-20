@@ -9,6 +9,10 @@
  * source it belongs to. A rendition whose source is not in the list stays a card.
  */
 
+/** The content_items columns the library page and the content API routes read. */
+export const CONTENT_ITEM_COLUMNS =
+  'id, type, status, title, hook, body, source_session_id, source_kind, slug, published_at, created_at, updated_at, parent_source_id'
+
 export type StatusFilter = 'all' | 'published' | 'draft'
 
 export interface GridItem {
@@ -29,7 +33,8 @@ export interface LibraryGrid<T extends GridItem> {
   renditions: Map<string, number>
 }
 
-const matchesQuery = (i: GridItem, q: string) =>
+/** Search match on a card's text fields; `q` is already trimmed and lower-cased. */
+export const matchesQuery = (i: Pick<GridItem, 'title' | 'hook' | 'body' | 'slug' | 'type'>, q: string) =>
   !q || [i.title, i.hook, i.body, i.slug, i.type].some(f => (f ?? '').toLowerCase().includes(q))
 
 export function libraryGrid<T extends GridItem>(items: T[], filter: StatusFilter, query: string): LibraryGrid<T> {

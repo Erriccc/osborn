@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
+import { CONTENT_ITEM_COLUMNS } from '@/lib/library-grid'
 
 /**
  * GET /api/content/renditions?sourceId=... — list the caller's renditions for a
@@ -26,7 +27,7 @@ export async function GET(req: NextRequest) {
 
   const { data, error } = await supabase
     .from('content_items')
-    .select('id, type, status, title, hook, body, source_session_id, source_kind, slug, published_at, created_at, updated_at, parent_source_id')
+    .select(CONTENT_ITEM_COLUMNS)
     .eq('parent_source_id', sourceId)
     .order('created_at', { ascending: false })
 

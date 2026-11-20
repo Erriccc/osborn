@@ -94,10 +94,12 @@ export function resolveIngestConfig(): IngestConfig {
   return { ok: true, url, anonKey, token }
 }
 
-/** The row's idempotency key (content_hash sent to content_ingest): one per session period, whatever the page says. */
-export function pageKeyFor(p: Pick<IngestPage, 'sessionId' | 'startRowId'>): string {
-  return createHash('sha256').update(`library-page\n${p.sessionId}\n${p.startRowId}`).digest('hex')
-}
+/** A content_ingest row key (its content_hash): sha256 of the kind and its parts, one per line. */
+export const ingestRowKey = (kind: string, ...parts: (string | number)[]): string =>
+  createHash('sha256').update([kind, ...parts].join('\n')).digest('hex')
+
+/** The library page's row key: one per session period, whatever the page says. */
+export const pageKeyFor = (p: Pick<IngestPage, 'sessionId' | 'startRowId'>): string => ingestRowKey('library-page', p.sessionId, p.startRowId)
 
 /** The page's change detector (recorded in the manifest's IngestState), not the row key. */
 export function contentHashFor(p: Pick<IngestPage, 'sessionId' | 'startRowId' | 'markdown'>): string {

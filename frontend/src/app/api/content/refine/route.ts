@@ -8,6 +8,7 @@ import {
   type RefineResult,
 } from '@/lib/content-refine'
 import { resolveTextProvider } from '@/lib/model-provider'
+import { CONTENT_ITEM_COLUMNS } from '@/lib/library-grid'
 
 /**
  * POST /api/content/refine — turn a raw library item into a polished,
@@ -33,9 +34,6 @@ import { resolveTextProvider } from '@/lib/model-provider'
 
 const REFINE_TIMEOUT_MS = 30_000
 const MAX_TOKENS = 2048
-
-const RENDITION_COLUMNS =
-  'id, type, status, title, hook, body, source_session_id, source_kind, slug, published_at, created_at, updated_at, parent_source_id'
 
 export async function POST(req: NextRequest) {
   let supabase: Awaited<ReturnType<typeof createSupabaseServer>>
@@ -166,7 +164,7 @@ export async function POST(req: NextRequest) {
   // Return the fresh rendition row for the client to render.
   const { data: rendition, error: fetchErr } = await supabase
     .from('content_items')
-    .select(RENDITION_COLUMNS)
+    .select(CONTENT_ITEM_COLUMNS)
     .eq('id', itemId)
     .maybeSingle()
 
