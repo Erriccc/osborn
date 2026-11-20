@@ -8,7 +8,6 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write # OIDC token for trusted publishing
   contents: read
 
 concurrency:
@@ -16,11 +15,10 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  # No publish credential here: install scripts, tests and the build run in this job.
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Name this environment in npm's trusted-publisher settings so only this job gets a token.
-    environment: npm
     steps:
       - uses: actions/checkout@v4
         with:
@@ -28,11 +26,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
-      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
-      - name: Update npm
-        run: npm install -g npm@^11.5.1 && npm --version
-      # Only merged code ships: the commit must be on main, a tag must match the version.
+      # The commit must be on main and a tag must match the version. A branch can edit this
+      # file, so the real gate is the `npm` environment's required reviewer and the tag ruleset.
       - name: Check ref
         working-directory: agent
         run: |
@@ -49,7 +44,6 @@ jobs:
             echo "::error::$GITHUB_SHA is not on main"
             exit 1
           fi
-          echo "Publishing osborn@$VERSION"
       - name: Install
         working-directory: agent
         run: npm ci --no-audit --no-fund
@@ -57,7 +51,36 @@ jobs:
       - name: Run tests
         working-directory: agent
         run: node ../frontend/scripts/run-tests.mjs .
-      # prepublishOnly builds dist/; npm refuses a version that is already published.
-      - name: Publish
+      # npm pack skips prepublishOnly, so build here; publish ships this exact tarball.
+      - name: Build and pack
         working-directory: agent
-        run: npm publish
+        run: npm run build && npm pack && mv osborn-*.tgz ../osborn.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: osborn-tarball
+          path: osborn.tgz
+          retention-days: 7
+
+  # Only this job can mint the OIDC publish token; it runs no package code.
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: npm
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      - name: Update npm
+        run: npm install -g npm@^11.5.1 && npm --version
+      - uses: actions/download-artifact@v4
+        with:
+          name: osborn-tarball
+      # npm refuses a version that is already published.
+      - name: Publish
+        run: npm publish ./osborn.tgz --ignore-scripts
