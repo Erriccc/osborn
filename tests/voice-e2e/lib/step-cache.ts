@@ -175,6 +175,12 @@ export async function actWithCache(
   return { cached: false, healed: !!hit, did: describeAction(action) }
 }
 
+/** Settles with `p`, or rejects with `why` after `ms` (the timer is always cleared). */
+export const withTimeout = <T,>(p: Promise<T>, ms: number, why: string | Error): Promise<T> => {
+  let t: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([p, new Promise<never>((_, rej) => { t = setTimeout(() => rej(typeof why === 'string' ? new Error(why) : why), ms) })]).finally(() => clearTimeout(t))
+}
+
 /**
  * Runs `run` with a deadline, and fences it when the deadline passes (#174).
  * On timeout the signal aborts (no new observe or act starts) and `onTimeout`
@@ -190,20 +196,13 @@ export async function fencedCall<T>(
 ): Promise<T> {
   const fence = new AbortController()
   const call = run(fence.signal)
-  const after = <V,>(ms: number, v: () => V) => { let t: ReturnType<typeof setTimeout> | undefined; return { p: new Promise<V>((r) => { t = setTimeout(() => r(v()), ms) }), clear: () => clearTimeout(t) } }
-  const TIMEOUT = Symbol('timeout')
-  const deadline = after(o.timeoutMs, () => TIMEOUT)
   const timedOut = new Error(o.why)
-  try {
-    const first = await Promise.race([call, deadline.p])
-    if (first !== TIMEOUT) return first as T
-  } finally { deadline.clear() }
+  try { return await withTimeout(call, o.timeoutMs, timedOut) }
+  catch (e) { if (e !== timedOut) throw e }
   fence.abort(timedOut)
   call.then((r) => o.onLate?.(r), () => {})
   try { o.onTimeout?.() } catch { /* closing the brain must not mask the timeout */ }
-  const grace = after(o.settleMs, () => false)
-  const stopped = await Promise.race([call.then(() => true, () => true), grace.p])
-  grace.clear()
+  const stopped = await withTimeout(call.then(() => true, () => true), o.settleMs, 'still running').catch(() => false)
   o.stopped?.(stopped)
   throw timedOut
 }
