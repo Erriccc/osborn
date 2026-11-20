@@ -286,12 +286,11 @@ async function main() {
     return c
   }
   // Cookies and localStorage (where most sites, Supabase included, keep a sign-in); IndexedDB is not kept.
-  // Saves run one at a time (the minute tick never overlaps /end or shutdown) and each file is
-  // written whole, so a crash mid-save leaves the previous file rather than a torn one.
   let ending = false  // set once a graceful end begins
   const profileSaver = serialSaver(async () => {
     for (const [key, c] of contexts) {
-      const st = await c.storageState().catch(() => null)
+      // Bounded: one wedged tab must not stall the queue and lose the shutdown save.
+      const st = await withTimeout(c.storageState(), 5000, 'storageState').catch(() => null)
       if (st) try { writeAtomic(profileFile(key), JSON.stringify(st)) } catch { /* volume full or gone: keep the last file */ }
     }
   }, () => ending)

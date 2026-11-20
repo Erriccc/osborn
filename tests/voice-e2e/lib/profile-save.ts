@@ -1,4 +1,4 @@
-import { renameSync, writeFileSync } from 'fs'
+import { renameSync, rmSync, writeFileSync } from 'fs'
 
 // One profile save at a time: a call made while a save runs waits for it, then
 // runs one more (later calls in the meantime share that one). Once `stopped()`
@@ -20,7 +20,6 @@ export function serialSaver(save: () => Promise<void>, stopped: () => boolean = 
 
 // Write whole or not at all: a crash mid-write leaves the old file, never a torn one.
 export function writeAtomic(file: string, data: string) {
-  const tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, data)
-  renameSync(tmp, file)
+  const tmp = `${file}.tmp`
+  try { writeFileSync(tmp, data); renameSync(tmp, file) } catch (e) { rmSync(tmp, { force: true }); throw e }
 }
