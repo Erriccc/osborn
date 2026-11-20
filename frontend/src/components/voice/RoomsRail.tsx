@@ -135,6 +135,15 @@ function RoomRowButton({
   )
 }
 
+const SearchIcon = ({ className }: { className: string }) => (
+  <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
+    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
+  </svg>
+)
+
+/** Round icon button in the bar (search, New room); colours are added per button. */
+const BAR_ICON_BUTTON = 'shrink-0 flex items-center justify-center min-h-8 min-w-8 w-8 h-8 rounded-full bg-gray-800/50 border border-gray-700/50 transition-colors'
+
 /** The session search field — the rail's, and the bar's when it is opened.
  * `size="md"` is the touch size (40px+, 16px text so iOS does not zoom). */
 function SessionSearchInput({
@@ -157,9 +166,7 @@ function SessionSearchInput({
   const md = size === 'md'
   return (
     <div className="relative flex-1 min-w-0">
-      <svg className={`${md ? 'w-4 h-4 left-2.5' : 'w-3.5 h-3.5 left-2'} absolute top-1/2 -translate-y-1/2 text-gray-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
-      </svg>
+      <SearchIcon className={`${md ? 'w-4 h-4 left-2.5' : 'w-3.5 h-3.5 left-2'} absolute top-1/2 -translate-y-1/2 text-gray-500`} />
       <input
         type="text"
         value={value}
@@ -446,8 +453,10 @@ export function RoomsSidebar({
 // ── Below xl (phone + tablet): slim horizontal room switcher (2+ rooms) ────
 // Search (#176): a magnifier at the leading edge swaps the chip row for the
 // rail's input; a live query hangs a dropdown of the rail's rows under the bar.
-// Picking a result, Clear, Escape or a tap outside close it AND clear the query,
-// so the chips are never left filtered with no visible cause.
+// Picking a result, Clear, Escape or a tap outside close it AND clear the query:
+// the query is shared with the rail, so a stale one would leave the rail filtered
+// after a resize to xl. (The chips never show "Switching…", so clearing on pick
+// loses none of the feedback f4153cab kept the rail's query for.)
 export function RoomsBar({
   sessions,
   slots,
@@ -518,11 +527,9 @@ export function RoomsBar({
             onClick={() => setSearchOpen(true)}
             aria-label="Search sessions"
             title="Search sessions"
-            className="shrink-0 flex items-center justify-center min-h-8 min-w-8 w-8 h-8 rounded-full bg-gray-800/50 text-gray-400 border border-gray-700/50 hover:bg-gray-800 hover:text-gray-200 transition-colors"
+            className={`${BAR_ICON_BUTTON} text-gray-400 hover:bg-gray-800 hover:text-gray-200`}
           >
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-4.35-4.35M11 18a7 7 0 100-14 7 7 0 000 14z" />
-            </svg>
+            <SearchIcon className="w-4 h-4" />
           </button>
           <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto scrollbar-none">
             {rooms.map((room) => {
@@ -554,7 +561,7 @@ export function RoomsBar({
               onClick={onNewRoom}
               aria-label="New room"
               title="New room"
-              className="shrink-0 flex items-center justify-center min-h-8 min-w-8 w-8 h-8 rounded-full bg-gray-800/50 text-amber-300 border border-gray-700/50 hover:bg-amber-500/15 transition-colors"
+              className={`${BAR_ICON_BUTTON} text-amber-300 hover:bg-amber-500/15`}
             >
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
