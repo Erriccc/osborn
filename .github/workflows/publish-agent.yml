@@ -1,0 +1,63 @@
+# Publishes agent/ (npm package "osborn") with npm Trusted Publishing (OIDC): no NPM_TOKEN.
+# Release: bump agent/package.json version, merge, then `git tag agent-v<ver> && git push origin agent-v<ver>`.
+name: publish-agent
+
+on:
+  push:
+    tags: ['agent-v*']
+  workflow_dispatch:
+
+permissions:
+  id-token: write # OIDC token for trusted publishing
+  contents: read
+
+concurrency:
+  group: publish-agent
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
+      - name: Update npm
+        run: npm install -g npm@latest && npm --version
+      - name: Check version
+        working-directory: agent
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_TYPE" = "tag" ] && [ "$GITHUB_REF_NAME" != "agent-v$VERSION" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match agent/package.json version $VERSION (expected agent-v$VERSION)"
+            exit 1
+          fi
+          if OUT=$(npm view "osborn@$VERSION" version 2>&1); then
+            if [ -n "$OUT" ]; then
+              echo "::error::osborn@$VERSION is already on the registry; bump agent/package.json"
+              exit 1
+            fi
+          elif ! echo "$OUT" | grep -q E404; then
+            echo "$OUT"
+            echo "::error::Could not check the registry for osborn@$VERSION"
+            exit 1
+          fi
+          echo "Publishing osborn@$VERSION"
+      - name: Install
+        working-directory: agent
+        run: npm ci --no-audit --no-fund
+      - name: Build
+        working-directory: agent
+        run: npm run build
+      # Same runner as agent-tests.yml.
+      - name: Run tests
+        working-directory: agent
+        run: node ../frontend/scripts/run-tests.mjs . skill-secrets
+      # Provenance is generated automatically with trusted publishing from a public repo.
+      - name: Publish
+        working-directory: agent
+        run: npm publish --tag latest
