@@ -137,6 +137,7 @@ export function parseStewardVerdict(text: string, at: string = new Date().toISOS
   const impact = bounded('impact')
   // "For BLOCK, name the decision": a labelled DECISION line, else the free text that follows.
   const history = bounded('history')
+  const rows = historyRows(history)
   const rootCause = joined('rootCause')
   // The written chain (#A → #B → this) when there is one, else every issue the line cites.
   const chainText = rootCause?.match(/#\d+(?:\s*(?:→|->)\s*#\d+)*\s*(?:→|->)\s*this\b/i)?.[0] ?? rootCause ?? ''
@@ -151,8 +152,8 @@ export function parseStewardVerdict(text: string, at: string = new Date().toISOS
     removed: bounded('removed'),
     ...(joined('lines') ? { lines: joined('lines') } : {}),
     history,
-    historyRows: historyRows(history),
-    missingCoupled: history.filter((e) => /coupl|partner/i.test(e.split(/[:—]/)[0]) && /\bmissing\b/i.test(e) && warns(e)),
+    historyRows: rows,
+    missingCoupled: rows.find((r) => r.key === 'coupled')!.items.filter((e) => /\bmissing\b/i.test(e) && warns(e)),
     chain,
     ...(issueBase ? { issueBase } : {}),
     ...(impact.length ? { impact } : {}),

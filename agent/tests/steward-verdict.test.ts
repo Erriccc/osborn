@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath, stewardPushRecords } = await import('../src/steward-verdict.js')
+const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath, stewardPushRecords, githubIssueBase } = await import('../src/steward-verdict.js')
 
 let pass = 0
 const t = (name: string, fn: () => unknown) => {
@@ -162,7 +162,6 @@ t('prior_messages push: last 10 verdicts and last 10 gates kept apart, raw and i
   assert.ok(recs[0].raw && recs[0].impact, 'source records untouched')
 })
 
-console.log(`\n${pass} passed`)
 
 t('#224: HISTORY sorted into four rows; a warning row is flagged, a benign one is not', () => {
   const v = parseStewardVerdict(`VERDICT: CLEAN — ok
@@ -190,7 +189,8 @@ t('#224: none / 0 found do not warn; a feature has an empty chain', () => {
   assert.equal(w.historyRows[3].warn, true)
 })
 
-const { githubIssueBase } = await import('../src/steward-verdict.js')
 t('#224: githubIssueBase is undefined outside a git repo', () => {
   assert.equal(githubIssueBase('/nonexistent-dir-xyz'), undefined)
 })
+
+console.log(`\n${pass} passed`)

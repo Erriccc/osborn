@@ -67,7 +67,7 @@ if tool == "mcp__github__create_pull_request":
     missing = [h for h in headings if empty(h)]
     if missing:
         deny("Fill every PR template section (.github/pull_request_template.md) — empty or missing: " + ", ".join(missing) +
-             ". Net-new and Removed come from the steward's lists; Steward is its verdict line; User time is its USER TIME line. "
+             ". Net-new and Removed come from the steward's lists; Steward is its verdict line; History is its HISTORY lines; User time is its USER TIME line. "
              "(Checked for PRs opened with the GitHub tool; `gh pr create` bodies are not inspected.)")
 steward = os.path.join(git("rev-parse", "--absolute-git-dir"), "steward-reviewed")
 if (open(steward).read().strip() if os.path.exists(steward) else "") != sha:
