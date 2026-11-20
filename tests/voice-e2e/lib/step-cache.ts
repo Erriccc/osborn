@@ -90,7 +90,8 @@ async function brainPageFor(stagehand: BrainLike, page: Page): Promise<{ targetI
  * Cached natural-language action. Drop-in for `stagehand.act(instruction)`.
  * `stagehand` needs `.observe(instruction)` and `.act(actionOrInstruction)`.
  * It acts on `page`; if Stagehand cannot find that page it acts on its own active page.
- * Once `signal` is aborted (the caller timed out) it never starts an action (#174).
+ * Once `signal` is aborted (the caller timed out) it never starts an action (#174),
+ * and an action that finishes after that writes nothing to the cache (#421).
  */
 export async function actWithCache(
   stagehand: BrainLike,
@@ -104,6 +105,8 @@ export async function actWithCache(
   const key = `${url.pathname} :: ${instruction}`
   const store = loadStore(url.hostname)
   const hit = store[key]
+  // A late finish is not a trusted recipe: its store snapshot is stale and its result unverified.
+  const fenced = () => !!signal?.aborted
 
   const describeTarget = async (sel: string): Promise<string | null> => {
     try {
@@ -132,6 +135,7 @@ export async function actWithCache(
       signal?.throwIfAborted()
       try {
         await stagehand.act(hit.action, on)
+        if (fenced()) return { cached: true, healed: false, did: describeAction(hit.action) }
         hit.hits += 1
         hit.lastUsedAt = new Date().toISOString()
         saveStore(url.hostname, store)
@@ -155,6 +159,7 @@ export async function actWithCache(
   }
   signal?.throwIfAborted()
   await stagehand.act(action, on)
+  if (fenced()) return { cached: false, healed: false, did: describeAction(action) }
   // A step carrying a secret is never written into the shareable cache.
   if (holdsSecret({ key, action })) {
     if (hit) { delete store[key]; saveStore(url.hostname, store) }
@@ -181,18 +186,29 @@ export const withTimeout = <T,>(p: Promise<T>, ms: number, why: string | Error):
   return Promise.race([p, new Promise<never>((_, rej) => { t = setTimeout(() => rej(typeof why === 'string' ? new Error(why) : why), ms) })]).finally(() => clearTimeout(t))
 }
 
+/** How a timed-out call ended: `stopped` at a fence check before acting, `late`
+ *  (it settled after the deadline and may have acted, whether it returned or
+ *  threw), or still `running` when the settle wait ran out. */
+export type FencedEnd = 'stopped' | 'late' | 'running'
+
 /**
- * Runs `run` with a deadline, and fences it when the deadline passes (#174).
+ * Runs `run` with a deadline, and fences it when the deadline passes (#174, #421).
  * On timeout the signal aborts (no new observe or act starts) and `onTimeout`
  * runs (the engine closes that call's brain, which ends a call in flight). The
- * rejection then waits up to `settleMs` for the call to stop, so the caller's
- * action lock is held until the timed-out action has stopped, not just its
- * deadline. `stopped(false)` means it was still running when the wait ran out;
- * `onLate` hears what a timed-out call returned if it finished anyway.
+ * rejection then waits up to `settleMs` for the call AND `onTimeout`'s promise,
+ * so the caller's action lock is held until the timed-out action has stopped.
+ * `settled` says how it ended and whether `onTimeout` finished; `onLate` hears a
+ * late result or error. A call still `running` is the next caller's to wait out
+ * (`zombieGate`).
  */
 export async function fencedCall<T>(
   run: (signal: AbortSignal) => Promise<T>,
-  o: { timeoutMs: number; settleMs: number; why: string; onTimeout?: () => void; stopped?: (stopped: boolean) => void; onLate?: (r: T) => void },
+  o: {
+    timeoutMs: number; settleMs: number; why: string
+    onTimeout?: (call: Promise<T>) => unknown
+    settled?: (end: FencedEnd, closed: boolean) => void
+    onLate?: (late: { ok: true; value: T } | { ok: false; error: unknown }) => void
+  },
 ): Promise<T> {
   const fence = new AbortController()
   const call = run(fence.signal)
@@ -200,11 +216,43 @@ export async function fencedCall<T>(
   try { return await withTimeout(call, o.timeoutMs, timedOut) }
   catch (e) { if (e !== timedOut) throw e }
   fence.abort(timedOut)
-  call.then((r) => o.onLate?.(r), () => {})
-  try { o.onTimeout?.() } catch { /* closing the brain must not mask the timeout */ }
-  const stopped = await withTimeout(call.then(() => true, () => true), o.settleMs, 'still running').catch(() => false)
-  o.stopped?.(stopped)
+  let end: FencedEnd = 'running'
+  const callDone = call.then(
+    (value) => { end = 'late'; o.onLate?.({ ok: true, value }) },
+    (error) => { if (error === timedOut) end = 'stopped'; else { end = 'late'; o.onLate?.({ ok: false, error }) } },
+  )
+  let closed = false
+  let closing: Promise<unknown>
+  try { closing = Promise.resolve(o.onTimeout?.(call)) } catch (e) { closing = Promise.reject(e) }  // must not mask the timeout
+  closing = closing.then(() => { closed = true }, () => { closed = true })
+  await withTimeout(Promise.all([callDone, closing]), o.settleMs, 'still running').catch(() => {})
+  o.settled?.(end, closed)
   throw timedOut
+}
+
+/**
+ * Timed-out calls still running past their settle wait (#421). The next brain
+ * call, or a brain re-init, `wait`s for them before touching the page, and is
+ * refused with a clear error if they have not settled within its budget, so it
+ * never runs alongside one.
+ */
+export function zombieGate() {
+  let zombie: Promise<void> | null = null
+  return {
+    track(call: Promise<unknown>): void {
+      const z: Promise<void> = Promise.all([zombie, call.catch(() => {})]).then(() => {})
+      zombie = z
+      void z.then(() => { if (zombie === z) zombie = null })
+    },
+    get pending(): boolean { return zombie !== null },
+    async wait(budgetMs: number, what: string): Promise<void> {
+      const z = zombie
+      if (!z) return
+      const ms = Math.max(0, budgetMs)
+      if (!(await withTimeout(z.then(() => true), ms, 'zombie').catch(() => false)))
+        throw new Error(`${what} refused: a timed-out brain call was still running after another ${Math.round(ms / 1000)}s and could still act on the page — retry shortly`)
+    },
+  }
 }
 
 /** True when redaction would change it, or it types into a password field:
