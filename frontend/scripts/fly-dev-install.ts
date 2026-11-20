@@ -17,8 +17,8 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { createClient } from '@supabase/supabase-js'
 import { installOsbornSpec, readInstalledOsbornVersion } from '../src/lib/machines'
+import { serviceClient } from '../src/lib/sandbox-claims'
 
 const envFile = resolve(__dirname, '../.env.local')
 if (existsSync(envFile)) process.loadEnvFile(envFile)
@@ -41,18 +41,14 @@ async function main(): Promise<void> {
   const yes = args.includes('--yes')
   const [app, ref = 'HEAD'] = args.filter((a) => a !== '--yes')
   if (!app) die('usage: npx tsx scripts/fly-dev-install.ts <fly-app> [git-ref=HEAD] --yes')
-  for (const k of ['FLY_API_TOKEN', 'NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY']) {
-    if (!process.env[k]) die(`${k} is not set`)
-  }
+  if (!process.env.FLY_API_TOKEN) die('FLY_API_TOKEN is not set')
+  const sb = serviceClient() ?? die('NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set')
 
   const repo = run('git', ['rev-parse', '--show-toplevel'], __dirname)
   const gitSha = run('git', ['rev-parse', '--verify', `${ref}^{commit}`], repo)
   const version = await readInstalledOsbornVersion(app)
   if (!version) die(`${app}: /health did not report a version (is the machine running?)`)
 
-  const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
-    auth: { persistSession: false },
-  })
   const { data: row } = await sb.from('instances').select('user_id').eq('sandbox_id', app).maybeSingle()
   const userId = (row?.user_id as string | undefined) ?? ''
   const owner = userId ? (await sb.auth.admin.getUserById(userId)).data.user?.email ?? userId : '(no instances row)'
