@@ -160,11 +160,6 @@ export function peakLevel(wav: Buffer): number {
 }
 
 /**
- * Only the current turn goes to STT, as a 16 kHz mono wav cut from just before
- * `sinceMs`. A raw MediaRecorder webm can't be seeked, so it is decoded up to
- * the cut (-ss after -i); a decoded wav is seeked directly. null if ffmpeg fails.
- */
-/**
  * ffmpeg window for a turn: start 1s before `sinceMs` (word timestamps are
  * filtered at sinceMs), and stop at `untilMs` when given, so the transcript ends
  * where the turn's clip ends (#185) instead of at the end of the recording.
@@ -174,6 +169,11 @@ export function turnCutWindow(sinceMs: number, untilMs?: number): { cutMs: numbe
   return { cutMs, durationMs: untilMs == null ? null : Math.max(0, untilMs - cutMs) }
 }
 
+/**
+ * Only the current turn goes to STT, as a 16 kHz mono wav cut from just before
+ * `sinceMs`. A raw MediaRecorder webm can't be seeked, so it is decoded up to
+ * the cut (-ss after -i); a decoded wav is seeked directly. null if ffmpeg fails.
+ */
 async function cutTurn(input: string, sinceMs: number, seekable: boolean, untilMs?: number): Promise<{ audio: Buffer; fileSinceMs: number; wav: true } | null> {
   const { execFile } = await import('node:child_process')
   const { readFileSync, rmSync } = await import('node:fs')

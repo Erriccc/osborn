@@ -203,6 +203,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
+## What's new in v63
+- `/say` and `/act` take `clip: false` to skip the clip entirely (no frames cut, nothing encoded; `clipUrl` is null). A `/say` transcript (`heard`) now ends where its clip ends, so the clip and the transcript cover the same audio.
+
 ## What's new in v62
 - **`ears.audioClock` reports on every tab, not only once page audio was tapped.** It was null on a page with only the synthetic mic. `/say` `timings` add `audio` (the utterance's length): `play` well over `audio` means the tab's audio ran slow, and `/say` warns about it the same way as a low `audioClock`.
 - The spoken-turn clip's audio is mixed at 48kHz (loudnorm had raised it to 192kHz), which trims the mix step.
@@ -318,7 +321,6 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 ## What's new in v39
 - The engine records the page itself (Chrome's own screenshots) instead of the whole screen. That cuts most of its idle CPU use. Clips no longer show Chrome's tab strip and address bar; a label at the top of the page names the tab and URL. Set `OSBORN_CAPTURE=display` to record the whole window again.
 - `/say` replies without waiting for its clip: the reply has `clipPending: true`, and `clipUrl` (and the evidence link) wait until the clip is ready. Pass `waitClip: true` to get the clip in the reply as before. Clips are 640px wide.
-- `/say` and `/act` take `clip: false` to skip the clip entirely (no frames cut, nothing encoded; `clipUrl` is null). A `/say` transcript (`heard`) now ends where its clip ends, so the clip and the transcript cover the same audio.
 - The engine stops itself after 3 idle hours instead of 15 minutes. A freshly started machine gets throttled almost at once, and staying up lets it build up CPU credit.
 
 ## What's new in v38

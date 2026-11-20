@@ -1723,10 +1723,11 @@ async function main() {
           const finishClip = async () => {
             const range = await rangeJob
             const clipWhy = range ? null : live?.clipFailure?.()  // read now: another request's clip overwrites it
-            if (!wantClip) { for (const f of [saidWav, decoded?.wav]) if (f) try { rmSync(f, { force: true }) } catch { /* ignore */ }; return }
-            timings.clip = Date.now() - tClip
-            const encodeMs = live?.lastEncodeMs?.(); if (encodeMs != null) timings.encode = encodeMs  // part of clip
-            if (!wantClip) clipError = null
+            if (wantClip) {
+              timings.clip = Date.now() - tClip
+              const encodeMs = live?.lastEncodeMs?.(); if (encodeMs != null) timings.encode = encodeMs  // part of clip
+            }
+            if (!wantClip) { /* clip:false: nothing to report or mix */ }
             else if (!range) clipError = live ? (clipWhy ?? 'clip failed') : 'live stream unavailable — no clips this session'
             else {
               clip = range.path; clipSpan = [range.startMs, range.endMs]
