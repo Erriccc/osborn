@@ -45,7 +45,7 @@ export type StewardRecord = StewardVerdict | StewardGateRecord | AgentResultReco
 const MAX_RESULT = 4000
 const MAX_RESULT_PUSH = 600
 export function agentResultRecord(agent: string, role: string | null | undefined, result: string, at = new Date().toISOString()): AgentResultRecord | null {
-  const text = redactSecrets(String(result ?? '')).trim()
+  const text = redactSecrets(String(result ?? ''), { assistant: true }).trim()
   if (!agent || !text) return null
   return { agent, ...(role ? { role } : {}), result: cap(text, MAX_RESULT), at }
 }
