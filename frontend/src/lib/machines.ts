@@ -1409,8 +1409,9 @@ async function bootWithConfig(
   }
   try {
     const info = await startAfterReplace(appName, machine, userId, label)
-    if (info === 'unsettled' || !info) return { applied: true, healthy: false }
-    const healthy = info.status === 'running' || (await waitForHealth(`https://${appName}.fly.dev`, 60))
+    if (info === 'unsettled') return { applied: true, healthy: false }
+    // null: the start call failed, but the machine may still be coming up.
+    const healthy = info?.status === 'running' || (await waitForHealth(`https://${appName}.fly.dev`, 60))
     return { applied: true, healthy }
   } catch (err) {
     return { applied: true, healthy: false, error: (err as Error).message }
@@ -1421,14 +1422,43 @@ async function bootWithConfig(
 const ROLLBACK_ORIG_EXEC_KEY = 'osborn_rollback_orig_exec'
 /** Present in package.json only on a dev build (fly-dev-install.ts sets it). */
 const DEV_SHA_MARK = '"osbornDevSha"'
+/** Swap-script stdout markers: it started, and it is about to change the volume. */
+const SWAP_BEGIN = 'osborn-swap-begin'
+const SWAP_MOVING = 'osborn-swap-moving'
+/** Written (in /tmp, so for that boot only) by a rollback override that reinstalls from npm. */
+const ROLLBACK_NPM_MARK = '/tmp/osborn-rollback-npm'
+
+/**
+ * The rollback init override's script (runs before the machine's own init).
+ * A released .osborn-prev is moved back. Otherwise the live osborn becomes a
+ * placeholder whose version matches no image, the image's version is
+ * installed from npm into a staging prefix and renamed in. Interrupted at any
+ * point, the volume holds the placeholder, nothing, or the full package, and
+ * the entrypoint resyncs from npm on the next boot in the first two cases
+ * (it resyncs whenever the volume version differs from the image's).
+ */
+function rollbackInitScript(): string {
+  const M = VOLUME_MODULES
+  const R = '/workspace/.osborn-rollback-stage'
+  return [
+    `M=${M}; R=${R}`,
+    `if [ -f "$M/.osborn-prev/package.json" ] && ! grep -q '${DEV_SHA_MARK}' "$M/.osborn-prev/package.json"; then`,
+    '  rm -rf "$M/osborn" && mv "$M/.osborn-prev" "$M/osborn"',
+    'else',
+    `  touch ${ROLLBACK_NPM_MARK}`,
+    `  rm -rf "$M/osborn" && mkdir -p "$M/osborn" && printf '{"name":"osborn","version":"0.0.0-rollback"}\\n' > "$M/osborn/package.json"`,
+    `  V=$(node -p "require('${IMAGE_OSBORN_PKG}').version") && rm -rf "$R" && npm install -g --prefix "$R" "osborn@$V" --no-audit --no-fund && rm -rf "$M/osborn" && mv "$R/lib/node_modules/osborn" "$M/osborn"`,
+    '  rm -rf "$R"',
+    'fi',
+    'exec "$@"',
+  ].join('\n')
+}
 
 /**
  * Put the last RELEASED build back on a machine, without exec: boot once with
- * an init override that, before the machine's own init, moves .osborn-prev
- * back when it is a released copy, or else deletes the volume's osborn so the
- * entrypoint reinstalls the image's version from npm; then restore the
- * original config. The original init.exec rides in the override's metadata,
- * so an interrupted run leaves it on the machine. Never restores a dev build.
+ * the rollbackInitScript override, then restore the original config. The
+ * original init.exec rides in the override's metadata, so an interrupted run
+ * leaves it on the machine. Never restores a dev build.
  */
 async function rollbackDevBuild(appName: string, userId: string): Promise<string> {
   const machine = await getFirstMachine(appName)
@@ -1446,10 +1476,9 @@ async function rollbackDevBuild(appName: string, userId: string): Promise<string
   }
   const original = { ...current, init: { ...init, exec: origExec }, ...(current.metadata ? { metadata } : {}) }
   const M = VOLUME_MODULES
-  const restore = `if [ -f ${M}/.osborn-prev/package.json ] && ! grep -q '${DEV_SHA_MARK}' ${M}/.osborn-prev/package.json; then rm -rf ${M}/osborn && mv ${M}/.osborn-prev ${M}/osborn; else rm -rf ${M}/osborn; fi; exec "$@"`
   const override = {
     ...original,
-    init: { ...init, exec: ['sh', '-c', restore, 'sh', ...origExec] },
+    init: { ...init, exec: ['sh', '-c', rollbackInitScript(), 'sh', ...origExec] },
     metadata: { ...metadata, [ROLLBACK_ORIG_EXEC_KEY]: JSON.stringify(origExec) },
   }
   const byHand = `restore init.exec to ${JSON.stringify(origExec)} and remove metadata.${ROLLBACK_ORIG_EXEC_KEY} by hand`
@@ -1457,6 +1486,12 @@ async function rollbackDevBuild(appName: string, userId: string): Promise<string
   const first = await bootWithConfig(appName, machine, override, userId, 'rollback override')
   if (!first.applied) return `Rollback failed: the override config was not applied (${first.error}); nothing was changed and the dev build is still on the machine`
   if (first.error) console.warn(`[machines] rollbackDevBuild: override boot failed: ${first.error}`)
+  if (!first.healthy && (await execInMachine(appName, machine.id, ['test', '-e', ROLLBACK_NPM_MARK], 15)).exitCode === 0) {
+    // Reinstalling from npm: let it finish rather than stop it mid-install.
+    console.warn(`[machines] rollbackDevBuild: ${appName} is reinstalling osborn from npm; waiting up to ${DEV_INSTALL_TIMEOUT_SEC}s for /health`)
+    const until = Date.now() + DEV_INSTALL_TIMEOUT_SEC * 1000
+    while (!first.healthy && Date.now() < until) first.healthy = await waitForHealth(`https://${appName}.fly.dev`, 5)
+  }
   const second = await bootWithConfig(appName, machine, original, userId, 'rollback restore')
   if (!second.applied) return `Rollback INCOMPLETE: the machine config still carries the rollback init override (${second.error}); ${byHand}`
   if (!second.healthy) return `Rollback failed: original config restored but the machine is not healthy (override boot ${first.healthy ? 'was' : 'was not'} healthy)`
@@ -1476,10 +1511,9 @@ async function rollbackDevBuild(appName: string, userId: string): Promise<string
  *
  * spec.version MUST be the image's version: the entrypoint reinstalls osborn
  * from npm at boot when the volume copy's version differs from the image's
- * (a missing volume copy included), which is also how a rollback with no
- * released backup gets the released build back. Only a released copy is ever
- * kept as .osborn-prev, the rollback copy. Any failure after the swap starts
- * rolls back to the last released build.
+ * (a missing volume copy included). Only a released copy is ever kept as
+ * .osborn-prev, the rollback copy. Any failure once the swap has started
+ * changing the volume rolls back to the last released build.
  * No lock: do not press Update on the dashboard while this runs.
  */
 export async function installOsbornSpec(
@@ -1535,27 +1569,33 @@ export async function installOsbornSpec(
   // to .osborn-old and is discarded, so a released backup is never replaced by
   // a dev build. Both names fall under the entrypoint's `.osborn-*` cleanup,
   // and a volume left with no osborn boots the image's version from npm. Each
-  // skill is copied under a temp name and renamed in. Any failure here is
-  // rolled back like a failed restart.
-  try {
-    await run('swap', ['sh', '-c', [
-      'set -e',
-      `M=${M}`,
-      `test -f ${staged}/package.json`,
-      'rm -rf "$M/.osborn-old"',
-      'if [ -d "$M/osborn" ]; then',
-      `  if grep -q '${DEV_SHA_MARK}' "$M/osborn/package.json" 2>/dev/null; then mv "$M/osborn" "$M/.osborn-old"`,
-      '  else rm -rf "$M/.osborn-prev" && mv "$M/osborn" "$M/.osborn-prev"; fi',
-      'fi',
-      `mv ${staged} "$M/osborn"`,
-      `mkdir -p ${VOLUME_PREFIX}/bin && cd ${VOLUME_PREFIX}/bin`,
-      `node -e 'const b=require("../lib/node_modules/osborn/package.json").bin||{};for(const[k,v]of Object.entries(typeof b==="string"?{osborn:b}:b))console.log(k+" "+v)' | while read n p; do ln -sfn "../lib/node_modules/osborn/$p" "$n"; chmod +x "$n"; done`,
-      'S=/workspace/.claude/skills; mkdir -p "$S"',
-      'for d in "$M"/osborn/.claude/skills/*/; do [ -d "$d" ] || continue; n=$(basename "$d"); rm -rf "$S/.$n.new" "$S/.$n.old"; cp -r "$d" "$S/.$n.new"; if [ -e "$S/$n" ]; then mv "$S/$n" "$S/.$n.old"; fi; mv "$S/.$n.new" "$S/$n"; rm -rf "$S/.$n.old"; done',
-    ].join('\n')], 120)
-  } catch (err) {
+  // skill is copied under a temp name and renamed in. A failure once the
+  // volume may have changed is rolled back like a failed restart; one before
+  // the first move (or with no sign the script ran past it) is not.
+  const swap = await execInMachine(appName, machine.id, ['sh', '-c', [
+    'set -e',
+    `M=${M}`,
+    `echo ${SWAP_BEGIN}`,
+    `test -f ${staged}/package.json`,
+    `echo ${SWAP_MOVING}`,
+    'rm -rf "$M/.osborn-old"',
+    'if [ -d "$M/osborn" ]; then',
+    `  if grep -q '${DEV_SHA_MARK}' "$M/osborn/package.json" 2>/dev/null; then mv "$M/osborn" "$M/.osborn-old"`,
+    '  else rm -rf "$M/.osborn-prev" && mv "$M/osborn" "$M/.osborn-prev"; fi',
+    'fi',
+    `mv ${staged} "$M/osborn"`,
+    `mkdir -p ${VOLUME_PREFIX}/bin && cd ${VOLUME_PREFIX}/bin`,
+    `node -e 'const b=require("../lib/node_modules/osborn/package.json").bin||{};for(const[k,v]of Object.entries(typeof b==="string"?{osborn:b}:b))console.log(k+" "+v)' | while read n p; do ln -sfn "../lib/node_modules/osborn/$p" "$n"; chmod +x "$n"; done`,
+    'S=/workspace/.claude/skills; mkdir -p "$S"',
+    'for d in "$M"/osborn/.claude/skills/*/; do [ -d "$d" ] || continue; n=$(basename "$d"); rm -rf "$S/.$n.new" "$S/.$n.old"; cp -r "$d" "$S/.$n.new"; if [ -e "$S/$n" ]; then mv "$S/$n" "$S/.$n.old"; fi; mv "$S/.$n.new" "$S/$n"; rm -rf "$S/.$n.old"; done',
+  ].join('\n')], 120)
+  if (swap.exitCode !== 0) {
+    const why = `swap failed (exit ${swap.exitCode}): ${(swap.stdErr || swap.stdOut).substring(0, 400)}`
+    if (swap.stdOut.includes(SWAP_BEGIN) && !swap.stdOut.includes(SWAP_MOVING)) {
+      return fail(`${why}; nothing on the volume was changed, the live build is untouched`)
+    }
     console.warn(`[machines] installOsbornSpec: swap on ${appName} failed; rolling back without exec`)
-    return fail(`${(err as Error).message}. ${await rollbackDevBuild(appName, userId)}`)
+    return fail(`${why}. ${await rollbackDevBuild(appName, userId)}`)
   }
 
   const installed = (await restartService(appName, userId)) ? await readInstalledOsbornVersion(appName) : null
