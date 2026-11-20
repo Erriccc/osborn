@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { applyViewEvent, busyLabel, historyMessages, runTime, VIEW_ROW_CAP } from '../src/lib/room-view'
+import { applyViewEvent, busyLabel, historyMessages, runTime, viewStep, VIEW_ROW_CAP } from '../src/lib/room-view'
 
 let pass = 0
 const t = (name: string, fn: () => unknown) => {
@@ -53,6 +53,31 @@ t('run time and busy label', () => {
   assert.equal(runTime(3_720_000), '1h 02m')
   assert.equal(busyLabel({ turnInFlight: true, permissionPending: true }), 'Waiting for an approval in the session')
   assert.equal(busyLabel({}), null)
+})
+
+t('viewStep: joins the live room, leaves a dead, stopped or moved one, rejoins the new room', () => {
+  const live = { live: true, room: 'r1', sessionId: 's1' }
+  const o = (joinedRoom: string | null, seen = true, wanted: string | null = 's1') => ({ wanted, seen, joinedRoom })
+  assert.deepEqual(viewStep(live, o(null, false)), { phase: 'watching', leave: false, join: true }, 'first sight joins')
+  assert.deepEqual(viewStep(live, o('r1')), { phase: 'watching', leave: false, join: false }, 'already in the room')
+  assert.deepEqual(viewStep({ ...live, room: 'r2' }, o('r1')), { phase: 'watching', leave: true, join: true }, 'the session moved to a new room')
+  assert.deepEqual(viewStep(null, o('r1')), { phase: 'lost', leave: true, join: false }, 'machine stopped or 502 after it was live')
+  assert.deepEqual(viewStep(null, o(null, false)), { phase: 'unreachable', leave: false, join: false })
+  assert.deepEqual(viewStep({ live: false }, o('r1')), { phase: 'ended', leave: true, join: false }, 'session ended')
+  assert.deepEqual(viewStep({ ...live, sessionId: 's2' }, o('r1')), { phase: 'ended', leave: true, join: false }, 'the machine moved to another session')
+  assert.deepEqual(viewStep({ ...live, sessionId: 's2' }, o(null, true, null)), { phase: 'watching', leave: false, join: true }, 'no session asked for: watch whatever is live')
+  assert.deepEqual(viewStep({ live: false }, o(null, false)), { phase: 'not-live', leave: false, join: false })
+  assert.deepEqual(viewStep(live, o(null)), { phase: 'watching', leave: false, join: true }, 'back after a loss: rejoins')
+})
+
+t('dashboard asks for the live session on demand, never on a timer, and in the cloud only while the machine runs', () => {
+  const dash = fs.readFileSync(path.join(__dirname, '..', 'src', 'app', 'dashboard', 'page.tsx'), 'utf8')
+  const i = dash.indexOf('const [liveSessionId')
+  const block = dash.slice(i, dash.indexOf('// A machine known to be offline', i))
+  assert.ok(i > 0 && block.includes('view-token'))
+  assert.doesNotMatch(block, /setInterval|setTimeout/)
+  assert.match(block, /connectionMode === 'local' \? agentOnline === true : sandboxStatus === 'running'/)
+  assert.match(block, /if \(!mayAskMachine \|\| !canFetchAgent\(\)\)/)
 })
 
 t('the view page never publishes or sends to the agent', () => {

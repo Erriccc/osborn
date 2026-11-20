@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { storeWriteOriginAllowed, storeWriteRefusal } from '../src/agent-store.js'
 import {
   CONTROL_MESSAGE_TYPES,
   READ_ONLY_MESSAGE_TYPES,
@@ -103,9 +104,24 @@ t('index.ts: the viewer token is hidden, subscribe-only and a viewer-* identity'
   assert.doesNotMatch(hook, /planConnectRoom|busy\(\)/)
 })
 
-t('index.ts: /view-token is behind the sync-token gate', () => {
+t('index.ts: /view-token is behind the token gate and, with no token, the store rules', () => {
   const route = between("url.pathname === '/view-token'", 'return\n    }')
-  assert.match(route, /if \(unauthorized\(\)\) return/)
+  assert.match(route, /if \(unauthorized\(\) \|\| storeRefused\(true\)\) return/)
+  // storeRefused must exist where the route runs (a const defined later would throw).
+  assert.ok(src.indexOf('const storeRefused = ') < src.indexOf("url.pathname === '/view-token'"), 'route sits after storeRefused')
+  // CORS echoes only allowed origins, never '*'.
+  assert.match(src, /const STORE_PATHS = new Set\(\[[^\]]*'\/view-token'/)
+})
+
+t('no-token machine: other websites, LAN peers and tunnels cannot get a viewer token; this machine can', () => {
+  const local = { read: true, hasToken: false, publicDeploy: false, forwarded: false, host: 'localhost:8741', remote: '127.0.0.1', origin: 'http://localhost:3000', frontendUrl: '' }
+  assert.equal(storeWriteRefusal(local), null, 'the local dashboard')
+  assert.equal(storeWriteRefusal({ ...local, origin: undefined }), null, 'curl on this machine')
+  assert.equal(storeWriteRefusal({ ...local, origin: 'https://evil.example' })?.status, 403, 'any website the user visits')
+  assert.equal(storeWriteRefusal({ ...local, remote: '192.168.1.9' })?.status, 403, 'a LAN peer')
+  assert.equal(storeWriteRefusal({ ...local, forwarded: true })?.status, 403, 'through a tunnel')
+  assert.equal(storeWriteRefusal({ ...local, host: 'my-tunnel.example.com' })?.status, 403, 'a public name')
+  assert.equal(storeWriteOriginAllowed('https://evil.example', ''), false, 'CORS does not echo another site')
 })
 
 t('frontend proxy forwards view-token (GET only)', () => {

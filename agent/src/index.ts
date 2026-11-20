@@ -151,9 +151,10 @@ const STORE_REPLY_TYPES: Record<string, string> = {
   skill_remove: 'skill_remove_result', get_agent_prompt: 'agent_prompt',
 }
 // Store routes, guarded by storeRefused: writes change the machine's skills; reads carry the
-// core prompts, the user's skills and the catalog. Neither answers every site's CORS.
+// core prompts, the user's skills and the catalog. Neither answers every site's CORS. The
+// room view's token route (#383) is guarded the same way: its token hears every broadcast.
 const STORE_WRITE_PATHS = new Set(['/skills/fork', '/skills/remove', '/store/install'])
-const STORE_PATHS = new Set([...STORE_WRITE_PATHS, '/skills', '/skills/content', '/store/catalog', '/store/entry', '/agents'])
+const STORE_PATHS = new Set([...STORE_WRITE_PATHS, '/skills', '/skills/content', '/store/catalog', '/store/entry', '/agents', '/view-token'])
 
 // Skills shipped with the package (core: maintained by Voice Native).
 const PKG_SKILLS_DIR = join(__dirname, '..', '.claude', 'skills')
@@ -777,15 +778,6 @@ function startApiServer(workingDir: string, port: number): void {
       return
     }
 
-    if (req.method === 'GET' && url.pathname === '/view-token') {
-      // Owner-only (the /api/agent proxy forwards the sync token). `?status=1` reads the snapshot without a token.
-      if (unauthorized()) return
-      const out = viewTokenHook ? await viewTokenHook(url.searchParams.get('status') !== '1') : null
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-      res.end(JSON.stringify(out ?? { live: false }))
-      return
-    }
-
     if (req.method === 'GET' && url.pathname === '/canvas-token') {
       // Listen-only LiveKit credentials for the meeting canvas (see hook doc).
       const out = canvasTokenHook ? await canvasTokenHook() : null
@@ -810,6 +802,16 @@ function startApiServer(workingDir: string, port: number): void {
       })
       if (refusal) reply(refusal.status, { error: refusal.error })
       return !!refusal
+    }
+
+    if (req.method === 'GET' && url.pathname === '/view-token') {
+      // Owner-only: the token gate, and with no token (local) the store's who-may-ask rules,
+      // since a hidden listener hears every broadcast. `?status=1` reads the snapshot without a token.
+      if (unauthorized() || storeRefused(true)) return
+      const out = viewTokenHook ? await viewTokenHook(url.searchParams.get('status') !== '1') : null
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+      res.end(JSON.stringify(out ?? { live: false }))
+      return
     }
 
     if (req.method === 'GET' && url.pathname === '/skills') {

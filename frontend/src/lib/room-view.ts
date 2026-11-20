@@ -80,3 +80,19 @@ export function busyLabel(busy: RoomViewStatus['busy']): string | null {
   if (busy?.turnInFlight) return 'Working on a reply'
   return null
 }
+
+export type ViewPhase = 'loading' | 'watching' | 'not-live' | 'ended' | 'lost' | 'unreachable'
+
+/**
+ * What one status poll means for the /view page. `joinedRoom` is the room the
+ * page is in (null when out). It leaves a room the session is no longer in
+ * (ended, moved to another session or room, or the machine stopped answering)
+ * and joins the live one when it is out.
+ */
+export function viewStep(s: RoomViewStatus | null, o: { wanted: string | null; seen: boolean; joinedRoom: string | null }): { phase: ViewPhase; leave: boolean; join: boolean } {
+  const inRoom = !!o.joinedRoom
+  if (!s) return o.seen ? { phase: 'lost', leave: inRoom, join: false } : { phase: 'unreachable', leave: inRoom, join: false }
+  if (!s.live || (o.wanted && s.sessionId !== o.wanted)) return { phase: o.seen ? 'ended' : 'not-live', leave: inRoom, join: false }
+  const moved = inRoom && s.room !== o.joinedRoom
+  return { phase: 'watching', leave: moved, join: !inRoom || moved }
+}

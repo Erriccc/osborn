@@ -18,7 +18,7 @@ import { toolTarget, type ChatMessage } from '@/components/voice/shared'
 import { agentReadUrl } from '@/lib/agent-read'
 import { sessionMessagesQuery } from '@/lib/chat-url'
 import { useDocumentTitle } from '@/lib/use-document-title'
-import { applyViewEvent, busyLabel, historyMessages, runTime, type RoomViewStatus } from '@/lib/room-view'
+import { applyViewEvent, busyLabel, historyMessages, runTime, viewStep, type RoomViewStatus, type ViewPhase } from '@/lib/room-view'
 
 const POLL_MS = 5000
 
@@ -41,14 +41,12 @@ async function readStatus(withToken: boolean): Promise<RoomViewStatus | null> {
   } catch { return null }
 }
 
-type Phase = 'loading' | 'watching' | 'not-live' | 'ended' | 'unreachable'
-
 function RoomView() {
   useDocumentTitle('Watching')
   const params = useSearchParams()
   const wanted = params.get('session')
   const cwd = params.get('workingDirectory')
-  const [phase, setPhase] = useState<Phase>('loading')
+  const [phase, setPhase] = useState<ViewPhase>('loading')
   const [status, setStatus] = useState<RoomViewStatus | null>(null)
   const [rows, setRows] = useState<ChatMessage[]>([])
   const [history, setHistory] = useState<ChatMessage[]>([])
@@ -56,20 +54,20 @@ function RoomView() {
   const [now, setNow] = useState(() => Date.now())
   const endRef = useRef<HTMLDivElement>(null)
 
-  // Status poll. While the session is live and the page is not in its room, one read also carries a token.
+  // Status poll (viewStep decides). The join reads the status once more with a token.
   useEffect(() => {
     let cancelled = false
     let room: { disconnect: () => Promise<void> | void } | null = null
+    let joinedRoom: string | null = null
     let joining = false
     let seen = false
-    const matches = (s: RoomViewStatus | null) => !!s?.live && (!wanted || s.sessionId === wanted)
-    const leave = () => { try { room?.disconnect() } catch { /* ignore */ } room = null; setConnected(false) }
+    const leave = () => { try { room?.disconnect() } catch { /* ignore */ } room = null; joinedRoom = null; setConnected(false) }
 
     const join = async () => {
       joining = true
       try {
         const s = await readStatus(true)
-        if (cancelled || !matches(s) || !s?.token || !s.url) return
+        if (cancelled || viewStep(s, { wanted, seen: true, joinedRoom: null }).phase !== 'watching' || !s?.token || !s.url || !s.room) return
         const lk = await import('livekit-client')
         if (cancelled) return
         const r = new lk.Room({ adaptiveStream: false, dynacast: false })
@@ -77,10 +75,11 @@ function RoomView() {
           if (topic && topic !== 'osborn-updates') return
           try { setRows((prev) => applyViewEvent(prev, JSON.parse(new TextDecoder().decode(payload)))) } catch { /* not JSON */ }
         })
-        r.on(lk.RoomEvent.Disconnected, () => { if (room === r) room = null; setConnected(false) })
+        r.on(lk.RoomEvent.Disconnected, () => { if (room === r) { room = null; joinedRoom = null } setConnected(false) })
         await r.connect(s.url, s.token, { autoSubscribe: false })
         if (cancelled) { r.disconnect(); return }
         room = r
+        joinedRoom = s.room
         setConnected(true)
       } catch { setConnected(false) } finally { joining = false }
     }
@@ -88,17 +87,16 @@ function RoomView() {
     const tick = async () => {
       const s = await readStatus(false)
       if (cancelled) return
-      if (!s) { if (!seen) setPhase('unreachable'); return }
-      if (!matches(s)) {
-        setPhase(seen ? 'ended' : 'not-live')
+      const step = viewStep(s, { wanted, seen, joinedRoom })
+      if (step.leave) leave()
+      setPhase(step.phase)
+      if (step.phase !== 'watching') {
         if (seen) setStatus((prev) => (prev ? { ...prev, tasks: [], busy: {} } : prev))
-        leave()
         return
       }
       seen = true
       setStatus(s)
-      setPhase('watching')
-      if (!room && !joining) void join()
+      if (step.join && !joining) void join()
     }
 
     tick()
@@ -144,7 +142,7 @@ function RoomView() {
             <span className="shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-medium text-[var(--text-secondary)] border border-[var(--border-subtle)]">Read-only</span>
             <span className="flex shrink-0 items-center gap-1.5 font-mono text-[11px] text-[var(--text-secondary)]">
               <span className={`w-1.5 h-1.5 rounded-full ${live && connected ? 'bg-[var(--voice-speaking)]' : live ? 'bg-[var(--accent)] animate-pulse' : 'bg-[var(--text-muted)]'}`} aria-hidden="true" />
-              {live ? (status?.since ? runTime(now - status.since) : 'Live') : phase === 'ended' ? 'Ended' : '—'}
+              {live ? (status?.since ? runTime(now - status.since) : 'Live') : phase === 'ended' ? 'Ended' : phase === 'lost' ? 'Offline' : '—'}
             </span>
           </div>
         </div>
@@ -155,8 +153,9 @@ function RoomView() {
         {phase === 'unreachable' && <Notice text="Could not reach your machine." />}
         {phase === 'not-live' && <Notice text="This session is not live right now. Open it from the dashboard to continue it." />}
         {phase === 'ended' && <Notice text="The session has ended or moved on. What it did is below." />}
+        {phase === 'lost' && <Notice text="Lost contact with your machine. Trying again…" />}
 
-        {(live || phase === 'ended') && (
+        {(live || phase === 'ended' || phase === 'lost') && (
           <section aria-label="Running" className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-1.5">
             <h2 className="px-2.5 pt-2 pb-1 text-[10.5px] font-medium uppercase tracking-wider text-[var(--text-secondary)]">Running</h2>
             {busy && live && (
@@ -182,7 +181,7 @@ function RoomView() {
           </section>
         )}
 
-        {(live || phase === 'ended') && (
+        {(live || phase === 'ended' || phase === 'lost') && (
           <section aria-label="Activity" className="flex flex-col gap-1">
             <h2 className="px-0.5 pb-1 text-sm font-semibold text-[var(--text-primary)]">Activity</h2>
             {feed.length === 0 ? (

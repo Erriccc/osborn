@@ -510,18 +510,24 @@ export default function Dashboard() {
   useEffect(() => { if (!loading) fetchSessions() }, [loading, fetchSessions])
 
   // The session live on the machine right now (read-only room view, #383): its Recent row gets View.
+  // Asked on demand, never on a timer, so the dashboard cannot wake a cloud machine that has
+  // stopped itself (Fly auto-start): when the session list arrives and when the tab comes back
+  // into view, and in the cloud only while the /api/sandbox poll says the machine is running.
   const [liveSessionId, setLiveSessionId] = useState<string | null>(null)
-  useEffect(() => {
-    if (!agentOnline || !canFetchAgent()) { setLiveSessionId(null); return }
-    let cancelled = false
-    const read = () => fetch(`${agentReadUrl(agentUrl, 'view-token')}?status=1`, { cache: 'no-store' })
+  const mayAskMachine = connectionMode === 'local' ? agentOnline === true : sandboxStatus === 'running'
+  const readLiveSession = useCallback(() => {
+    if (!mayAskMachine || !canFetchAgent()) { setLiveSessionId(null); return }
+    fetch(`${agentReadUrl(agentUrl, 'view-token')}?status=1`, { cache: 'no-store' })
       .then(r => (r.ok ? r.json() : null))
-      .then(d => { if (!cancelled) setLiveSessionId(d?.live && typeof d.sessionId === 'string' ? d.sessionId : null) })
+      .then(d => setLiveSessionId(d?.live && typeof d.sessionId === 'string' ? d.sessionId : null))
       .catch(() => {})
-    read()
-    const id = setInterval(read, 20_000)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [agentOnline, agentUrl, canFetchAgent])
+  }, [mayAskMachine, agentUrl, canFetchAgent])
+  useEffect(() => { readLiveSession() }, [readLiveSession, sessions])
+  useEffect(() => {
+    const onShow = () => { if (document.visibilityState === 'visible') readLiveSession() }
+    document.addEventListener('visibilitychange', onShow)
+    return () => document.removeEventListener('visibilitychange', onShow)
+  }, [readLiveSession])
   // A machine known to be offline has no sessions coming: end the loading state.
   useEffect(() => { if (agentOnline === false) setSessionsLoading(false) }, [agentOnline])
 
