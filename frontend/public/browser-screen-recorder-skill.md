@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 63
+Version: 64
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v64
+- A `/say` on a page with no microphone now fails before any speech synthesis runs, so it no longer waits on a text-to-speech call first. `no_mic` is reported by an explicit error code rather than by matching the word "mic" in the message.
 
 ## What's new in v63
 - `/say` and `/act` take `clip: false` to skip the clip entirely (no frames cut, nothing encoded; `clipUrl` is null). A `/say` transcript (`heard`) runs until hearing began, so it may run a little past the clip's end; the task's `hearSpan` gives that span.

@@ -4,7 +4,7 @@ import { execFileSync } from 'child_process'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { chromium } from '@playwright/test'
-import { installReactiveMic, speakWav, waitForMicOpen } from './reactive-mic'
+import { installReactiveMic, speakText, speakWav, waitForMicOpen, isNoMic, noMicError } from './reactive-mic'
 import { startElementCapture } from './audio-capture'
 
 // #214: a page with only the synthetic mic (no <audio>) never taps a source, and
@@ -17,6 +17,20 @@ try {
   await ctx.addInitScript(() => { (globalThis as any).__name = (globalThis as any).__name || ((f: any) => f) })
   const page = await ctx.newPage()
   await installReactiveMic(page)
+  // No mic yet: tagged no_mic error, and no synthesis ran (a 1 ms budget would not fit a TTS call)
+  const bare = await ctx.newPage()
+  await installReactiveMic(bare)
+  await bare.goto('about:blank')
+  const t0 = Date.now()
+  const e1: any = await speakText(bare, 'a dynamic microphone test').catch((e) => e)
+  assert.ok(isNoMic(e1), 'speakText before the mic opens throws the tagged no_mic error')
+  assert.ok(Date.now() - t0 < 1500, 'it fails before any synthesis')
+  const e2: any = await speakWav(bare, '/dev/null').catch((e) => e)
+  assert.ok(isNoMic(e2), 'speakWav in-page guard throws the same tagged error')
+  assert.equal(e2.message, noMicError().message, 'one wording')
+  assert.equal(isNoMic(new Error('Command failed: espeak-ng ... microphone')), false, 'a message containing "mic" is not no_mic')
+  assert.equal(isNoMic(null), false)
+  await bare.close()
   await page.route('http://localhost:9/', (r) => r.fulfill({ contentType: 'text/html', body: '<script>navigator.mediaDevices.getUserMedia({audio:true})</script>' }))
   await page.goto('http://localhost:9/')
   await waitForMicOpen(page)

@@ -92,12 +92,23 @@ export async function waitForMicOpen(page: Page, timeoutMs = 60_000) {
   await page.waitForFunction(() => (window as any).__mic?.ready === true, undefined, { timeout: timeoutMs })
 }
 
+/** The one no-mic error, tagged so callers test `isNoMic(e)` and never match the message text. */
+export function noMicError(): Error {
+  return Object.assign(new Error('app has not opened the mic yet — call waitForMicOpen first'), { code: 'no_mic' })
+}
+export function isNoMic(e: unknown): boolean { return (e as { code?: unknown } | null)?.code === 'no_mic' }
+
+/** One cheap evaluate: has the app opened the mic? Throws the tagged no-mic error if not. */
+async function assertMicOpen(page: Page): Promise<void> {
+  if (!(await page.evaluate(() => (window as any).__mic?.ready === true))) throw noMicError()
+}
+
 /** Play a WAV file into the fake mic. Resolves when the utterance finishes, with the audio's length and the time it took to play (start to end, in the page). */
 export async function speakWav(page: Page, wavPath: string): Promise<{ audioMs: number; playedMs: number }> {
   const b64 = readFileSync(wavPath).toString('base64')
-  return await page.evaluate(async (b64) => {
+  const r = await page.evaluate(async (b64) => {
     const w = window as any
-    if (!w.__mic?.ready) throw new Error('app has not opened the mic yet — call waitForMicOpen first')
+    if (!w.__mic?.ready) return null
     const ctx = w.__mic.ctx as AudioContext
     await ctx.resume()
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -116,6 +127,8 @@ export async function speakWav(page: Page, wavPath: string): Promise<{ audioMs: 
     })
     return { audioMs: Math.round(buf.duration * 1000), playedMs: Math.round(performance.now() - t0) }
   }, b64)
+  if (!r) throw noMicError()  // a navigation between a probe and the play lands here
+  return r
 }
 
 /**
@@ -132,6 +145,7 @@ export async function speakText(page: Page, text: string, opts?: { keepWav?: str
   const base = join(tmpdir(), `osborn-utt-${Date.now()}-${Math.floor(Math.random() * 1e6)}`)
   const wav = `${base}.wav`
   try {
+    await assertMicOpen(page)  // before the paid TTS call
     const t = Date.now()
     const provider = await synthesize(text, base)
     const synthMs = Date.now() - t
