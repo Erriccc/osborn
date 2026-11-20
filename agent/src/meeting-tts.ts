@@ -41,6 +41,8 @@ export const SONIOX_TTS_URL = 'https://tts-rt.soniox.com/tts'
 export const OPENAI_TTS_URL = 'https://api.openai.com/v1/audio/speech'
 export const SONIOX_TIMEOUT_MS = 8000
 export const TOTAL_DEADLINE_MS = 11000
+/** Below this much time left, the next provider is not tried: a few ms cannot synthesize anything. */
+export const MIN_ATTEMPT_MS = 50
 // Fallbacks when the pipeline TTS is not Soniox (mirrors config.ts defaults).
 const SONIOX_DEFAULT_MODEL = 'tts-rt-v1'
 const SONIOX_DEFAULT_VOICE = 'Victoria'
@@ -172,7 +174,7 @@ export async function synthMeetingAudio(text: string, opts: SynthOptions = {}): 
   const deadline = Date.now() + (opts.deadlineMs ?? TOTAL_DEADLINE_MS)
   for (const provider of order) {
     const remaining = deadline - Date.now()
-    if (remaining <= 0) { console.warn(`⚠️ meeting tts: deadline reached before ${provider}`); break }
+    if (remaining < MIN_ATTEMPT_MS) { console.warn(`⚠️ meeting tts: deadline reached before ${provider}`); break }
     const timeoutMs = provider === 'soniox' ? Math.min(SONIOX_TIMEOUT_MS, remaining) : remaining
     const req = buildRequest(provider, input, env, voiceTarget === provider ? opts.voice : undefined)
     const audio = await tryProvider(req, timeoutMs, f)

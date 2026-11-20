@@ -150,6 +150,15 @@ it('synth: soniox hangs past the total deadline → openai skipped, null, bounde
   assert.ok(Date.now() - t0 < 1500, `took ${Date.now() - t0}ms`)
   assert.equal(m.calls.length, 1)
 })
+it('synth: soniox fails a few ms before the deadline → openai not tried with the scraps', async () => {
+  const m = mockFetch(async (url) => {
+    if (url !== SONIOX_TTS_URL) return ok(MP3_BYTES)
+    await new Promise((r) => setTimeout(r, 140))
+    return err(500)
+  })
+  assert.equal(await synthMeetingAudio('hi', { env: { SONIOX_API_KEY: 'sk', OPENAI_API_KEY: 'ok' }, fetchImpl: m.f, deadlineMs: 150 }), null)
+  assert.equal(m.calls.length, 1)
+})
 it('synth: openai hangs → aborted at the remaining deadline', async () => {
   const m = mockFetch((url, init) => url === SONIOX_TTS_URL ? err(500) : hangUntilAbort(init))
   const t0 = Date.now()
