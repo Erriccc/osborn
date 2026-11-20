@@ -87,17 +87,26 @@ export async function installReactiveMic(page: Page) {
   })
 }
 
-/** Resolves once the app has actually opened the mic (getUserMedia called). */
+/** In-page: has the app opened the mic (getUserMedia called)? */
+const micReady = () => (window as any).__mic?.ready === true
+
+/** Resolves once the app has actually opened the mic. */
 export async function waitForMicOpen(page: Page, timeoutMs = 60_000) {
-  await page.waitForFunction(() => (window as any).__mic?.ready === true, undefined, { timeout: timeoutMs })
+  await page.waitForFunction(micReady, undefined, { timeout: timeoutMs })
 }
+
+/** The one no-mic error, tagged so callers test `isNoMic(e)` and never match the message text. */
+function noMicError(): Error {
+  return Object.assign(new Error('app has not opened the mic yet — call waitForMicOpen first'), { code: 'no_mic' })
+}
+export function isNoMic(e: unknown): boolean { return (e as { code?: unknown } | null)?.code === 'no_mic' }
 
 /** Play a WAV file into the fake mic. Resolves when the utterance finishes, with the audio's length and the time it took to play (start to end, in the page). */
 export async function speakWav(page: Page, wavPath: string): Promise<{ audioMs: number; playedMs: number }> {
   const b64 = readFileSync(wavPath).toString('base64')
-  return await page.evaluate(async (b64) => {
+  const r = await page.evaluate(async (b64) => {
     const w = window as any
-    if (!w.__mic?.ready) throw new Error('app has not opened the mic yet — call waitForMicOpen first')
+    if (!w.__mic?.ready) return null
     const ctx = w.__mic.ctx as AudioContext
     await ctx.resume()
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
@@ -116,6 +125,8 @@ export async function speakWav(page: Page, wavPath: string): Promise<{ audioMs: 
     })
     return { audioMs: Math.round(buf.duration * 1000), playedMs: Math.round(performance.now() - t0) }
   }, b64)
+  if (!r) throw noMicError()  // a navigation between a probe and the play lands here
+  return r
 }
 
 /**
@@ -132,6 +143,8 @@ export async function speakText(page: Page, text: string, opts?: { keepWav?: str
   const base = join(tmpdir(), `osborn-utt-${Date.now()}-${Math.floor(Math.random() * 1e6)}`)
   const wav = `${base}.wav`
   try {
+    // short grace for the page to open the mic, still before the paid TTS call; only the timeout is no_mic (a closed page keeps its own error)
+    await waitForMicOpen(page, 2000).catch((e) => { throw e?.name === 'TimeoutError' ? noMicError() : e })
     const t = Date.now()
     const provider = await synthesize(text, base)
     const synthMs = Date.now() - t

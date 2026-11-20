@@ -63,7 +63,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 import { freemem } from 'os'
-import { installReactiveMic, speakText, warmUpSpeech } from '../lib/reactive-mic'
+import { installReactiveMic, speakText, warmUpSpeech, isNoMic } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, AUDIO_DECODE_CAP_MS, decodeBudgetMs, recordingAge, type AudioClock } from '../lib/audio-capture'
@@ -1646,7 +1646,7 @@ async function main() {
             catch (e) {
               sayErr = e as Error
               const m = sayErr.message || ''
-              if (/mic|ran out of time/i.test(m)) break
+              if (isNoMic(sayErr) || /ran out of time/i.test(m)) break
               if (attempt < MAX_SAY_ATTEMPTS) {
                 mark(`say[${driver}] transient fail (attempt ${attempt}/${MAX_SAY_ATTEMPTS}): ${m.slice(0, 60)} — retrying`)
                 await page.waitForTimeout(retryDelayMs(attempt)).catch(() => {})
@@ -1655,7 +1655,7 @@ async function main() {
           }
           if (sayErr) {
             const msg = sayErr.message || 'speak failed'
-            const noMic = /mic/i.test(msg)
+            const noMic = isNoMic(sayErr)
             mark(`say[${driver}] FAILED after ${MAX_SAY_ATTEMPTS} attempt(s): ${msg.slice(0, 80)}`)
             try { rmSync(saidWav, { force: true }) } catch { /* ignore */ }
             timings.speak = Date.now() - tReq  // before the screenshot, so it isn't counted as speaking
