@@ -314,6 +314,33 @@ async function waitForReplacementComplete(
 }
 
 /**
+ * After a config POST: wait up to 300s for the replacement to settle, then
+ * start the machine (or, when it came back started, wait for /health).
+ * 'unsettled' when it did not settle in time.
+ */
+async function startAfterReplace(
+  appName: string,
+  machine: FlyMachine,
+  userId: string,
+  what: string,
+): Promise<SandboxInfo | null | 'unsettled'> {
+  const settled = await waitForReplacementComplete(appName, machine.id, 300)
+  if (!settled) return 'unsettled'
+  console.log(`[machines] ${what}: replacement settled in state=${settled}`)
+  if (settled !== 'started') return startSandbox(appName, userId)
+  const previewUrl = `https://${appName}.fly.dev`
+  const healthy = await waitForHealth(previewUrl, 30)
+  return {
+    id: appName,
+    status: healthy ? 'running' : 'error',
+    previewUrl,
+    userId,
+    createdAt: machine.created_at,
+    ...(healthy ? {} : { error: `Agent did not pass health check after ${what}` }),
+  }
+}
+
+/**
  * Poll the agent's /health endpoint until it returns 200.
  */
 export async function waitForHealth(previewUrl: string, maxAttempts = 30): Promise<boolean> {
@@ -854,22 +881,8 @@ export async function repointAndStartSandbox(
       config: { ...existingConfig, image, env: cleanedEnv },
     })
 
-    const settled = await waitForReplacementComplete(appName, machine.id, 300)
-    if (!settled) return null
-
-    if (settled === 'started') {
-      const previewUrl = `https://${appName}.fly.dev`
-      const healthy = await waitForHealth(previewUrl, 30)
-      return {
-        id: appName,
-        status: healthy ? 'running' : 'error',
-        previewUrl,
-        userId,
-        createdAt: machine.created_at,
-        ...(healthy ? {} : { error: 'Agent did not pass health check after repoint' }),
-      }
-    }
-    return startSandbox(appName, userId)
+    const info = await startAfterReplace(appName, machine, userId, 'repoint')
+    return info === 'unsettled' ? null : info
   } catch (err) {
     console.error(`[machines] repointAndStartSandbox(${appName}) failed: ${(err as Error).message}`)
     return null
@@ -1311,34 +1324,12 @@ async function updateOsbornImpl(
   // gives ~5x headroom over the typical replace so a transient spike is absorbed
   // instead of bricking the update.
   console.log(`[machines] updateOsborn: waiting for replacement to settle`)
-  const settledState = await waitForReplacementComplete(appName, machine.id, 300)
-  if (!settledState) {
+  const info = await startAfterReplace(appName, machine, userId, 'update')
+  if (info === 'unsettled') {
     return finish(
       { success: false, version: null, log: 'Machine replacement did not settle within 300s' },
       targetVersion,
     )
-  }
-  console.log(`[machines] updateOsborn: replacement settled in state=${settledState}`)
-
-  let info: SandboxInfo | null = null
-  if (settledState === 'started') {
-    // Replacement auto-started (rare in our flow, since we stopped first — but
-    // possible if Fly's behavior changes). Just poll health.
-    const previewUrl = `https://${appName}.fly.dev`
-    console.log(`[machines] updateOsborn: machine already started post-replace, polling health`)
-    const healthy = await waitForHealth(previewUrl, 30)
-    info = {
-      id: appName,
-      status: healthy ? 'running' : 'error',
-      previewUrl,
-      userId,
-      createdAt: machine.created_at,
-      ...(healthy ? {} : { error: 'Agent did not pass health check after update' }),
-    }
-  } else {
-    // Normal post-stop replace path: machine is now in "stopped" — start it.
-    console.log(`[machines] updateOsborn: starting machine after replacement`)
-    info = await startSandbox(sandboxId, userId)
   }
 
   if (!info || info.status !== 'running') {
@@ -1397,17 +1388,12 @@ export async function readImageOsbornVersion(appName: string): Promise<string | 
   return r.exitCode === 0 && r.stdOut.trim() ? r.stdOut.trim() : null
 }
 
-/**
- * Stop, replace the machine's config, start it and wait for /health (the
- * same sequence updateOsbornImpl uses for an image swap).
- */
-async function bootWithConfig(appName: string, machineId: string, config: Record<string, unknown>, userId: string): Promise<boolean> {
+/** Stop, replace the machine's config, start it and wait for /health. Throws when the config POST fails. */
+async function bootWithConfig(appName: string, machine: FlyMachine, config: Record<string, unknown>, userId: string): Promise<boolean> {
   await stopMachineCold(appName)
-  await api('POST', `/v1/apps/${appName}/machines/${machineId}`, { config })
-  const settled = await waitForReplacementComplete(appName, machineId, 300)
-  if (!settled) return false
-  if (settled === 'started') return waitForHealth(`https://${appName}.fly.dev`, 30)
-  return (await startSandbox(appName, userId))?.status === 'running'
+  await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, { config })
+  const info = await startAfterReplace(appName, machine, userId, 'rollback')
+  return info !== 'unsettled' && info?.status === 'running'
 }
 
 /**
@@ -1425,16 +1411,18 @@ async function rollbackDevBuild(appName: string, userId: string, devSha: string)
   const M = VOLUME_MODULES
   const restore = `if [ -d ${M}/.osborn-prev ]; then rm -rf ${M}/osborn && mv ${M}/.osborn-prev ${M}/osborn; fi; exec "$@"`
   const override = { ...original, init: { ...init, exec: ['sh', '-c', restore, 'sh', ...origExec] } }
+  // Printed first so an interrupted run still says what to put back.
+  console.warn(`[machines] rollbackDevBuild: booting ${appName} with a rollback init override; until the original config is restored, its init.exec should be ${JSON.stringify(origExec)}`)
   let overrideOk = false
   try {
-    overrideOk = await bootWithConfig(appName, machine.id, override, userId)
+    overrideOk = await bootWithConfig(appName, machine, override, userId)
   } catch (err) {
     console.warn(`[machines] rollbackDevBuild: override boot failed: ${(err as Error).message}`)
   }
   let restoredConfig = false
   let healthy = false
   try {
-    healthy = await bootWithConfig(appName, machine.id, original, userId)
+    healthy = await bootWithConfig(appName, machine, original, userId)
     restoredConfig = true
   } catch (err) {
     console.warn(`[machines] rollbackDevBuild: config restore failed: ${(err as Error).message}`)
