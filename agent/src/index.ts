@@ -78,6 +78,7 @@ import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_K
 import { PHONE_CODE_HANGUP_GRACE_MS, PHONE_CODE_TIMEOUT_MS, addCodeDigit, checkPhoneCode, heldCode, isPhoneLinePlayer as isLinePlayer, offerPhoneCode, phoneCallerAdmission, phoneCodeAction, removePhoneCaller } from './phone-code.js'
 import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
 import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, saySwitchOutcome, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
+import { readVolumeSyncStatus } from './volume-sync-status.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 
@@ -958,6 +959,9 @@ function startApiServer(workingDir: string, port: number): void {
         },
         // Whole-machine memory — what the OOM killer watches. All values in MB.
         memory: { totalMb, usedMb, availableMb, usedPct, processRssMb },
+        // The entrypoint's boot-time volume sync to the image's osborn (null off a sandbox):
+        // a failed update reads why here (disk_full / npm_failed, free vs needed MB).
+        volumeSync: readVolumeSyncStatus(),
         // #87: the tier actually answering + its key self-test. `provider` is the
         // LIVE reading — agent_ready fires once, so it goes stale the moment a
         // mid-session sign-in swaps the tier.

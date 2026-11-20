@@ -21,6 +21,7 @@
  */
 
 import { forwardHostEnv, livekitRoom, stripDeniedMachineEnv } from './platform-env'
+import { volumeSyncProblem, type VolumeSyncStatus } from './volume-sync'
 
 // ─────────────────────────────────────────
 // Types
@@ -965,6 +966,14 @@ export async function resolveOsbornLatest(): Promise<string> {
  * @param sandboxId - the app name (e.g. "osborn-abc123def456")
  */
 export async function readInstalledOsbornVersion(sandboxId: string): Promise<string | null> {
+  return (await readOsbornHealth(sandboxId)).version
+}
+
+/**
+ * The running agent's /health: its version (null when unreachable, see below)
+ * and the entrypoint's last volume sync outcome (null on older agents).
+ */
+export async function readOsbornHealth(sandboxId: string): Promise<{ version: string | null; volumeSync: VolumeSyncStatus | null }> {
   const appName = sandboxId
   const previewUrl = `https://${appName}.fly.dev`
 
@@ -981,14 +990,14 @@ export async function readInstalledOsbornVersion(sandboxId: string): Promise<str
       signal: AbortSignal.timeout(5000),
     })
     if (res.ok) {
-      const data = (await res.json()) as { version?: string }
-      if (data.version) return data.version
+      const data = (await res.json()) as { version?: string; volumeSync?: VolumeSyncStatus | null }
+      return { version: data.version || null, volumeSync: data.volumeSync ?? null }
     }
   } catch {
     // /health unreachable → unknown
   }
 
-  return null
+  return { version: null, volumeSync: null }
 }
 
 // Per-sandbox in-flight lock for updateOsborn.
@@ -1343,7 +1352,7 @@ async function updateOsbornImpl(
   // we got here, the install only counts as a real success if /health
   // reports the target version. If the probe fails or reports an older
   // version, surface that as an error instead of claiming success.
-  const installed = await readInstalledOsbornVersion(sandboxId)
+  const { version: installed, volumeSync } = await readOsbornHealth(sandboxId)
   if (!installed) {
     return finish(
       { success: false, version: null, log: 'Machine running but /health did not return a version' },
@@ -1351,11 +1360,14 @@ async function updateOsbornImpl(
     )
   }
   if (installed !== targetVersion) {
+    // The entrypoint could not put the new version on the volume (disk full, npm failed).
+    const syncProblem = volumeSyncProblem(volumeSync, targetVersion)
     return finish(
       {
         success: false,
         version: installed,
-        log: `Machine running on v${installed} but expected v${targetVersion} — image swap did not take effect`,
+        // Shown after "Update failed: ".
+        log: syncProblem ?? `Machine running on v${installed} but expected v${targetVersion} — image swap did not take effect`,
       },
       targetVersion,
     )
