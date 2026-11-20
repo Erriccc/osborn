@@ -476,7 +476,7 @@ async function main() {
       })
     }
     catch (e) {
-      if ((e as Error)?.message !== why && /uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
+      if (/uninitialized|detached|closed|Target/i.test(String(e))) { brainAlive = false; brainError = 'detached from the browser'; mark('brain detached — POST /brain to re-init') }
       throw e
     }
   }
