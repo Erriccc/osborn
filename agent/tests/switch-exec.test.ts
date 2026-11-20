@@ -5,7 +5,7 @@
 //   recoverySessionId      — auto-recovery resumes the switched-to session (4.3, D7)
 //   warmParkKey            — keep-warm keys a primed-but-uninitialised session (4.3)
 import assert from 'node:assert/strict'
-import { resolveSessionCwd, keepNonConversationItems, recoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd } from '../src/session-switch.js'
+import { resolveSessionCwd, keepNonConversationItems, recoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from '../src/session-switch.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -175,6 +175,101 @@ await t('scanSlugCwd: lossy slug (project dir whose name contains "-") falls bac
   // An imported session's JSONL can name ANOTHER machine's path, and
   // sessionExists only checks the slug — so the dir must exist to be returned.
   assert.equal(await scanSlugCwd(B, '/p', { ...base, readCwd: async () => '/Users/elsewhere/proj' }), null)
+})
+
+// #181: the slug decode is lossy, so the cwd the JSONL records must outrank it.
+// `-w-my-app` decodes to /w/my/app; here that unrelated dir EXISTS.
+const collide = (over: any = {}) => ({
+  readdir: () => ['-w-my-app'],
+  exists: (p: string) => ['/p', '/p/-w-my-app/' + B + '.jsonl', '/w/my-app', '/w/my/app'].includes(p),
+  decodeSlug: (s: string) => (s === '-w-my-app' ? '/w/my/app' : ''),
+  readCwd: async () => '/w/my-app',
+  ...over,
+})
+await t('scanSlugCwd #181: dash-named project beats a colliding decoded dir that exists', async () => {
+  assert.equal(await scanSlugCwd(B, '/p', collide()), '/w/my-app')
+})
+await t('scanSlugCwd #181: recorded dir deleted -> null, never the colliding decoded dir', async () => {
+  const fsx = collide()
+  assert.equal(await scanSlugCwd(B, '/p', { ...fsx, exists: (p: string) => p !== '/w/my-app' && fsx.exists(p) }), null)
+})
+await t('scanSlugCwd #181: imported session (recorded cwd from another machine) still uses the decode', async () => {
+  assert.equal(await scanSlugCwd(B, '/p', collide({ readCwd: async () => '/Users/bob/my-app' })), '/w/my/app')
+})
+await t('scanSlugCwd #181: duplicate id in two slugs is order-independent and reads every copy', async () => {
+  // Copy 1 (-a-gone) records a deleted dir; copy 2 (-b-live) is valid.
+  const files = ['/p/-a-gone/' + B + '.jsonl', '/p/-b-live/' + B + '.jsonl']
+  const rec: Record<string, string> = { [files[0]]: '/a/gone', [files[1]]: '/b/live' }
+  const fsx = (order: string[]) => ({
+    readdir: () => order,
+    exists: (p: string) => p === '/p' || files.includes(p) || p === '/b/live',
+    decodeSlug: () => '',
+    readCwd: async (f: string) => rec[f],
+  })
+  assert.equal(await scanSlugCwd(B, '/p', fsx(['-a-gone', '-b-live'])), '/b/live')
+  assert.equal(await scanSlugCwd(B, '/p', fsx(['-b-live', '-a-gone'])), '/b/live')
+})
+await t('scanSlugCwd #181: an id only under a -subagents slug is not resolved', async () => {
+  const fsx = {
+    readdir: () => ['-w-proj-subagents'],
+    exists: (p: string) => p === '/p' || p === '/p/-w-proj-subagents/' + B + '.jsonl' || p === '/w/proj/subagents',
+    decodeSlug: () => '/w/proj/subagents',
+    readCwd: async () => '/w/proj/subagents',
+  }
+  assert.equal(await scanSlugCwd(B, '/p', fsx), null)
+})
+await t('resolveSessionCwd #181: a hint/current dir that only matches through the lossy slug loses to the recorded cwd', async () => {
+  const d = {
+    exists: (id: string, wd: string) => id === B && (wd === '/w/my-app' || wd === '/w/my/app'),
+    recordedCwd: async () => '/w/my-app',
+    dirExists: (p: string) => p === '/w/my-app' || p === '/w/my/app',
+    lookupCwd: async () => '/w/my-app',
+  }
+  assert.equal(await resolveSessionCwd(B, '/w/my/app', '/w/x', d), '/w/my-app')
+  assert.equal(await resolveSessionCwd(B, undefined, '/w/my/app', d), '/w/my-app')
+  assert.equal(await resolveSessionCwd(B, '/w/my-app', '/w/x', d), '/w/my-app')
+  // Imported session: recorded cwd encodes to another slug, so the hint stands.
+  assert.equal(await resolveSessionCwd(B, '/w/my/app', '/w/x', { ...d, recordedCwd: async () => '/Users/bob/proj' }), '/w/my/app')
+})
+await t('resolveSessionCwd #181: a collision whose recorded dir is gone keeps the candidate (no new not_found)', async () => {
+  const d = {
+    exists: (id: string, wd: string) => id === B && wd === '/w/my/app',
+    recordedCwd: async () => '/w/my-app',
+    dirExists: (p: string) => p === '/w/my/app',
+    lookupCwd: async () => null,
+  }
+  assert.equal(await resolveSessionCwd(B, '/w/my/app', '/w/x', d), '/w/my/app')
+  assert.equal(await resolveSessionCwd(B, undefined, '/w/my/app', d), '/w/my/app')
+})
+await t('config.ts: session list routes by the recorded cwd when it encodes to the slug', () => {
+  const src = readFileSync(join(import.meta.dirname, '../src/config.ts'), 'utf8')
+  assert.ok(/cwd: \(cwd && projectPathToSlug\(cwd\) === c\.slug \? cwd : ''\) \|\| slugPath \|\| cwd/.test(src))
+})
+
+// #183: never create a hint for a session that did not resolve, or a hint that
+// is not a plausible path on this machine.
+const dirs = new Set(['/', '/workspace', '/workspace/old', '/home', '/home/sprite'])
+const has = (p: string) => dirs.has(p)
+await t('connectWorkingDir #183: resolved dir wins and is never created', () => {
+  assert.deepEqual(connectWorkingDir('/workspace/old', '/x/y', B, '/workspace', has), { dir: '/workspace/old', create: false })
+})
+await t('connectWorkingDir #183: a resolved dir that no longer exists is not booted in', () => {
+  assert.deepEqual(connectWorkingDir('/workspace/deleted', '/workspace/old', B, '/workspace', has), { dir: '/workspace/old', create: false })
+  assert.deepEqual(connectWorkingDir('/workspace/deleted', '/workspace/deleted', B, '/workspace', has), { dir: '/workspace', create: false })
+})
+await t('connectWorkingDir #183: an existing hint is used as-is', () => {
+  assert.deepEqual(connectWorkingDir(null, '/workspace/old', B, '/workspace', has), { dir: '/workspace/old', create: false })
+})
+await t('connectWorkingDir #183: a missing hint for an unresolved session falls back, not mkdir', () => {
+  assert.deepEqual(connectWorkingDir(null, '/workspace/typo', B, '/workspace', has), { dir: '/workspace', create: false })
+})
+await t('connectWorkingDir #183: a new project (no session id) under an existing parent is created', () => {
+  assert.deepEqual(connectWorkingDir(null, '/workspace/new-app', null, '/workspace', has), { dir: '/workspace/new-app', create: true })
+})
+await t('connectWorkingDir #183: junk hints are never created', () => {
+  for (const h of ['/Users/bob/proj', 'relative/dir', '/workspace/../etc/x', '/workspace/./x', '/workspace/a/b']) {
+    assert.deepEqual(connectWorkingDir(null, h, null, '/workspace', has), { dir: '/workspace', create: false }, h)
+  }
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

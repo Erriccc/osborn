@@ -18,6 +18,9 @@
  * session is never 'close'd here; it is 'background'.
  */
 
+import { dirname, isAbsolute } from 'node:path'
+import { projectPathToSlug } from './session-access.js'
+
 export interface SessionSwitchState {
   /** Session id the live query reported via SDK init (null until the first init). */
   liveSessionId: string | null
@@ -157,6 +160,10 @@ export interface SessionCwdDeps {
   exists: (sessionId: string, cwd: string) => boolean
   /** Find ONE session's project dir (scanSlugCwd), or null. */
   lookupCwd: (sessionId: string) => Promise<string | null | undefined>
+  /** extractCwd of the session's JSONL under `cwd`'s slug: the cwd it records. */
+  recordedCwd?: (sessionId: string, cwd: string) => Promise<string | null | undefined>
+  /** existsSync: a colliding candidate only loses to a recorded dir that exists. */
+  dirExists?: (path: string) => boolean
 }
 
 /**
@@ -174,7 +181,12 @@ export async function resolveSessionCwd(
 ): Promise<string | null> {
   if (!sessionId) return null
   for (const c of [hint, currentDir]) {
-    if (c && deps.exists(sessionId, c)) return c
+    if (!c || !deps.exists(sessionId, c)) continue
+    let rec: string | null | undefined = null
+    try { rec = await deps.recordedCwd?.(sessionId, c) } catch { rec = null }
+    const collides = !!rec && rec !== c && projectPathToSlug(rec) === projectPathToSlug(c)
+    if (!collides || !deps.dirExists?.(rec!)) return c
+    break
   }
   let c: string | null | undefined = null
   try { c = await deps.lookupCwd(sessionId) } catch { c = null }
@@ -255,13 +267,12 @@ export function createSwitchGuard() {
 
 /**
  * Find a session's project dir by scanning ~/.claude/projects/<slug>/<id>.jsonl
- * and decoding the slug (the same recovery resume_session has always used).
- * The decoding is lossy, so only a decoded path that EXISTS is returned — the
- * switch executor never creates directories for scan-derived paths.
- *
- * The `readCwd` fallback gets that same existence check, because an imported
- * session's JSONL can record a cwd from another machine while sessionExists()
- * only looks at the slug.
+ * (slugs sorted, `-subagents` skipped like the session list). The cwd the JSONL
+ * records wins when it encodes to the slug it sits in: the slug decode is lossy
+ * (`/w/my-app` decodes to `/w/my/app`), so a decoded path that disagrees with
+ * it is another project (#181). The decode is only used when the recorded cwd
+ * belongs elsewhere (an imported session) or is missing. Only paths that EXIST
+ * are returned — the switch executor never creates directories for them.
  */
 export async function scanSlugCwd(
   sessionId: string,
@@ -278,17 +289,42 @@ export async function scanSlugCwd(
   if (!sessionId || !fsx.exists(projectsDir)) return null
   let slugs: string[] = []
   try { slugs = fsx.readdir(projectsDir) } catch { return null }
-  let firstMatch: string | null = null
-  for (const slug of slugs) {
+  let decoded: string | null = null
+  for (const slug of slugs.filter((s) => !s.endsWith('-subagents')).sort()) {
     const filePath = `${projectsDir}/${slug}/${sessionId}.jsonl`
     if (!fsx.exists(filePath)) continue
-    if (!firstMatch) firstMatch = filePath
-    const recovered = fsx.decodeSlug(slug)
-    if (recovered && recovered !== '/') return recovered
+    let recorded: string | null | undefined = null
+    try { recorded = await fsx.readCwd(filePath) } catch { recorded = null }
+    if (recorded && projectPathToSlug(recorded) === slug) {
+      if (fsx.exists(recorded)) return recorded
+      continue
+    }
+    const guess = fsx.decodeSlug(slug)
+    if (!decoded && guess && guess !== '/') decoded = guess
   }
-  if (!firstMatch) return null
-  try {
-    const recorded = await fsx.readCwd(firstMatch)
-    return recorded && fsx.exists(recorded) ? recorded : null
-  } catch { return null }
+  return decoded
+}
+
+/**
+ * Connect-time working dir (#183): the resolved session dir, else the client's
+ * hint when it exists, else the default. A missing hint is created only for a
+ * NEW chat (no session id, e.g. "New project") and only when it is a plausible
+ * path on this machine: absolute, no `.`/`..` segments, parent already there.
+ * A hint for a session that did not resolve is stale (a shared link, another
+ * machine, a deleted project) and is never created.
+ */
+export function connectWorkingDir(
+  resolved: string | null | undefined,
+  hint: string | null | undefined,
+  sessionId: string | null | undefined,
+  fallback: string,
+  dirExists: (path: string) => boolean,
+): { dir: string; create: boolean } {
+  if (resolved && dirExists(resolved)) return { dir: resolved, create: false }
+  if (hint && dirExists(hint)) return { dir: hint, create: false }
+  const plausible = !!hint && isAbsolute(hint) && !hint.includes('\0')
+    && !hint.split('/').some((seg) => seg === '.' || seg === '..')
+    && dirExists(dirname(hint))
+  if (hint && !sessionId && plausible) return { dir: hint, create: true }
+  return { dir: fallback, create: false }
 }
