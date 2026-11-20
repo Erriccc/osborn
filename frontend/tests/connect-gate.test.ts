@@ -8,6 +8,8 @@ import fs from 'node:fs'
 import path from 'node:path'
 import {
   CONNECT_WATCHDOG_MS,
+  SLOW_START_HINT_MS,
+  connectProgressText,
   connectTimeoutMessage,
   isAuthGateTerminal,
   isAuthPromptMessage,
@@ -165,7 +167,8 @@ t('#79: the sign-in banner is in normal flow, not fixed over the header', () => 
   ok(!voiceRoom.includes('fixed inset-x-0 top-0 z-[60]'), 'no fixed top-0 z-[60] overlay remains')
   // The in-flow banner is the div gated by isAuthGateTerminal, carrying the
   // amber bar classes in normal flow (w-full shrink-0) at the top of the column.
-  const start = voiceRoom.indexOf('isAuthGateTerminal(claudeAuthEverRequired, claudeAuthStatus) && (')
+  const start = voiceRoom.indexOf('isAuthGateTerminal(claudeAuthEverRequired || claudeAuthOptional, claudeAuthStatus) && (')
+  ok(start > 0, 'banner gate found')
   const banner = voiceRoom.slice(start, voiceRoom.indexOf('Anthropic sign-in required', start))
   ok(/w-full shrink-0[^]*bg-amber-500\/95/.test(banner), 'banner renders in-flow (w-full shrink-0 amber bar)')
 })
@@ -191,6 +194,51 @@ t('the idle stop cancels an in-flight connect and leaves the paused screen', () 
   const cancel = provider.slice(provider.indexOf('const cancelConnect = useCallback'), provider.indexOf('}, [])', provider.indexOf('const cancelConnect = useCallback')))
   ok(cancel.includes('connectGenRef.current++'), 'cancelConnect bumps the connect generation')
   ok(cancel.includes('setConnecting(false)'), 'cancelConnect clears connecting (a bailed connect leaves it set)')
+})
+
+// ── #144: progress text, Retry from a clean slate, mic released, optional sign-in ──
+t('progress text names the step', () => {
+  eq(connectProgressText('starting', null, 0), 'Starting your machine…', 'starting')
+  eq(connectProgressText('resuming', null, 0), 'Waking your machine…', 'resuming')
+  eq(connectProgressText('agent', null, 0), 'Connecting to your agent…', 'agent, not probed yet')
+  eq(connectProgressText('agent', { reachable: false }, 0), 'Starting your agent…', 'agent unreachable')
+  eq(connectProgressText('agent', { reachable: true, livekitStatus: 'connected' }, 0), 'Connecting to your agent…', 'agent up')
+  eq(connectProgressText('agent', { reachable: true, livekitStatus: 'connecting' }, 0), 'Connecting to your agent…', 'livekit connecting')
+  eq(connectProgressText('agent', { reachable: true, livekitStatus: 'retrying' }, 0), 'Your agent is still reaching the voice service…', 'livekit retrying')
+  eq(connectProgressText('agent', { reachable: true, livekitStatus: 'failed' }, 0), 'Your agent is still reaching the voice service…', 'livekit failed')
+  eq(connectProgressText('agent', { reachable: true }, 0), 'Connecting to your agent…', 'old agent without livekit field')
+  eq(connectProgressText('joining', null, 0), 'Joining your agent…', 'joining')
+})
+
+t('a slow machine/agent step says the first start is slow; joining does not', () => {
+  ok(!/minute/.test(connectProgressText('starting', null, SLOW_START_HINT_MS - 1)), 'no hint before the threshold')
+  ok(/first start can take a minute or two/.test(connectProgressText('starting', null, SLOW_START_HINT_MS)), 'hint at the threshold')
+  ok(/first start/.test(connectProgressText('agent', { reachable: false }, 60_000)), 'hint on the agent step')
+  eq(connectProgressText('joining', null, 120_000), 'Joining your agent…', 'joining has no hint')
+})
+
+t('the auth timeout tells the user Retry reopens the sign-in', () => {
+  ok(/retry/i.test(connectTimeoutMessage(true)), 'auth message names Retry')
+})
+
+t('provider: a failed connect drops the room; Retry starts clean', () => {
+  const watchdog = provider.slice(provider.indexOf('setError(connectTimeoutMessage(authRequired))'), provider.indexOf('CONNECT_WATCHDOG_MS)', provider.indexOf('setError(connectTimeoutMessage(authRequired))')))
+  ok(watchdog.includes('dropRoom()'), 'watchdog drops the room (releases the mic)')
+  const drop = provider.slice(provider.indexOf('const dropRoom = useCallback'), provider.indexOf('}, [])', provider.indexOf('const dropRoom = useCallback')))
+  ok(drop.includes('setToken(null)') && drop.includes('setConnected(false)'), 'dropRoom clears the token and connected')
+  const retry = provider.slice(provider.indexOf('const retry = useCallback'), provider.indexOf('}, [dropRoom, connect])'))
+  ok(/dropRoom\(\)[^]*connect\(\)/.test(retry), 'retry drops the room, then connects')
+  ok(provider.includes('reconnect: retry,'), 'Retry/Reconnect use retry')
+  ok(provider.includes('connectProgressText('), 'connect() shows progress text')
+})
+
+t('VoiceRoom: claude_auth_optional makes sign-in optional and startable', () => {
+  ok(voiceRoom.includes("data.type === 'claude_auth_optional'"), 'optional handled')
+  ok(voiceRoom.includes("{claudeAuthOptional ? 'Not now' : 'Close'}"), 'labelled way out')
+  ok(voiceRoom.includes("sendJson({ type: 'claude_auth_start' })"), 'Connect Claude starts sign-in on demand')
+  ok(voiceRoom.includes('relyingOnFallback={claudeAuthEverRequired || claudeAuthOptional}'), 'health notice knows about the fallback')
+
+  ok(/if \(!authOptionalRef\.current\) \{\s*setClaudeAuthEverRequired\(true\)/.test(voiceRoom), 'an optional sign-in URL never marks the session as blocked')
 })
 
 // ── Report ────────────────────────────────────────────────────────────────

@@ -83,7 +83,7 @@ export function isAwaitingAgent(s: ConnectWaitState): boolean {
  */
 export function connectTimeoutMessage(authRequired: boolean): string {
   return authRequired
-    ? 'Anthropic sign-in is required to start your agent. Reopen the session to finish signing in, or connect your Claude account first.'
+    ? 'Anthropic sign-in is required to start your agent. Retry to open the sign-in again, or go back.'
     : 'Still connecting to your agent. It may be starting up, or your account needs to finish Anthropic sign-in. Retry, or go back and open the session again.'
 }
 
@@ -128,4 +128,33 @@ export function shouldAutoOpenAuthModal(messageType: string, dismissed: boolean)
  */
 export function isAuthGateTerminal(authEverRequired: boolean, authStatus: string): boolean {
   return authEverRequired && authStatus === 'none'
+}
+
+/**
+ * Plain progress text for the "Connecting…" screens (issue #144): a new cloud
+ * account sat ~80s on a bare orb while its machine booted. Built only from what
+ * the connect flow already knows — which step it is on and the agent's
+ * GET /health (reachable at all, and its `livekit.status`).
+ */
+export type ConnectStage = 'starting' | 'resuming' | 'agent' | 'joining'
+
+export interface AgentHealthProbe {
+  /** GET /health answered. */
+  reachable: boolean
+  /** /health `livekit.status` ('connecting' | 'connected' | 'failed' | 'retrying' | 'idle'), when reported. */
+  livekitStatus?: string | null
+}
+
+/** After this long on a machine/agent step, say that a first start is slow. */
+export const SLOW_START_HINT_MS = 20_000
+
+export function connectProgressText(stage: ConnectStage, health: AgentHealthProbe | null, elapsedMs: number): string {
+  let text: string
+  if (stage === 'joining') return 'Joining your agent…'
+  if (stage === 'starting') text = 'Starting your machine…'
+  else if (stage === 'resuming') text = 'Waking your machine…'
+  else if (health && !health.reachable) text = 'Starting your agent…'
+  else if (health?.livekitStatus === 'failed' || health?.livekitStatus === 'retrying') text = 'Your agent is still reaching the voice service…'
+  else text = 'Connecting to your agent…'
+  return elapsedMs >= SLOW_START_HINT_MS ? `${text} The first start can take a minute or two.` : text
 }

@@ -381,7 +381,12 @@ function VoiceRoomInner({
   // bypasses this. A ref mirrors it so the stable data-message handler reads the
   // live value without re-subscribing.
   const [authPromptDismissed, setAuthPromptDismissed] = useState(false)
+  // The agent is running on a fallback model and Claude sign-in is an optional
+  // upgrade (`claude_auth_optional`, #144): the modal says so and offers Not now.
+  const [claudeAuthOptional, setClaudeAuthOptional] = useState(false)
   const authPromptDismissedRef = useRef(false)
+  // The message handler reads this, not the state: an optional sign-in must not mark the session as blocked.
+  const authOptionalRef = useRef(false)
   authPromptDismissedRef.current = authPromptDismissed
   const dismissAuthModal = useCallback(() => {
     setAuthPromptDismissed(true)
@@ -2625,27 +2630,38 @@ function VoiceRoomInner({
         // already dismissed it this session. The terminal banner + watchdog state
         // (onAuthRequired / everRequired) update regardless.
         if (shouldAutoOpenAuthModal('claude_auth_required', authPromptDismissedRef.current)) setClaudeAuthStatus('required')
-        setClaudeAuthEverRequired(true)
-        onAuthRequired?.()
+        // The on-demand flow (claude_auth_start) also opens with this message.
+        if (!authOptionalRef.current) {
+          setClaudeAuthEverRequired(true)
+          onAuthRequired?.()
+        }
       } else if (data.type === 'claude_auth_url') {
         console.log('🔗 Claude auth URL received')
         // Keep the URL ready even when the modal stays closed, so the banner's
         // "Sign in" button can open straight into the flow.
         setClaudeAuthUrl(data.url)
         if (shouldAutoOpenAuthModal('claude_auth_url', authPromptDismissedRef.current)) setClaudeAuthStatus('waiting')
-        setClaudeAuthEverRequired(true)
-        // #78: surface the terminal auth state (connected=true → spinner off,
-        // banner on) for ANY auth-gate entry message, not only
-        // claude_auth_required. If the agent emits the URL first (or the
-        // required message is dropped), the account would otherwise sit on an
-        // infinite "Connecting…" with the watchdog disarmed. markAuthRequired
-        // is idempotent, so a later claude_auth_required is harmless.
-        onAuthRequired?.()
+        if (!authOptionalRef.current) {
+          setClaudeAuthEverRequired(true)
+          // #78: surface the terminal auth state (connected=true → spinner off,
+          // banner on) for ANY auth-gate entry message, not only
+          // claude_auth_required. If the agent emits the URL first (or the
+          // required message is dropped), the account would otherwise sit on an
+          // infinite "Connecting…" with the watchdog disarmed. markAuthRequired
+          // is idempotent, so a later claude_auth_required is harmless.
+          onAuthRequired?.()
+        }
+      } else if (data.type === 'claude_auth_optional') {
+        console.log('🔑 Claude sign-in optional (fallback model)')
+        authOptionalRef.current = true
+        setClaudeAuthOptional(true)
       } else if (data.type === 'claude_auth_waiting_code') {
         console.log('🔑 Claude waiting for auth code')
         if (shouldAutoOpenAuthModal('claude_auth_waiting_code', authPromptDismissedRef.current)) setClaudeAuthStatus('waiting_code')
-        setClaudeAuthEverRequired(true)
-        onAuthRequired?.()
+        if (!authOptionalRef.current) {
+          setClaudeAuthEverRequired(true)
+          onAuthRequired?.()
+        }
       } else if (data.type === 'claude_auth_submitting') {
         console.log('🔑 Claude submitting auth code')
         setClaudeAuthStatus('submitting')
@@ -2654,6 +2670,8 @@ function VoiceRoomInner({
         setClaudeAuthUrl(null)
         setClaudeAuthStatus('complete')
         setClaudeAuthEverRequired(false)
+        authOptionalRef.current = false
+        setClaudeAuthOptional(false)
         setAuthPromptDismissed(false) // auth resolved — allow a future prompt to re-open
         onAuthResolved?.('claude_auth_complete')
         // Auto-dismiss after 3 seconds
@@ -3856,12 +3874,16 @@ function VoiceRoomInner({
               <div className="flex-1 min-w-0">
                 <h3 className="text-lg font-semibold text-ink">Claude Authentication</h3>
                 <p className="text-sm text-gray-400">
-                  {claudeAuthStatus === 'error' ? 'Authentication failed' : 'Sign in to your Anthropic account'}
+                  {claudeAuthStatus === 'error'
+                    ? 'Authentication failed'
+                    : claudeAuthOptional
+                      ? 'Optional. Your agent is already running on a fallback model.'
+                      : 'Sign in to your Anthropic account'}
                 </p>
               </div>
               <button onClick={dismissAuthModal}
                 className="p-1.5 rounded-lg text-gray-500 hover:text-gray-300 hover:bg-gray-800 transition-all shrink-0"
-                title="Dismiss">
+                title="Dismiss" aria-label="Dismiss">
                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
                 </svg>
@@ -3962,6 +3984,16 @@ function VoiceRoomInner({
                 which model is answering, or <span className="font-medium">No model</span> if none can.
               </p>
             )}
+            {/* #144: a labelled way out, not only the icon. Styled like the
+                end-call sheet's Cancel. */}
+            <div className="mt-4 flex flex-col gap-1">
+              {claudeAuthOptional && (
+                <p className="text-xs text-gray-500">Sign in to Claude to upgrade the model. You can do it later from the banner.</p>
+              )}
+              <button onClick={dismissAuthModal} className="min-h-11 rounded-lg text-gray-400 text-sm hover:text-gray-200">
+                {claudeAuthOptional ? 'Not now' : 'Close'}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -4092,7 +4124,7 @@ function VoiceRoomInner({
             way back into the sign-in flow. In NORMAL FLOW at the top of the chat
             column (bug #79) so it reserves space instead of covering the header /
             hiding the status line. */}
-        {isAuthGateTerminal(claudeAuthEverRequired, claudeAuthStatus) && (
+        {isAuthGateTerminal(claudeAuthEverRequired || claudeAuthOptional, claudeAuthStatus) && (
           <div className="w-full shrink-0 flex items-center justify-center gap-3 bg-amber-500/95 text-black text-sm font-medium px-4 py-2.5 touch-manipulation">
             <span className="shrink-0">🔑</span>
             {/* #87: not a false "can't reply" wall — the agent boots fallback-first
@@ -4101,7 +4133,13 @@ function VoiceRoomInner({
                 upgrade framing (models 3 + 5): connect Claude for full power. */}
             <span className="min-w-0">Not signed in to Claude — the model badge shows what&apos;s answering. Connect Claude for full power.</span>
             <button
-              onClick={() => { setAuthPromptDismissed(false); setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required') }}
+              onClick={() => {
+                setAuthPromptDismissed(false)
+                setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required')
+                // On a fallback model no sign-in flow is running, so ask the agent
+                // to start one (it replays a flow already in flight). Owner-only.
+                if (!claudeAuthUrl && isController) sendJson({ type: 'claude_auth_start' })
+              }}
               className="shrink-0 px-3 py-1 rounded-md bg-black/85 hover:bg-black text-white text-xs font-semibold transition-colors"
             >
               Connect Claude
@@ -4167,7 +4205,7 @@ function VoiceRoomInner({
                 self-test. resolveAgentHealth owns which sessions that applies to. */}
             <AgentHealthNotice
               version={agentVersion}
-              relyingOnFallback={claudeAuthEverRequired}
+              relyingOnFallback={claudeAuthEverRequired || claudeAuthOptional}
               mainProvider={mainProvider}
               keyHealth={agentKeyHealth}
             />
