@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { AUDIO_DECODE_CAP_MS, decodeBudgetMs, recordingAge } from './say-budget'
+import { AUDIO_DECODE_CAP_MS, decodeBudgetMs, recordingAge } from './audio-capture'
 
 assert.equal(decodeBudgetMs(14999), null, 'under 15s left: no decode')
 assert.equal(decodeBudgetMs(15000), 5000, 'decode leaves 10s for hearing')
@@ -13,4 +13,4 @@ assert.deepEqual(recordingAge(now - 25 * 60000, now), { minutes: 25, overCap: fa
 assert.deepEqual(recordingAge(now - AUDIO_DECODE_CAP_MS, now), { minutes: 30, overCap: false }, 'at the cap is still decoded')
 assert.deepEqual(recordingAge(now - AUDIO_DECODE_CAP_MS - 1, now), { minutes: 30, overCap: true })
 assert.deepEqual(recordingAge(now + 500, now), { minutes: 0, overCap: false }, 'a clock skew in the page is not a negative age')
-console.log('say-budget: all assertions passed')
+console.log('decode-budget: all assertions passed')
