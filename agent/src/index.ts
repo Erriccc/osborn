@@ -63,7 +63,7 @@ import { hasContentModelKey } from './content/content-llm.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
-import { readStewardRecords, stewardPushRecords } from './steward-verdict.js'
+import { readStewardRecords, stewardPushRecords, stewardServedRecords } from './steward-verdict.js'
 import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, ClientNoteQueue, parseFavoriteChanged, parseLegacyFavoriteNotice } from './transcript-wiring.js'
 import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
@@ -757,7 +757,7 @@ function startApiServer(workingDir: string, port: number): void {
         // pass their own cwd; honoured only if the session really lives there.
         const readDir = sessionMessagesDir(sessionId, url.searchParams.get('workingDirectory'), workingDir, sessionExists)
         const compactions = readCompactionMarkers(sessionId, readDir)
-        const steward = readStewardRecords(sessionId, readDir)
+        const steward = stewardServedRecords(readStewardRecords(sessionId, readDir))
         const dbPath = storeExists(sessionId, readDir)
         if (!dbPath) {
           res.writeHead(200, { 'Content-Type': 'application/json' })

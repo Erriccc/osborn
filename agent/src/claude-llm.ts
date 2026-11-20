@@ -3304,8 +3304,8 @@ class ClaudeLLMStream extends llm.LLMStream {
               if (verdict) {
                 this.#recordSteward(verdict)
                 this.#eventEmitter.emit('steward_verdict', verdict)
-              } else if (atRole) {
-                // Any other named sub-agent's return as a transcript entry (#212), same sidecar.
+              } else if (atRole && ROLES[atRole].resultCard) {
+                // A writer's or tester's return as a transcript entry (#212), same sidecar.
                 const result = agentResultRecord(String(at), atRole, msg)
                 if (result) {
                   this.#recordSteward(result)

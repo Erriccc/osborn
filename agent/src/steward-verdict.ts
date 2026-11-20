@@ -4,6 +4,7 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { getStorePath } from './session-store.js'
+import { redactSecrets } from './content/secret-rules.js'
 
 export type StewardVerdictKind = 'CLEAN' | 'REFACTORED' | 'BLOCK'
 
@@ -44,7 +45,7 @@ export type StewardRecord = StewardVerdict | StewardGateRecord | AgentResultReco
 const MAX_RESULT = 4000
 const MAX_RESULT_PUSH = 600
 export function agentResultRecord(agent: string, role: string | null | undefined, result: string, at = new Date().toISOString()): AgentResultRecord | null {
-  const text = String(result ?? '').trim()
+  const text = redactSecrets(String(result ?? '')).trim()
   if (!agent || !text) return null
   return { agent, ...(role ? { role } : {}), result: cap(text, MAX_RESULT), at }
 }
@@ -131,6 +132,12 @@ export function stewardPushRecords(records: StewardRecord[], n = 10): StewardRec
   const keep = new Set([...records.filter((r) => 'verdict' in r).slice(-n), ...records.filter((r) => 'gate' in r).slice(-n), ...records.filter((r) => 'result' in r).slice(-n)])
   return records.filter((r) => keep.has(r)).map((r) =>
     'verdict' in r ? { ...r, raw: undefined, impact: undefined } : 'result' in r ? { ...r, result: cap(r.result, MAX_RESULT_PUSH) } : r)
+}
+
+/** `/session-messages`: every verdict and gate, but only the last `n` results (they are frequent and long). */
+export function stewardServedRecords(records: StewardRecord[], n = 50): StewardRecord[] {
+  const keep = new Set(records.filter((r) => 'result' in r).slice(-n))
+  return records.filter((r) => !('result' in r) || keep.has(r))
 }
 
 /** Sidecar path: next to session.db and compactions.jsonl. */

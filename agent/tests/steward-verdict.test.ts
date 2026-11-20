@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, appendFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath, stewardPushRecords, agentResultRecord } = await import('../src/steward-verdict.js')
+const { parseStewardVerdict, appendStewardRecord, readStewardRecords, getStewardLogPath, stewardPushRecords, agentResultRecord, stewardServedRecords } = await import('../src/steward-verdict.js')
 
 let pass = 0
 const t = (name: string, fn: () => unknown) => {
@@ -192,6 +192,16 @@ t('#212: a sub-agent result is recorded in the same sidecar, capped, and replaye
 t('#212: push keeps the last 10 results apart from verdicts and gates', () => {
   const recs: any[] = Array.from({ length: 13 }, (_, i) => ({ agent: 'writer', result: `r${i}`, at: '2026-11-13T00:00:00.000Z' }))
   assert.deepEqual(stewardPushRecords(recs).map((r: any) => r.result), Array.from({ length: 10 }, (_, i) => `r${i + 3}`))
+})
+
+t('#212: a result is redacted, and /session-messages serves every verdict and gate but only the last 50 results', () => {
+  const r = agentResultRecord('writer', 'writer', 'done, key ANTHROPIC_API_KEY=sk-ant-api03-' + 'a'.repeat(90))!
+  assert.ok(!r.result.includes('sk-ant-api03-aaaa'), 'secret redacted')
+  const recs: any[] = [{ verdict: 'CLEAN', at: 'a' }, ...Array.from({ length: 60 }, (_, i) => ({ agent: 'writer', result: `r${i}`, at: 'b' })), { gate: 'deny', message: 'm', at: 'c' }]
+  const out = stewardServedRecords(recs)
+  assert.equal(out.filter((x: any) => 'result' in x).length, 50)
+  assert.ok(out.some((x: any) => 'verdict' in x) && out.some((x: any) => 'gate' in x))
+  assert.equal((out.find((x: any) => 'result' in x) as any).result, 'r10')
 })
 
 console.log(`\n${pass} passed`)
