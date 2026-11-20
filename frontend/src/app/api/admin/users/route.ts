@@ -10,7 +10,7 @@ import { requireAdmin, AdminAuthError } from '@/lib/admin'
  * the ADMIN_EMAILS allowlist (lib/admin.ts). The /admin page's own gate is
  * cosmetic — this route is the enforcement point.
  *
- * Reads auth.users + public.instances with the SERVICE ROLE key (both are
+ * Reads users (auth admin API) + public.instances with the SERVICE ROLE key (both are
  * closed to the anon/authed clients; RLS nowhere helps across users). The
  * response carries names, dates, and machine bookkeeping only — never keys,
  * secrets, or tokens.
@@ -34,16 +34,13 @@ export async function GET() {
 
   const sb = createClient(url, serviceKey, { auth: { persistSession: false } })
 
-  const { data: authUsers, error: usersError } = await sb
-    .schema('auth')
-    .from('users')
-    .select('id, email, created_at, last_sign_in_at')
-    .order('created_at', { ascending: false })
-    .limit(200)
+  // auth.users is not exposed to the REST API; the admin API reads it with the service role.
+  const { data: listed, error: usersError } = await sb.auth.admin.listUsers({ page: 1, perPage: 200 })
   if (usersError) {
-    console.error('[admin/users] auth.users read failed:', usersError.message)
+    console.error('[admin/users] auth.admin.listUsers failed:', usersError.message)
     return NextResponse.json({ error: 'Could not read users' }, { status: 500 })
   }
+  const authUsers = [...(listed?.users ?? [])].sort((a, b) => (b.created_at ?? '').localeCompare(a.created_at ?? ''))
 
   const { data: instances, error: instancesError } = await sb
     .from('instances')

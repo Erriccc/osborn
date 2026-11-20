@@ -78,7 +78,7 @@ export default function AdminPage() {
   useDocumentTitle('Admin')
   const [users, setUsers] = useState<AdminUser[] | null>(null)
   const [denied, setDenied] = useState(false)
-  const [failed, setFailed] = useState(false)
+  const [failed, setFailed] = useState<boolean | string>(false)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -95,7 +95,8 @@ export default function AdminPage() {
         setUsers(Array.isArray(body?.users) ? body.users : [])
         setDenied(false)
       } else {
-        setFailed(true)
+        const body = await res.json().catch(() => null)
+        setFailed(typeof body?.error === 'string' ? body.error : true)
       }
     } catch {
       setFailed(true)
@@ -164,7 +165,7 @@ export default function AdminPage() {
         {/* ── Load failed ────────────────────────────────────── */}
         {!loading && !denied && failed && (
           <div className="mx-auto mt-16 w-full max-w-[360px] bg-[var(--surface)] border border-[var(--border-subtle)] rounded-2xl p-8 flex flex-col items-center gap-4">
-            <p className="text-[var(--text-secondary)] text-sm text-center">Could not load users</p>
+            <p className="text-[var(--text-secondary)] text-sm text-center">Could not load users{typeof failed === 'string' ? `: ${failed}` : ''}</p>
             <button
               onClick={load}
               disabled={refreshing}
