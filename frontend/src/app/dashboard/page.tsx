@@ -31,6 +31,7 @@ import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
+import { settledSyncFailure } from '@/lib/volume-sync'
 
 interface SessionInfo {
   sessionId: string
@@ -963,6 +964,9 @@ export default function Dashboard() {
             if (data.lastUpdate?.status === 'error' && lastTargetMatches) {
               return { success: false, error: data.lastUpdate.error ?? 'Update failed' }
             }
+            // The machine is up but its boot could not install the target (disk full, npm failed).
+            const syncFailure = settledSyncFailure(data, targetVersion)
+            if (syncFailure) return { success: false, error: syncFailure }
             // (2) Inferred — pod restarted, lastUpdate gone, but signals agree.
             if (
               data.machineState === 'running' &&

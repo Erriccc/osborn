@@ -19,6 +19,7 @@ import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import { useThemePref } from '@/lib/use-theme'
 import type { ThemePref } from '@/lib/theme'
+import { settledSyncFailure } from '@/lib/volume-sync'
 
 // Fly region code → city, so "Cloud · Chicago" reads human. Unknown codes
 // fall back to the uppercased code (still tells you WHERE-ish).
@@ -92,6 +93,8 @@ export default function SettingsPage() {
   })
   const [installedVersion, setInstalledVersion] = useState<string | null>(null)
   const [latestVersion, setLatestVersion] = useState<string | null>(null)
+  // Why the machine's last boot could not install its image's osborn (/health volumeSync).
+  const [syncProblem, setSyncProblem] = useState<string | null>(null)
   const [statusMessage, setStatusMessage] = useState<{ text: string; type: 'success' | 'error' | 'info' } | null>(null)
 
   type LayerReport = {
@@ -465,6 +468,7 @@ export default function SettingsPage() {
     if (!sandboxId) return
     if (operation) return
     setStatusMessage(null)
+    setSyncProblem(null)
 
     const target = latestVersion ?? null
     setOperation({
@@ -510,6 +514,9 @@ export default function SettingsPage() {
             if (data.lastUpdate?.status === 'error' && lastTargetMatches) {
               return { success: false, error: data.lastUpdate.error ?? 'Update failed' }
             }
+            // The machine is up but its boot could not install the target (disk full, npm failed).
+            const syncFailure = settledSyncFailure(data, targetVersion)
+            if (syncFailure) return { success: false, error: syncFailure }
             if (
               data.machineState === 'running' &&
               data.installedVersion &&
@@ -622,6 +629,7 @@ export default function SettingsPage() {
       const data = await r.json()
       setInstalledVersion(data.installed ?? null)
       setLatestVersion(data.latest ?? null)
+      setSyncProblem(data.syncProblem ?? null)
     } catch {}
   }
 
@@ -1100,6 +1108,9 @@ export default function SettingsPage() {
                 {operation.stage === 'verifying' && 'Waiting for agent to come back...'}
                 {' '}({opElapsed}s)
               </span>
+            )}
+            {!operation && syncProblem && !statusMessage?.text.includes(syncProblem) && (
+              <p role="alert" className="mt-1.5 text-[12px] text-red-400">Update failed: {syncProblem}</p>
             )}
           </SettingsRow>
         )}

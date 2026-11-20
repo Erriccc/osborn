@@ -83,3 +83,12 @@ export function getLastUpdateResult(sandboxId: string): UpdateResult | null {
   }
   return null
 }
+
+/**
+ * The installed version plus the machine's boot-time volume sync outcome
+ * (agent /health `volumeSync`). Sprites has no volume sync: null there.
+ */
+export async function readOsbornHealth(sandboxId: string): Promise<Awaited<ReturnType<typeof machines.readOsbornHealth>>> {
+  if (getCloudProvider() === 'machines') return machines.readOsbornHealth(sandboxId)
+  return { version: await sprites.readInstalledOsbornVersion(sandboxId), volumeSync: null }
+}

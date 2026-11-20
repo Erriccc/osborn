@@ -17,12 +17,13 @@ import {
   waitForHealth,
   execInSprite,
   resolveOsbornLatest,
-  readInstalledOsbornVersion,
+  readOsbornHealth,
   checkSessionLayerConsistency,
   getLastUpdateResult,
 } from '@/lib/cloud'
 import { checkSandboxClaim, claimSandboxForUser, knownSandboxClaim } from '@/lib/sandbox-claims'
 import { connectUserAgent, lookupSandbox } from '@/lib/connect-agent'
+import { volumeSyncProblem } from '@/lib/volume-sync'
 
 // lookupSandbox's undefined is "unknown": answered with lookupFailed(), never
 // "no sandbox" (which clears the record or provisions another).
@@ -622,8 +623,9 @@ export async function POST(request: Request) {
       const updateSyncToken = await getSyncToken()
       const updateResult = await updateOsborn(sandboxId, user.id, undefined, updateSyncToken)
       if (!updateResult.success) {
+        // success:false routes the page to its verify-then-report branch, which shows `error`.
         return NextResponse.json(
-          { error: 'Update failed', log: updateResult.log },
+          { success: false, error: updateResult.log, log: updateResult.log },
           { status: 500 },
         )
       }
@@ -703,17 +705,19 @@ export async function POST(request: Request) {
       //   - installed: read the marker file written by buildOsbornBootstrap
       //     after each successful install, with fallback to reading the actual
       //     installed package.json. Both via the Sprites fs API which works.
-      const [latestResult, installedResult] = await Promise.allSettled([
+      const [latestResult, healthResult] = await Promise.allSettled([
         resolveOsbornLatest(),
-        readInstalledOsbornVersion(cvSandbox.id),
+        readOsbornHealth(cvSandbox.id),
       ])
 
       const latest = latestResult.status === 'fulfilled' ? latestResult.value : null
-      const installed = installedResult.status === 'fulfilled' ? installedResult.value : null
+      const health = healthResult.status === 'fulfilled' ? healthResult.value : null
+      const installed = health?.version ?? null
 
       const updateAvailable = !!(latest && installed && latest !== installed)
 
-      return NextResponse.json({ installed, latest, updateAvailable })
+      // The last boot could not put the image's osborn on the volume (disk full, npm failed).
+      return NextResponse.json({ installed, latest, updateAvailable, syncProblem: volumeSyncProblem(health?.volumeSync) })
     }
 
     case 'verify-update': {
@@ -722,7 +726,7 @@ export async function POST(request: Request) {
       // blip, user navigates away). Combines three independent truths:
       //
       //   1. Machine state from Fly (`started`?) — proves the runtime is up
-      //   2. /health + readInstalledOsbornVersion — proves it's on the
+      //   2. /health + readOsbornHealth — proves it's on the
       //      target version AND responding
       //   3. Server-side getLastUpdateResult — the exact final outcome of
       //      the most recent updateOsborn call on this Node process, even
@@ -745,10 +749,11 @@ export async function POST(request: Request) {
       // Run version + last-result probes in parallel — they're independent
       // and we want the freshest snapshot of all three signals at the same
       // wall-clock instant.
-      const [installedResult] = await Promise.allSettled([
-        readInstalledOsbornVersion(sandboxId),
+      const [healthResult] = await Promise.allSettled([
+        readOsbornHealth(sandboxId),
       ])
-      const installed = installedResult.status === 'fulfilled' ? installedResult.value : null
+      const health = healthResult.status === 'fulfilled' ? healthResult.value : null
+      const installed = health?.version ?? null
       const lastResult = getLastUpdateResult(sandboxId)
 
       return NextResponse.json({
@@ -756,6 +761,8 @@ export async function POST(request: Request) {
         installedVersion: installed,                    // signal #2 (a)
         healthOk: installed !== null,                   // signal #2 (b) — /health responded
         lastUpdate: lastResult,                         // signal #4 — null when unavailable
+        // signal #5 — the boot's volume sync outcome (settledSyncFailure decides when it counts)
+        volumeSync: health?.volumeSync ?? null,
       })
     }
 
