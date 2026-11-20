@@ -71,6 +71,7 @@ import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
 import { actWithCache, BRAIN_GONE, fencedCall, forgetCached, withTimeout, zombieGate } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
+import { serialSaver, writeAtomic } from '../lib/profile-save'
 import { attachDevtools, redactDiagnostics, redactJson, type DevtoolsBuffer } from '../lib/devtools'
 import { saveJourney, listJourneys } from '../lib/knowledge'
 import { mintProfileFromEnv } from '../lib/mint-profile'
@@ -281,14 +282,20 @@ async function main() {
       })
     })
     await prepareContext(c); trackContext(c, key); owned.set(id, c)
-    mark(device ? `${device} device context opened (${DEVICE_PRESETS[device]})` : `profile opened${state ? ' (restored)' : ''}`)
+    mark(device ? `${device} device context opened (${DEVICE_PRESETS[device]})` : `profile opened${state ? ' (restored cookies + localStorage)' : ''}`)
     return c
   }
-  const saveProfiles = async () => {
-    // Cookies and localStorage (where most sites, Supabase included, keep a sign-in); IndexedDB is not kept.
-    for (const [key, c] of contexts) await c.storageState({ path: profileFile(key) }).catch(() => {})
-  }
-  setInterval(() => { void saveProfiles() }, 60000)
+  // Cookies and localStorage (where most sites, Supabase included, keep a sign-in); IndexedDB is not kept.
+  let ending = false  // set once a graceful end begins
+  const profileSaver = serialSaver(async () => {
+    for (const [key, c] of contexts) {
+      // Bounded: one wedged tab must not stall the queue and lose the shutdown save.
+      const st = await withTimeout(c.storageState(), 5000, 'storageState').catch(() => null)
+      if (st) try { writeAtomic(profileFile(key), JSON.stringify(st)) } catch { /* volume full or gone: keep the last file */ }
+    }
+  }, () => ending)
+  const saveProfiles = profileSaver.now
+  setInterval(profileSaver.tick, 60000)
   let active: Page = await context.newPage()
   // DEVTOOLS SENSE per tab — console, page errors, failed network, websocket
   // lifecycle. Every task response carries the active tab's summary so the
@@ -962,7 +969,6 @@ async function main() {
     if (run === RUN_STAMP) return tasks as any[]
     try { return JSON.parse(readFileSync(join(RUNS_ROOT, run.replace(/[^A-Za-z0-9T:-]/g, ''), 'manifest.json'), 'utf8')).tasks ?? [] } catch { return null }
   }
-  let ending = false
   let lastActivity = Date.now()
 
   // MEETING AWARENESS (v14, from a real kill): the engine idle-stopped 10min
