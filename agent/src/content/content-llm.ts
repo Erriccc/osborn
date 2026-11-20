@@ -37,12 +37,11 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { zaiApiKey, cleanEnvKey } from '../env-key.js'
+import { ZAI_CODING_BASE, cleanEnvKey, zaiApiKey, zaiModel } from '../env-key.js'
 import { isContentLensEnabled } from './lens-launch.js'
 import { withFileLock } from './lens-paths.js'
 
 const OPENROUTER = 'https://openrouter.ai/api/v1'
-const ZAI = 'https://api.z.ai/api/coding/paas/v4'
 const OFF = ['0', 'off', 'false', 'no']
 export const LEDGER_FILE = 'content-spend-ledger.json'
 export const DEFAULT_GEN_MODEL = 'minimax/minimax-m3'
@@ -299,16 +298,13 @@ interface ContentProvider {
   base: string
 }
 /** z.ai prices: the Coding Plan is flat, so this is nominal (the default model's OpenRouter rate) to keep the caps binding. */
-export const ZAI_NOMINAL_PRICE = { p: 0.3e-6, c: 1.2e-6 }
-/** GLM-5.3 / GLM-5.3-Flash: 1M-token context (docs.z.ai/guides/llm/glm-5.3, …/glm-5.3-flash). */
-export const ZAI_CONTEXT_LENGTH = 1_000_000
+export const ZAI_NOMINAL_PRICE = PRICES[DEFAULT_GEN_MODEL]
 /**
  * GLM-5.3 can no longer switch reasoning off ("Disabling reasoning is no longer
  * supported", docs.z.ai/guides/llm/glm-5.3); calls ask for reasoning_effort "low"
  * and get this much extra output room so hidden reasoning cannot truncate the JSON.
  */
 export const ZAI_REASONING_HEADROOM = 8_000
-export const zaiModel = (): string => (process.env.OSBORN_DEMO_MODEL || '').trim() || 'glm-5.3'
 
 export const NO_CONTENT_KEY = 'no content model key (OPENROUTER_API_KEY, Z_AI_PERSONAL_API_KEY or ZAI_API_KEY)'
 
@@ -332,7 +328,7 @@ function contentProviders(env: NodeJS.ProcessEnv = process.env): ContentProvider
   const or = cleanEnvKey(env.OPENROUTER_API_KEY)
   if (or && !openRouterRejected) out.push({ id: 'openrouter', label: 'OpenRouter', key: or, base: OPENROUTER })
   const z = zaiApiKey(env)
-  if (z) out.push({ id: 'zai', label: 'z.ai', key: z, base: ZAI })
+  if (z) out.push({ id: 'zai', label: 'z.ai', key: z, base: ZAI_CODING_BASE })
   return out
 }
 /** True when some content provider can be called (a rejected OpenRouter key does not count). */

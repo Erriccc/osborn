@@ -14,6 +14,7 @@
  */
 
 import { getPipelineFastBrainPrompt } from './prompts.js'
+import { ZAI_CODING_BASE, zaiApiKey } from './env-key.js'
 
 // ============================================================
 // TYPES
@@ -73,12 +74,9 @@ const MAX_TOOL_ROUNDS = 4
  */
 export function resolveFastBrainProvider(): { url: string; model: string; name: string } | null {
   if (process.env.OSBORN_DEMO_PASS !== 'zai') return null
-  const zaiKey = process.env.Z_AI_PERSONAL_API_KEY || process.env.ZAI_API_KEY
-  if (!zaiKey) return null
+  if (!zaiApiKey()) return null
   return {
-    // Coding Plan endpoint - the standard /api/paas/v4 bills the pay-as-you-go
-    // wallet instead of the GLM Coding Plan quota.
-    url: 'https://api.z.ai/api/coding/paas/v4/chat/completions',
+    url: `${ZAI_CODING_BASE}/chat/completions`,
     model: process.env.OSBORN_DEMO_FAST_MODEL || 'glm-5.3-flash', // fast/cheap tier of the pass
     name: 'z.ai (demo pass)',
   }
@@ -450,7 +448,7 @@ export async function askPipelineFastBrain(
   // Demo pass (house z.ai key) takes precedence when active; else the user's own
   // pay-per-use providers (Fireworks preferred, OpenRouter fallback).
   const apiKey = resolveFastBrainProvider()
-    ? (process.env.Z_AI_PERSONAL_API_KEY || process.env.ZAI_API_KEY)
+    ? zaiApiKey()
     : (process.env.FIREWORKS_API_KEY || process.env.OPENROUTER_API_KEY)
   if (!apiKey) {
     return { script: 'Search system not available right now.', type: 'acknowledgment', toolsUsed: [] }

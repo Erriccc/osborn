@@ -15,7 +15,8 @@
  * usage accounting when present.
  */
 
-import { type ContentProviderId, ZAI_CONTEXT_LENGTH, ZAI_NOMINAL_PRICE, contentChat, contentProviderId, extraOutputTokens, markOpenRouterRejected, openRouterKey, zaiModel } from './content-llm.js'
+import { type ContentProviderId, ZAI_NOMINAL_PRICE, contentChat, contentProviderId, extraOutputTokens, markOpenRouterRejected, openRouterKey } from './content-llm.js'
+import { ZAI_CONTEXT_LENGTH, zaiModel } from '../env-key.js'
 
 const OPENROUTER = 'https://openrouter.ai/api/v1'
 export const DEFAULT_MODEL = 'minimax/minimax-m3'

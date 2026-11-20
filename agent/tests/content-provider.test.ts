@@ -74,7 +74,7 @@ await t('llmJson: neither key → throws the no-key error, nothing sent', async 
 await t('getModelInfo: z.ai → documented 1M context at the nominal price, no OpenRouter /models call', async () => {
   keys({ Z_AI_PERSONAL_API_KEY: 'z' })
   const info = await getModelInfo()
-  assert.deepEqual(info, { id: 'glm-5.3', contextLength: C.ZAI_CONTEXT_LENGTH, promptPerTok: C.ZAI_NOMINAL_PRICE.p, completionPerTok: C.ZAI_NOMINAL_PRICE.c, verified: false })
+  assert.deepEqual(info, { id: 'glm-5.3', contextLength: 1_000_000, promptPerTok: C.ZAI_NOMINAL_PRICE.p, completionPerTok: C.ZAI_NOMINAL_PRICE.c, verified: false })
   assert.equal(calls.length, 0)
 })
 await t('getModelInfo: an OpenRouter 401 on /models marks the key rejected and answers for z.ai', async () => {

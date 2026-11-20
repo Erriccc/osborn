@@ -143,8 +143,9 @@ function redact(): void {
 }
 
 function launch(): void {
-  const saved = process.env.OPENROUTER_API_KEY
-  delete process.env.OPENROUTER_API_KEY
+  const keys = ['OPENROUTER_API_KEY', 'Z_AI_PERSONAL_API_KEY', 'ZAI_API_KEY']
+  const saved = keys.map(k => process.env[k])
+  for (const k of keys) delete process.env[k]
   console.log('no key →', launchCompactionLens({ sessionId: 'probe', cwd: '/tmp/x' }).status)
   process.env.OPENROUTER_API_KEY = 'dummy-not-used'
   process.env.OSBORN_CONTENT_LENS = '0'
@@ -154,7 +155,7 @@ function launch(): void {
   writeFileSync(f, 'x')
   process.env.CLAUDE_CONFIG_DIR = f // projects/ can't be created under a file
   console.log('unlockable →', launchCompactionLens({ sessionId: 'probe', cwd: '/tmp/x' }).status)
-  if (saved) process.env.OPENROUTER_API_KEY = saved
+  keys.forEach((k, i) => (saved[i] ? (process.env[k] = saved[i]) : delete process.env[k]))
 }
 
 const [mode = 'estimate', sid = DEFAULT_SID, out] = process.argv.slice(2)
