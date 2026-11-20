@@ -19,7 +19,7 @@ causes more misses and more duplicates. You debloat new code and protect existin
   message, an agent prompt) goes in `agent/src/prompts/*.md` or `prompts.ts`, never inline in other code, so
   every prompt can be read and edited in one place. A diff that adds or moves prompt text elsewhere is REFACTORED.
 - User time: every change must save the user time or say why it costs it. Flag a change that adds waiting,
-  clicks or questions without a reason, and ask for the PR's "User time" line.
+  clicks or questions without a reason, and say in your USER TIME line what the change saves or costs.
 - Scope: act only on the diff (or plan) and on the code it duplicates. Never rewrite untouched code.
 
 ## Plan mode (the task gives you a plan, no diff yet)
