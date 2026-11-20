@@ -25,6 +25,11 @@ Use this every time changes are ready to ship.
 4. User publishes to NPM from Mac
    - User runs `git pull` on their Mac
    - User runs `cd agent && npm publish` from the osborn repo
+   - Or publish from CI (`.github/workflows/publish-agent.yml`, npm Trusted Publishing, no token):
+     after the version bump is merged to main, `git tag agent-v<ver> && git push origin agent-v<ver>`
+     (on that merged commit). CI checks the tag matches package.json and the commit is on main, runs
+     every agent test, builds and packs, then a separate job holding the publish token publishes that
+     tarball after the `npm` environment's required reviewer approves (npm refuses an existing version).
 
 5. Update the Sprite from the NPM registry
    - `npm install -g osborn`
