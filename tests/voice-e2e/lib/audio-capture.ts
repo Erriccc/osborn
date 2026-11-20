@@ -150,7 +150,8 @@ export async function startElementCapture(page: Page): Promise<void> {
     // which is what slows the tester's own speech when the CPU is starved.
     const pace: Array<[number, number]> = []
     const samplePace = () => {
-      if (ctx.state !== 'running') return  // a suspended context is not a slow one
+      // A suspended context is not a slow one: drop the samples so no interval spans the pause.
+      if (ctx.state !== 'running') { pace.length = 0; return }
       pace.push([Date.now(), ctx.currentTime * 1000])
       if (pace.length > 120) pace.splice(0, pace.length - 120)
     }

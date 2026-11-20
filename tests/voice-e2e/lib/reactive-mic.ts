@@ -92,8 +92,8 @@ export async function waitForMicOpen(page: Page, timeoutMs = 60_000) {
   await page.waitForFunction(() => (window as any).__mic?.ready === true, undefined, { timeout: timeoutMs })
 }
 
-/** Play a WAV file into the fake mic. Resolves, with the audio's length in ms, when the utterance finishes. */
-export async function speakWav(page: Page, wavPath: string): Promise<number> {
+/** Play a WAV file into the fake mic. Resolves when the utterance finishes, with the audio's length and the time it took to play (start to end, in the page). */
+export async function speakWav(page: Page, wavPath: string): Promise<{ audioMs: number; playedMs: number }> {
   const b64 = readFileSync(wavPath).toString('base64')
   return await page.evaluate(async (b64) => {
     const w = window as any
@@ -109,11 +109,12 @@ export async function speakWav(page: Page, wavPath: string): Promise<number> {
     // human watching a headed run can hear the tester's side. The mic feed
     // itself never touches the speakers (like a real mic).
     if ((window as any).__micMonitor) src.connect(ctx.destination)
+    const t0 = performance.now()
     await new Promise<void>((res) => {
       src.onended = () => res()
       src.start()
     })
-    return Math.round(buf.duration * 1000)
+    return { audioMs: Math.round(buf.duration * 1000), playedMs: Math.round(performance.now() - t0) }
   }, b64)
 }
 
@@ -127,7 +128,7 @@ export async function speakWav(page: Page, wavPath: string): Promise<number> {
  *  2. macOS `say`
  *  3. espeak-ng (Linux)
  */
-export async function speakText(page: Page, text: string, opts?: { keepWav?: string; onPlayStart?: () => void }): Promise<{ provider: string; synthMs: number; playMs: number; audioMs: number }> {
+export async function speakText(page: Page, text: string, opts?: { keepWav?: string; onPlayStart?: () => void }): Promise<{ provider: string; synthMs: number; playMs: number; audioMs: number; playedMs: number }> {
   const base = join(tmpdir(), `osborn-utt-${Date.now()}-${Math.floor(Math.random() * 1e6)}`)
   const wav = `${base}.wav`
   try {
@@ -139,8 +140,8 @@ export async function speakText(page: Page, text: string, opts?: { keepWav?: str
     if (opts?.keepWav) { try { copyFileSync(wav, opts.keepWav) } catch { /* proof is best-effort */ } }
     opts?.onPlayStart?.()
     const p = Date.now()
-    const audioMs = await speakWav(page, wav)
-    return { provider, synthMs, playMs: Date.now() - p, audioMs }
+    const { audioMs, playedMs } = await speakWav(page, wav)
+    return { provider, synthMs, playMs: Date.now() - p, audioMs, playedMs }
   } finally {
     rmSync(`${base}.aiff`, { force: true })
     rmSync(wav, { force: true })
