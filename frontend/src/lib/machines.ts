@@ -1388,53 +1388,82 @@ export async function readImageOsbornVersion(appName: string): Promise<string | 
   return r.exitCode === 0 && r.stdOut.trim() ? r.stdOut.trim() : null
 }
 
-/** Stop, replace the machine's config, start it and wait for /health. Throws when the config POST fails. */
-async function bootWithConfig(appName: string, machine: FlyMachine, config: Record<string, unknown>, userId: string): Promise<boolean> {
-  await stopMachineCold(appName)
-  await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, { config })
-  const info = await startAfterReplace(appName, machine, userId, 'rollback')
-  return info !== 'unsettled' && info?.status === 'running'
+/**
+ * Stop, replace the machine's config, start it and wait for /health (longer
+ * than a plain start when the machine came up: a boot that reinstalls osborn
+ * from npm takes minutes). `applied` is false only when the config never
+ * reached Fly.
+ */
+async function bootWithConfig(
+  appName: string,
+  machine: FlyMachine,
+  config: Record<string, unknown>,
+  userId: string,
+  label: string,
+): Promise<{ applied: boolean; healthy: boolean; error?: string }> {
+  try {
+    await stopMachineCold(appName)
+    await api('POST', `/v1/apps/${appName}/machines/${machine.id}`, { config })
+  } catch (err) {
+    return { applied: false, healthy: false, error: (err as Error).message }
+  }
+  try {
+    const info = await startAfterReplace(appName, machine, userId, label)
+    if (info === 'unsettled' || !info) return { applied: true, healthy: false }
+    const healthy = info.status === 'running' || (await waitForHealth(`https://${appName}.fly.dev`, 60))
+    return { applied: true, healthy }
+  } catch (err) {
+    return { applied: true, healthy: false, error: (err as Error).message }
+  }
 }
 
+/** Machine-config metadata key holding the original init.exec while a rollback override is applied. */
+const ROLLBACK_ORIG_EXEC_KEY = 'osborn_rollback_orig_exec'
+/** Present in package.json only on a dev build (fly-dev-install.ts sets it). */
+const DEV_SHA_MARK = '"osbornDevSha"'
+
 /**
- * Put the pre-dev-build copy (.osborn-prev) back on a machine that will not
- * come up, without exec: boot once with an init override that moves it back
- * before the machine's own init, then restore the original config. The bin
- * links are relative into lib/node_modules/osborn, so they resolve again.
+ * Put the last RELEASED build back on a machine, without exec: boot once with
+ * an init override that, before the machine's own init, moves .osborn-prev
+ * back when it is a released copy, or else deletes the volume's osborn so the
+ * entrypoint reinstalls the image's version from npm; then restore the
+ * original config. The original init.exec rides in the override's metadata,
+ * so an interrupted run leaves it on the machine. Never restores a dev build.
  */
-async function rollbackDevBuild(appName: string, userId: string, devSha: string): Promise<string> {
+async function rollbackDevBuild(appName: string, userId: string): Promise<string> {
   const machine = await getFirstMachine(appName)
   if (!machine?.config) return 'Rollback failed: could not read the machine config; the machine may be stopped with the dev build on it'
-  const original = machine.config as Record<string, unknown>
-  const init = (original.init ?? {}) as Record<string, unknown>
-  const origExec = (init.exec as string[] | undefined) ?? ['/entrypoint.sh']
+  const current = machine.config as Record<string, unknown>
+  const { [ROLLBACK_ORIG_EXEC_KEY]: heldExec, ...metadata } = (current.metadata ?? {}) as Record<string, string>
+  const init = (current.init ?? {}) as Record<string, unknown>
+  let origExec = (init.exec as string[] | undefined) ?? ['/entrypoint.sh']
+  if (heldExec) {
+    try {
+      origExec = JSON.parse(heldExec)
+    } catch {
+      return `Rollback failed: the machine config carries an unreadable metadata.${ROLLBACK_ORIG_EXEC_KEY}; fix init.exec by hand`
+    }
+  }
+  const original = { ...current, init: { ...init, exec: origExec }, ...(current.metadata ? { metadata } : {}) }
   const M = VOLUME_MODULES
-  const restore = `if [ -d ${M}/.osborn-prev ]; then rm -rf ${M}/osborn && mv ${M}/.osborn-prev ${M}/osborn; fi; exec "$@"`
-  const override = { ...original, init: { ...init, exec: ['sh', '-c', restore, 'sh', ...origExec] } }
-  // Printed first so an interrupted run still says what to put back.
-  console.warn(`[machines] rollbackDevBuild: booting ${appName} with a rollback init override; until the original config is restored, its init.exec should be ${JSON.stringify(origExec)}`)
-  let overrideOk = false
-  try {
-    overrideOk = await bootWithConfig(appName, machine, override, userId)
-  } catch (err) {
-    console.warn(`[machines] rollbackDevBuild: override boot failed: ${(err as Error).message}`)
+  const restore = `if [ -f ${M}/.osborn-prev/package.json ] && ! grep -q '${DEV_SHA_MARK}' ${M}/.osborn-prev/package.json; then rm -rf ${M}/osborn && mv ${M}/.osborn-prev ${M}/osborn; else rm -rf ${M}/osborn; fi; exec "$@"`
+  const override = {
+    ...original,
+    init: { ...init, exec: ['sh', '-c', restore, 'sh', ...origExec] },
+    metadata: { ...metadata, [ROLLBACK_ORIG_EXEC_KEY]: JSON.stringify(origExec) },
   }
-  let restoredConfig = false
-  let healthy = false
-  try {
-    healthy = await bootWithConfig(appName, machine, original, userId)
-    restoredConfig = true
-  } catch (err) {
-    console.warn(`[machines] rollbackDevBuild: config restore failed: ${(err as Error).message}`)
-  }
-  if (!restoredConfig) {
-    return `Rollback INCOMPLETE: the machine config still carries the rollback init override (${overrideOk ? 'previous build was moved back' : 'override boot also failed'}); restore init.exec to ${JSON.stringify(origExec)} by hand`
-  }
-  if (!healthy) return `Rollback failed: original config restored but the machine is not healthy (${overrideOk ? 'override boot was healthy' : 'override boot was not healthy either'})`
-  const r = await execInMachine(appName, machine.id, ['node', '-p', `require('${M}/osborn/package.json').osbornDevSha`], 15)
+  const byHand = `restore init.exec to ${JSON.stringify(origExec)} and remove metadata.${ROLLBACK_ORIG_EXEC_KEY} by hand`
+  console.warn(`[machines] rollbackDevBuild: booting ${appName} with a rollback init override; the original init.exec ${JSON.stringify(origExec)} is kept in metadata.${ROLLBACK_ORIG_EXEC_KEY}`)
+  const first = await bootWithConfig(appName, machine, override, userId, 'rollback override')
+  if (!first.applied) return `Rollback failed: the override config was not applied (${first.error}); nothing was changed and the dev build is still on the machine`
+  if (first.error) console.warn(`[machines] rollbackDevBuild: override boot failed: ${first.error}`)
+  const second = await bootWithConfig(appName, machine, original, userId, 'rollback restore')
+  if (!second.applied) return `Rollback INCOMPLETE: the machine config still carries the rollback init override (${second.error}); ${byHand}`
+  if (!second.healthy) return `Rollback failed: original config restored but the machine is not healthy (override boot ${first.healthy ? 'was' : 'was not'} healthy)`
+  const r = await execInMachine(appName, machine.id, ['node', '-p', `require('${M}/osborn/package.json').osbornDevSha || ''`], 15)
   if (r.exitCode !== 0) return 'Rollback uncertain: machine is healthy but the installed package could not be read'
-  if (r.stdOut.trim() === devSha) return 'Rollback failed: machine is healthy but still runs the dev build (no .osborn-prev to restore)'
-  return 'Rolled back: the previous build is restored and the machine is healthy'
+  if (r.stdOut.trim()) return `Rollback failed: machine is healthy but still runs dev build ${r.stdOut.trim()}`
+  return 'Rolled back: the last released build is restored and the machine is healthy'
 }
 
 /**
@@ -1445,30 +1474,45 @@ async function rollbackDevBuild(appName: string, userId: string, devSha: string)
  * with the skills it ships, restart, and confirm the machine runs it
  * (/health version, package.json osbornDevSha, `osborn` on the volume).
  *
- * The tarball MUST carry the image's version: the entrypoint reinstalls osborn
- * from npm at boot when the volume copy's version differs from the image's.
+ * spec.version MUST be the image's version: the entrypoint reinstalls osborn
+ * from npm at boot when the volume copy's version differs from the image's
+ * (a missing volume copy included), which is also how a rollback with no
+ * released backup gets the released build back. Only a released copy is ever
+ * kept as .osborn-prev, the rollback copy. Any failure after the swap starts
+ * rolls back to the last released build.
  * No lock: do not press Update on the dashboard while this runs.
  */
 export async function installOsbornSpec(
   appName: string,
-  spec: { tarball: Buffer; sha256: string; devSha: string },
+  spec: { tarball: Buffer; sha256: string; devSha: string; version: string },
   userId: string,
-  expectVersion: string,
 ): Promise<{ success: boolean; version: string | null; log: string }> {
   const machine = await getFirstMachine(appName)
   if (!machine) return { success: false, version: null, log: `No machine found for app ${appName}` }
-  const tgz = '/tmp/osborn-dev.tgz'
+  const fail = (log: string, version: string | null = null) => ({ success: false, version, log })
+  const versionGate = async () => {
+    const image = await readImageOsbornVersion(appName)
+    const running = await readInstalledOsbornVersion(appName)
+    if (image === spec.version && running === spec.version) return null
+    return `Refusing: the build is v${spec.version} but the image carries v${image ?? 'unknown'} and /health reports v${running ?? 'unknown'}; update the machine first`
+  }
+  const refused = await versionGate()
+  if (refused) return fail(refused)
+
+  // Unique per run: a timed-out npm install keeps running and must not blend into a retry.
+  const runId = `${spec.devSha.slice(0, 12)}-${Date.now().toString(36)}`
+  const stage = `${STAGE_PREFIX}-${runId}`
+  const staged = `${stage}/lib/node_modules/osborn`
+  const tgz = `/tmp/osborn-dev-${runId}.tgz`
   const run = async (step: string, cmd: string[], timeoutSec: number) => {
     const r = await execInMachine(appName, machine.id, cmd, timeoutSec)
     if (r.exitCode !== 0) throw new Error(`${step} failed (exit ${r.exitCode}): ${(r.stdErr || r.stdOut).substring(0, 400)}`)
     return r.stdOut.trim()
   }
-  const fail = (log: string, version: string | null = null) => ({ success: false, version, log })
-  const onVolume = 'installed on the volume; goes live on next restart, and survives only while the image version is unchanged'
-  let swapped = false
+  const M = VOLUME_MODULES
 
   try {
-    await run('reset', ['rm', '-rf', `${tgz}.b64`, tgz, STAGE_PREFIX], 30)
+    await run('reset', ['sh', '-c', `rm -rf ${STAGE_PREFIX}-* /tmp/osborn-dev-*.tgz*`], 30)
     const b64 = spec.tarball.toString('base64')
     for (let i = 0; i < b64.length; i += TARBALL_CHUNK_CHARS) {
       await run('upload', ['sh', '-c', `printf %s "$1" >> ${tgz}.b64`, 'sh', b64.slice(i, i + TARBALL_CHUNK_CHARS)], 30)
@@ -1476,43 +1520,56 @@ export async function installOsbornSpec(
     await run('decode', ['sh', '-c', `base64 -d ${tgz}.b64 > ${tgz} && rm -f ${tgz}.b64`], 30)
     const sum = (await run('sha256sum', ['sha256sum', tgz], 30)).split(/\s+/)[0]
     if (sum !== spec.sha256) throw new Error(`sha256 mismatch: got ${sum}, expected ${spec.sha256}`)
-    console.log(`[machines] installOsbornSpec: staging npm install of v${expectVersion} on ${appName}`)
-    await run('npm install', ['npm', 'install', '-g', '--prefix', STAGE_PREFIX, tgz, '--no-audit', '--no-fund'], DEV_INSTALL_TIMEOUT_SEC)
-    // Swap right before the restart. The old copy goes to .osborn-prev (a name
-    // the entrypoint's own `.osborn-*` cleanup covers); bin links are recreated
-    // relative, as npm writes them; skills are copied over the same names, as
-    // the entrypoint's seeding does from the image package.
+    console.log(`[machines] installOsbornSpec: staging npm install of v${spec.version} on ${appName}`)
+    await run('npm install', ['npm', 'install', '-g', '--prefix', stage, tgz, '--no-audit', '--no-fund'], DEV_INSTALL_TIMEOUT_SEC)
+    const stagedVersion = await run('staged version', ['node', '-p', `require('${staged}/package.json').version`], 15)
+    if (stagedVersion !== spec.version) throw new Error(`staged package is v${stagedVersion}, expected v${spec.version}`)
+    const late = await versionGate() // the image may have changed during the install
+    if (late) throw new Error(late)
+  } catch (err) {
+    return fail((err as Error).message)
+  }
+
+  // Swap right before the restart; every move is a rename on the volume. A
+  // released live copy becomes .osborn-prev (the rollback copy); a dev one goes
+  // to .osborn-old and is discarded, so a released backup is never replaced by
+  // a dev build. Both names fall under the entrypoint's `.osborn-*` cleanup,
+  // and a volume left with no osborn boots the image's version from npm. Each
+  // skill is copied under a temp name and renamed in. Any failure here is
+  // rolled back like a failed restart.
+  try {
     await run('swap', ['sh', '-c', [
       'set -e',
-      `M=${VOLUME_MODULES}`,
-      `test -f ${STAGE_PREFIX}/lib/node_modules/osborn/package.json`,
-      'rm -rf "$M/.osborn-prev"',
-      'if [ -d "$M/osborn" ]; then mv "$M/osborn" "$M/.osborn-prev"; fi',
-      `mv ${STAGE_PREFIX}/lib/node_modules/osborn "$M/osborn" || { mv "$M/.osborn-prev" "$M/osborn"; exit 1; }`,
-    ].join('\n')], 60)
-    swapped = true
-    await run('links and skills', ['sh', '-c', [
-      'set -e',
+      `M=${M}`,
+      `test -f ${staged}/package.json`,
+      'rm -rf "$M/.osborn-old"',
+      'if [ -d "$M/osborn" ]; then',
+      `  if grep -q '${DEV_SHA_MARK}' "$M/osborn/package.json" 2>/dev/null; then mv "$M/osborn" "$M/.osborn-old"`,
+      '  else rm -rf "$M/.osborn-prev" && mv "$M/osborn" "$M/.osborn-prev"; fi',
+      'fi',
+      `mv ${staged} "$M/osborn"`,
       `mkdir -p ${VOLUME_PREFIX}/bin && cd ${VOLUME_PREFIX}/bin`,
       `node -e 'const b=require("../lib/node_modules/osborn/package.json").bin||{};for(const[k,v]of Object.entries(typeof b==="string"?{osborn:b}:b))console.log(k+" "+v)' | while read n p; do ln -sfn "../lib/node_modules/osborn/$p" "$n"; chmod +x "$n"; done`,
-      'mkdir -p /workspace/.claude/skills',
-      `for d in ${VOLUME_MODULES}/osborn/.claude/skills/*/; do [ -d "$d" ] || continue; n=$(basename "$d"); rm -rf "/workspace/.claude/skills/$n"; cp -r "$d" "/workspace/.claude/skills/$n"; done`,
-    ].join('\n')], 60)
+      'S=/workspace/.claude/skills; mkdir -p "$S"',
+      'for d in "$M"/osborn/.claude/skills/*/; do [ -d "$d" ] || continue; n=$(basename "$d"); rm -rf "$S/.$n.new" "$S/.$n.old"; cp -r "$d" "$S/.$n.new"; if [ -e "$S/$n" ]; then mv "$S/$n" "$S/.$n.old"; fi; mv "$S/.$n.new" "$S/$n"; rm -rf "$S/.$n.old"; done',
+    ].join('\n')], 120)
   } catch (err) {
-    return fail(`${(err as Error).message}${swapped ? `; ${onVolume}` : ''}`)
+    console.warn(`[machines] installOsbornSpec: swap on ${appName} failed; rolling back without exec`)
+    return fail(`${(err as Error).message}. ${await rollbackDevBuild(appName, userId)}`)
   }
 
   const installed = (await restartService(appName, userId)) ? await readInstalledOsbornVersion(appName) : null
   if (!installed) {
     console.warn(`[machines] installOsbornSpec: ${appName} not healthy after restart; rolling back without exec`)
-    return fail(`Dev build did not come up healthy after restart. ${await rollbackDevBuild(appName, userId, spec.devSha)}`)
+    return fail(`Dev build did not come up healthy after restart. ${await rollbackDevBuild(appName, userId)}`)
   }
-  const devSha = await run('verify', ['node', '-p', `require('${VOLUME_MODULES}/osborn/package.json').osbornDevSha`], 15).catch(() => '')
+  const devSha = await run('verify', ['node', '-p', `require('${M}/osborn/package.json').osbornDevSha`], 15).catch(() => '')
   const bin = await run('verify', ['sh', '-c', 'readlink -f "$(command -v osborn)"'], 15).catch(() => '')
-  if (installed !== expectVersion || devSha !== spec.devSha || !bin.startsWith(`${VOLUME_PREFIX}/`)) {
+  if (installed !== spec.version || devSha !== spec.devSha || !bin.startsWith(`${VOLUME_PREFIX}/`)) {
     return fail(`Machine is not running the dev build after restart (version ${installed ?? 'unknown'}, osbornDevSha ${devSha || 'none'}, osborn at ${bin || 'unknown'}); it was replaced or not loaded`, installed)
   }
-  await run('cleanup', ['rm', '-rf', `${VOLUME_MODULES}/.osborn-prev`, STAGE_PREFIX, tgz], 60).catch(() => {})
+  // .osborn-prev stays: it is the rollback copy (the entrypoint clears it on the next version change).
+  await run('cleanup', ['rm', '-rf', `${M}/.osborn-old`, stage, tgz], 60).catch(() => {})
   return { success: true, version: installed, log: `Installed dev build ${spec.devSha} as osborn@${installed}` }
 }
 
