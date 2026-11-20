@@ -717,7 +717,8 @@ async function main() {
     // Bounded: an unbounded apad never ends once video is re-encoded.
     const clipDur = Math.max(1, (clip.endMs - clip.startMs) / 1000)
     // Players autoplay muted, so the clip SHOWS its sound: waveform + captions.
-    filters.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:duration=longest,apad=whole_dur=${clipDur.toFixed(3)},atrim=0:${clipDur.toFixed(3)},loudnorm=I=-18:TP=-2,aformat=channel_layouts=stereo,asplit=2[a][aw]`)
+    // loudnorm outputs 192kHz: back to 48kHz, or the waveform and AAC encode work on 4x the samples.
+    filters.push(`${labels.join('')}amix=inputs=${labels.length}:normalize=0:duration=longest,apad=whole_dur=${clipDur.toFixed(3)},atrim=0:${clipDur.toFixed(3)},loudnorm=I=-18:TP=-2,aformat=sample_rates=48000:channel_layouts=stereo,asplit=2[a][aw]`)
     // Same width as the clip (OSBORN_CLIP_WIDTH): this re-encode is the costliest step of a turn.
     const W = Number(process.env.OSBORN_CLIP_WIDTH ?? 640), k = W / 1280, px = (v: number) => Math.round(v * k)
     const WAVE_H = px(90) & ~1
@@ -1633,7 +1634,7 @@ async function main() {
             try {
               const st = await withTimeout(speakText(page, body.text, { keepWav: saidWav, onPlayStart: () => { if (cancelled) throw new Error('cancelled'); playStartMs = Date.now() } }),
                 Math.max(1000, tReq + 35000 - Date.now()), 'speaking ran out of time').catch((e) => { cancelled = true; throw e })
-              timings.synth = st.synthMs; timings.play = st.playMs; voice = st.provider
+              timings.synth = st.synthMs; timings.play = st.playMs; timings.audio = st.audioMs; voice = st.provider
               sayErr = null; break
             }
             catch (e) {
@@ -1757,7 +1758,11 @@ async function main() {
           // How fast the page's audio ran (1 = real time). Under ~0.9 the page itself
           // heard and played audio slowed down: say so rather than hide it.
           const audioClock = earsAfter.audioClock ?? null
-          const clockWarning = audioClock != null && audioClock < 0.9 ? `audio in this tab ran at ${audioClock}x real time (CPU throttling): the recording is time-compressed against the video, and the page may have heard and played audio slowed down` : null
+          // Playing the utterance runs on the mic's audio clock: play much longer
+          // than the audio itself is the same starvation, seen from the mic side.
+          const playRate = timings.audio && timings.play ? Math.round((timings.audio / timings.play) * 100) / 100 : null
+          const slowRate = audioClock != null && audioClock < 0.9 ? audioClock : playRate != null && playRate < 0.75 ? playRate : null
+          const clockWarning = slowRate != null ? `audio in this tab ran at ${slowRate}x real time (CPU starved): speaking took ${Math.round((timings.play ?? 0) / 100) / 10}s for ${Math.round((timings.audio ?? 0) / 100) / 10}s of audio, the recording is time-compressed against the video, and the page may have heard and played audio slowed down` : null
           return json(res, { ok: true, timings, voice, heardAnything: !!heard, warning: [sayWarning, capWarning, clockWarning].filter(Boolean).join('; ') || null, ears: { ...earsAfter, armedNow: ears.armedNow }, clipAudio: clipPending ? null : audio, clipPending, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: clipPending || !!clip, shot: !!shot }), clip, clipError, artifact: shot, clipUrl: `${mediaBase}/clip?n=${n}`, audioClipUrl: `${mediaBase}/clip?n=${n}&audio=1`, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, heard, driver, window })
         }
       }
