@@ -21,7 +21,7 @@ import Database from 'better-sqlite3'
 import { loadConversationRows, recordView, resolveSessionDb, type DbRecord } from './lens-db.js'
 import { pageFileName, type LibraryPeriod } from './lens-library-select.js'
 import { libraryDirFor, librarySegments, readManifest } from './lens-library.js'
-import { CapError, contentCaps, daySpent, genModel, isContentPipelineEnabled, isContentStrict, SpendGuard, type CapKind, type ContentLlmOptions } from './content-llm.js'
+import { CapError, contentCaps, daySpent, genModel, hasContentModelKey, isContentPipelineEnabled, isContentStrict, SpendGuard, type CapKind, type ContentLlmOptions } from './content-llm.js'
 import { makeScrubber, type ContentScrubber } from './content-redact.js'
 import {
   CONTENT_DIR, isPieceSettled, periodDirName, periodStatusFor, readContentManifest, writeAtomic, writeContentManifest,
@@ -209,8 +209,7 @@ export async function runContentStep(o: ContentRunOptions): Promise<ContentRunRe
   let guard: SpendGuard | null = null
   try {
     if (!isContentPipelineEnabled()) return { ...res, status: 'disabled' }
-    const apiKey = (process.env.OPENROUTER_API_KEY || '').trim()
-    if (!apiKey) return { ...res, status: 'no-key' }
+    if (!hasContentModelKey()) return { ...res, status: 'no-key' }
     const db = resolveSessionDb(o.sessionId, o.projectDir, o.cwd)
     if (!db) return { ...res, status: 'no-db' }
     const projectDir = dirname(dirname(dirname(db)))
@@ -235,7 +234,7 @@ export async function runContentStep(o: ContentRunOptions): Promise<ContentRunRe
     manifest.periods[key] = entry
     const caps = contentCaps()
     const g = (guard = new SpendGuard(projectDir, caps, entry.costUsd, deadline))
-    const llm: ContentLlmOptions = { apiKey, guard: g, scrub: sc.scrub, log }
+    const llm: ContentLlmOptions = { guard: g, scrub: sc.scrub, log }
     const save = () => {
       entry.costUsd = Number(g.periodUsd.toFixed(6))
       entry.updatedAt = new Date().toISOString()

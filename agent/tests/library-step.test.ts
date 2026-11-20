@@ -15,6 +15,9 @@ const deny = join(tmp, 'deny.json')
 writeFileSync(deny, JSON.stringify({ terms: { '[client]': ['Acme'] } }))
 process.env.OSBORN_LENS_DENYLIST = deny
 process.env.OPENROUTER_API_KEY = 'dummy-not-a-key'
+delete process.env.Z_AI_PERSONAL_API_KEY // the z.ai fallback is exercised explicitly below
+delete process.env.ZAI_API_KEY
+delete process.env.OSBORN_DEMO_MODEL
 delete process.env.OSBORN_CONTENT_LENS
 delete process.env.OSBORN_CONTENT_LENS_MODEL
 process.env.OSBORN_LIBRARY_MIN_PERIOD_H = '4' // fixtures are built on 4h periods; the default is now 1h
@@ -25,6 +28,7 @@ const { runLibraryStep, readManifest, writeManifest, libraryDirFor, librarySegme
 const { parsePage } = await import('../src/content/lens-library-index.js')
 const { launchCompactionLens } = await import('../src/content/lens-launch.js')
 const { LOCK_FILE } = await import('../src/content/lens-paths.js')
+const { resetContentProviders } = await import('../src/content/content-llm.js')
 
 let pass = 0
 const t = async (name: string, fn: () => unknown) => {
@@ -61,9 +65,13 @@ const addRow = (type: string, text: string, h: number) =>
 for (const [type, text, h] of ROWS) addRow(type, text, h)
 const libDir = libraryDirFor(dbPath, sid)
 
-// ── stubbed OpenRouter ──
+// ── stubbed OpenRouter (and z.ai) ──
 let chatCalls = 0
 let chatMode: 'ok' | 'http500' = 'ok'
+/** Status OpenRouter answers chat calls with (401 = key rejected); z.ai always answers. */
+let openRouterStatus = 200
+/** Every chat call: host + the body sent. */
+const sent: { url: string; host: string; body: any; auth: string }[] = []
 const MODEL_REPLY = JSON.stringify({
   high_leverage: [{ title: 'Period library writer shipped', why: 'one page per period, automatically', evidence: 'shipped', quotes: [{ row: 8, text: 'We finally shipped the period library writer today' }] }],
   period_goal: { text: 'Ship the automatic period library.', quotes: [{ row: 8, text: 'shipped the period library writer' }] },
@@ -71,13 +79,17 @@ const MODEL_REPLY = JSON.stringify({
   stories: [{ title: 'The library writer', why_it_matters: 'no manual runs', from_row: 8, to_row: 10, turning_points: [{ moment: 'index looks right', user_lines: [{ row: 10, text: 'the index table looks right to me' }] }] }],
   angles: [],
 })
-globalThis.fetch = (async (url: any) => {
+globalThis.fetch = (async (url: any, init?: any) => {
   const u = String(url)
   if (u.endsWith('/models')) {
     return new Response(JSON.stringify({ data: [{ id: 'minimax/minimax-m3', context_length: 1_048_576, pricing: { prompt: '0.0000003', completion: '0.0000012' } }] }), { status: 200 })
   }
+  const host = new URL(u).host
+  sent.push({ url: u, host, body: JSON.parse(init?.body ?? '{}'), auth: String(init?.headers?.Authorization ?? '') })
+  if (host === 'openrouter.ai' && openRouterStatus !== 200) return new Response('{"error":"User not found"}', { status: openRouterStatus })
   chatCalls++
   if (chatMode === 'http500') return new Response('upstream down', { status: 500 })
+  if (host === 'api.z.ai') return new Response(JSON.stringify({ choices: [{ message: { content: MODEL_REPLY }, finish_reason: 'stop' }], usage: { prompt_tokens: 900, completion_tokens: 300 } }), { status: 200 })
   return new Response(JSON.stringify({ choices: [{ message: { content: MODEL_REPLY }, finish_reason: 'stop' }], usage: { prompt_tokens: 900, completion_tokens: 300, cost: 0.0012 }, provider: 'stub' }), { status: 200 })
 }) as typeof fetch
 
@@ -299,6 +311,78 @@ await t('two stores for one session: each run reads its own project\'s store, no
   assert.notEqual(other.status, 'written')
   assert.equal(chatCalls - before, 1)
 })
+
+// ── provider fallback: OpenRouter key rejected → z.ai (content-llm.ts contentChat) ──
+const closedP2 = () => segmentPeriods(stamps(), [5, 7, 11], 4 * H).closed[1]
+const zaiRun = (log?: (m: string) => void) => runLibraryStep({ sessionId: sid, projectDir: pd, period: closedP2(), outDir: mkdtempSync(join(tmp, 'zai-')), log })
+const withKeys = async (keys: Record<string, string | undefined>, fn: () => Promise<void>) => {
+  const names = ['OPENROUTER_API_KEY', 'Z_AI_PERSONAL_API_KEY', 'ZAI_API_KEY']
+  const saved = Object.fromEntries(names.map(k => [k, process.env[k]]))
+  for (const k of names) if (keys[k] === undefined) delete process.env[k]; else process.env[k] = keys[k]
+  resetContentProviders(); sent.length = 0; openRouterStatus = 200; chatMode = 'ok'
+  try { await fn() } finally {
+    for (const k of names) if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]
+    resetContentProviders(); openRouterStatus = 200
+  }
+}
+await t('provider: OpenRouter 401 → the same call is served by z.ai (GLM coding endpoint, glm-5.3, no OpenRouter fields)', () =>
+  withKeys({ OPENROUTER_API_KEY: 'or-rejected', Z_AI_PERSONAL_API_KEY: ' "zai-key" ' }, async () => {
+    openRouterStatus = 401
+    const logs: string[] = []
+    const r = await zaiRun(l => logs.push(l))
+    assert.equal(r.status, 'written', r.errors.join('; '))
+    assert.deepEqual(sent.map(x => x.host), ['openrouter.ai', 'api.z.ai'])
+    const z = sent[1]
+    assert.equal(z.url, 'https://api.z.ai/api/coding/paas/v4/chat/completions')
+    assert.equal(z.auth, 'Bearer zai-key') // cleanEnvKey: trimmed and unquoted
+    assert.equal(z.body.model, 'glm-5.3')
+    assert.equal(z.body.reasoning_effort, 'low')
+    assert.equal(z.body.provider, undefined); assert.equal(z.body.reasoning, undefined); assert.equal(z.body.usage, undefined)
+    assert.ok(logs.some(l => /via zai \(z\.ai\)/.test(l)), logs.join(' | '))
+    assert.ok(!logs.join(' ').includes('zai-key') && !logs.join(' ').includes('or-rejected'), 'a key reached the log')
+  }))
+await t('provider: a rejected OpenRouter key is remembered — the next run goes straight to z.ai', () =>
+  withKeys({ OPENROUTER_API_KEY: 'or-rejected', ZAI_API_KEY: 'zai-key-2' }, async () => {
+    openRouterStatus = 401
+    assert.equal((await zaiRun()).status, 'written')
+    sent.length = 0
+    assert.equal((await zaiRun()).status, 'written')
+    assert.deepEqual(sent.map(x => x.host), ['api.z.ai'])
+    assert.equal(sent[0].auth, 'Bearer zai-key-2')
+  }))
+await t('provider: OpenRouter unset + z.ai key → z.ai, no OpenRouter request at all', () =>
+  withKeys({ ZAI_API_KEY: 'zai-key' }, async () => {
+    const before = chatCalls
+    const r = await zaiRun()
+    assert.equal(r.status, 'written', r.errors.join('; '))
+    assert.equal(chatCalls - before, 1)
+    assert.deepEqual(sent.map(x => x.host), ['api.z.ai'])
+  }))
+await t('provider: Z_AI_PERSONAL_API_KEY wins over ZAI_API_KEY (claude-auth.ts precedence)', () =>
+  withKeys({ Z_AI_PERSONAL_API_KEY: 'personal', ZAI_API_KEY: 'shared' }, async () => {
+    await zaiRun()
+    assert.equal(sent[0].auth, 'Bearer personal')
+  }))
+await t('provider: a working OpenRouter key still goes first; z.ai is not called', () =>
+  withKeys({ OPENROUTER_API_KEY: 'or-ok', ZAI_API_KEY: 'zai-key' }, async () => {
+    assert.equal((await zaiRun()).status, 'written')
+    assert.deepEqual(sent.map(x => x.host), ['openrouter.ai'])
+  }))
+await t('provider: neither key → no-key, nothing sent', () =>
+  withKeys({}, async () => {
+    assert.equal((await zaiRun()).status, 'no-key')
+    assert.equal(launchCompactionLens({ sessionId: sid, cwd: '/zz/library' }).status, 'no-key')
+    assert.equal(sent.length, 0)
+  }))
+await t('provider: OpenRouter 401 and no z.ai key → model error now, no-key afterwards (no retry of the dead key)', () =>
+  withKeys({ OPENROUTER_API_KEY: 'or-rejected' }, async () => {
+    openRouterStatus = 401
+    const r = await zaiRun()
+    assert.equal(r.status, 'model-error')
+    assert.ok(r.errors.some(e => /HTTP 401/.test(e)), r.errors.join('; '))
+    assert.equal((await zaiRun()).status, 'no-key')
+    assert.equal(sent.length, 1)
+  }))
 
 db.close()
 console.log(`\n${pass} passed`)

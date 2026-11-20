@@ -20,6 +20,7 @@ import { execSync } from 'child_process'
 import { homedir } from 'os'
 import { join } from 'path'
 import { FALLBACK_MODEL } from './claude-llm.js'
+import { ZAI_CONTEXT_LENGTH, cleanEnvKey, zaiApiKey, zaiModel } from './env-key.js'
 
 /**
  * Resolve the full path to the `claude` binary.
@@ -224,15 +225,7 @@ export function consumeFallbackClearedByLogin(): boolean {
   return v
 }
 
-/** Trim whitespace and strip one layer of surrounding quotes from an env value. */
-export function cleanEnvKey(value: string | undefined | null): string {
-  if (!value) return ''
-  let v = value.trim()
-  if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
-    v = v.slice(1, -1).trim()
-  }
-  return v
-}
+export { cleanEnvKey }
 
 /** Env vars that give the agent a working model backend without a Claude login. */
 export const FALLBACK_MODEL_KEY_VARS = [
@@ -319,14 +312,14 @@ export function applyAuthFallback(): ActiveProvider {
   // glm-5.3-flash 2026-11-10: the GLM Coding Plan now only lists GLM-5.3 and
   // GLM-5.3-Flash (docs.z.ai/devpack/overview; glm-4.7 is silently routed to
   // 5.3-Flash). Precedence: Z_AI_PERSONAL_API_KEY, then ZAI_API_KEY.
-  const zaiKey = cleanEnvKey(process.env.Z_AI_PERSONAL_API_KEY) || cleanEnvKey(process.env.ZAI_API_KEY)
+  const zaiKey = zaiApiKey()
   if (zaiKey !== '') {
     snapshotModelEnv()
     // Native Anthropic-Messages endpoint - no local translation proxy needed.
     process.env.ANTHROPIC_BASE_URL = process.env.OSBORN_DEMO_BASE_URL || 'https://api.z.ai/api/anthropic'
     process.env.ANTHROPIC_AUTH_TOKEN = zaiKey
     process.env.ANTHROPIC_API_KEY = '' // required - a set key bypasses AUTH_TOKEN
-    const demoModel = process.env.OSBORN_DEMO_MODEL || 'glm-5.3'
+    const demoModel = zaiModel()
     const demoFastModel = process.env.OSBORN_DEMO_FAST_MODEL || 'glm-5.3-flash'
     process.env.ANTHROPIC_MODEL = demoModel
     process.env.ANTHROPIC_SMALL_FAST_MODEL = demoFastModel
@@ -334,7 +327,7 @@ export function applyAuthFallback(): ActiveProvider {
     process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = demoModel
     // GLM-5.3 and GLM-5.3-Flash expose a 1M-token window (docs.z.ai/guides/llm/glm-5.3,
     // verified 2026-11-10); pins the CLI's context-cap handling.
-    process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = process.env.OSBORN_DEMO_MAX_CONTEXT || '1000000'
+    process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS = process.env.OSBORN_DEMO_MAX_CONTEXT || String(ZAI_CONTEXT_LENGTH)
     // Signal for the fast brain (pipeline-fastbrain reads this per call) so the
     // WHOLE model layer - main agent AND fast brain - rides the same pass.
     process.env.OSBORN_DEMO_PASS = 'zai'

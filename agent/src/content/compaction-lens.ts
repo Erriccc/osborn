@@ -29,6 +29,7 @@ import { gateQueries, privateSegments } from './content-query-gate.js'
 import { alignRecording, findSessionRecording } from './lens-audio.js'
 import { appendProfile, formatEntry, writeScratch, type FinalAngle, type FinalCapability } from './lens-profile.js'
 import { findTranscriptBySessionId, isProjectDir, readHwm, refuseOutPath, resolveProjectDir, writeHwm } from './lens-paths.js'
+import { hasContentModelKey } from './content-llm.js'
 
 const LIMITS = {
   map: { a: 4, c: 8 },
@@ -139,13 +140,12 @@ export async function runCompactionLens(opts: LensRunOptions): Promise<LensRunRe
     const why = refuseOutPath(opts.outPath, projectDir)
     if (why) throw new Error(`content lens: ${why}`)
   }
-  const apiKey = process.env.OPENROUTER_API_KEY
-  if (!apiKey) return { ...r, status: 'no-key' }
+  if (!hasContentModelKey()) return { ...r, status: 'no-key' }
   r.dbPath = resolveSessionDb(opts.sessionId, projectDir, opts.cwd)
   if (!r.dbPath) return { ...r, status: 'no-db' }
   if (!projectDir) projectDir = r.projectDir = dirname(dirname(dirname(r.dbPath)))
 
-  const info = await getModelInfo(apiKey)
+  const info = await getModelInfo()
   if (!info) return { ...r, status: 'model-unknown' }
   r.model = { id: info.id, contextLength: info.contextLength, promptPerM: info.promptPerTok * 1e6, completionPerM: info.completionPerTok * 1e6, verified: info.verified }
   r.windowTokens = windowTokensFor(info)
@@ -186,7 +186,7 @@ export async function runCompactionLens(opts: LensRunOptions): Promise<LensRunRe
     r.windows.push({ rows: w.records.length, chars: w.chars, estTokens: w.estTokens, firstRowId: w.firstRowId, lastRowId: w.lastRowId })
     let res: Awaited<ReturnType<typeof chat>>
     try {
-      res = await chat(budget, mapPrompt(w.text, w.index + 1, all.length, LIMITS.map.a, LIMITS.map.c), apiKey)
+      res = await chat(budget, mapPrompt(w.text, w.index + 1, all.length, LIMITS.map.a, LIMITS.map.c))
     } catch (err) {
       log(`map ${w.index + 1}/${all.length} failed: ${err instanceof Error ? err.message : err}`)
       break
@@ -233,7 +233,7 @@ export async function runCompactionLens(opts: LensRunOptions): Promise<LensRunRe
   const needReduce = r.windowsProcessed > 1 || pool.angles.length > lim.a || pool.capabilities.length > lim.c
   if (needReduce && pool.angles.length + pool.capabilities.length > 0) {
     try {
-      const res = await chat(budget, reducePrompt(JSON.stringify(pool), lim.a, lim.c), apiKey, 12_000)
+      const res = await chat(budget, reducePrompt(JSON.stringify(pool), lim.a, lim.c), 12_000)
       const out = res ? readCandidates(res.content, lim.a, lim.c, r) : null
       if (out && out.angles.length + out.capabilities.length > 0) cands = out
       else log(res ? 'reduce returned nothing — using grounded pool' : 'reduce refused by budget — using grounded pool')

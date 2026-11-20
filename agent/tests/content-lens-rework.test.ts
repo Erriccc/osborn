@@ -12,6 +12,8 @@ const deny = join(tmp, 'deny.json')
 writeFileSync(deny, JSON.stringify({ terms: { '[client]': ['Acme', 'Globex', 'Initech'], '[founder]': ['Jane Smith'] } }))
 process.env.OSBORN_LENS_DENYLIST = deny
 delete process.env.OSBORN_LENS_INCLUDE_SUBAGENTS
+delete process.env.Z_AI_PERSONAL_API_KEY // the no-key cases below remove OPENROUTER_API_KEY; a z.ai key would also count
+delete process.env.ZAI_API_KEY
 
 const { loadConversationRows, packWindows } = await import('../src/content/lens-db.js')
 const { loadClientRedactor, isBillingAngle } = await import('../src/content/lens-redact.js')

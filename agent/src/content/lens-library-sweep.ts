@@ -28,7 +28,7 @@ import { libraryBacklog, libraryDirFor, libraryMinSpanMs, readManifest, runLibra
 import type { LibraryPeriod } from './lens-library-select.js'
 import { isTransportError } from './lens-model.js'
 import { DIGEST_CAP_USD, chatKey, digestDir, ingestPendingDigests, pendingDigestDays, readDigestManifest, removeDigestDay, runDigestDay, writeDigestManifest, type ShortChat } from './lens-library-digest.js'
-import { CapError, LIBRARY_LEDGER_SCOPE, SpendGuard, libraryDailyUsd, type Reservation } from './content-llm.js'
+import { CapError, LIBRARY_LEDGER_SCOPE, hasContentModelKey, SpendGuard, libraryDailyUsd, type Reservation } from './content-llm.js'
 import { PERIOD_CAP_USD } from './period-run.js'
 import { loadClientRedactor } from './lens-redact.js'
 import { listSessionDbs, type SessionStore } from './lens-db.js'
@@ -124,7 +124,7 @@ export async function runLibrarySweep(o: SweepOptions = {}): Promise<SweepStatus
   const alive = () => touchLock(home)
   try {
     if (!isContentLensEnabled()) return finish('disabled')
-    if (!o.dry && !(process.env.OPENROUTER_API_KEY || '').trim()) return finish('no-key')
+    if (!o.dry && !hasContentModelKey()) return finish('no-key')
     if (sweepCoolingDown(o.cooldownMs ?? SWEEP_COOLDOWN_MS, home)) {
       log(`${st.trigger}: skipped, the last sweep finished under ${Math.round((o.cooldownMs ?? SWEEP_COOLDOWN_MS) / 60_000)} min ago`)
       return { ...st, status: 'cooldown', finishedAt: new Date().toISOString() } // the last result stays on /health

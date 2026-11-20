@@ -26,7 +26,7 @@ import { loadConversationRows, type SessionStore } from './lens-db.js'
 import { Budget, chat, getModelInfo, isTransportError, modelCallFailed } from './lens-model.js'
 import { loadClientRedactor, type ClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
-import { parseJsonLoose } from './content-llm.js'
+import { NO_CONTENT_KEY, hasContentModelKey, parseJsonLoose } from './content-llm.js'
 import { machineTimeZone, parseDigest, rebuildIndex } from './lens-library-index.js'
 import { clip, ingestRowKey, needsIngest, postContentIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
 import { writeAtomic } from './content-manifest.js'
@@ -280,16 +280,16 @@ export async function runDigestDay(o: DigestOptions): Promise<DigestResult> {
     }
 
     if (!o.dry) {
-      const key = (process.env.OPENROUTER_API_KEY || '').trim()
-      if (!key) throw new Error('OPENROUTER_API_KEY not set')
-      const info = await getModelInfo(key)
+      if (!hasContentModelKey()) throw new Error(NO_CONTENT_KEY)
+      const info = await getModelInfo()
       if (!info) throw new Error('model info unavailable (cannot enforce the cost cap)')
       const prompt = digestPrompt(o.day, items)
       const budget = new Budget(info, { maxCalls: 1, maxCostUsd: DIGEST_CAP_USD })
       try {
-        const r = await chat(budget, prompt, key, MAX_OUT)
+        const r = await chat(budget, prompt, MAX_OUT)
         if (!r) res.errors.push('refused by the cost cap')
         else {
+          log(`digest ${o.day}: via ${r.via} (${r.provider || '?'})`)
           const parsed = parseJsonLoose(r.content)
           for (const c of Array.isArray(parsed?.chats) ? parsed.chats : []) {
             const it = items.find(i => i.n === Number(c?.n))

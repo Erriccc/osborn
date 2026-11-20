@@ -1,6 +1,7 @@
 /**
- * lens-model.ts — OpenRouter model calls for the content lens (map-reduce).
- * OpenRouter ONLY — never the Claude subscription / Anthropic SDK.
+ * lens-model.ts — model calls for the content lens (map-reduce) and the Library.
+ * Every call goes through contentChat (content-llm.ts): OpenRouter, else z.ai.
+ * Never the Claude subscription / Anthropic SDK.
  *
  * Model: big-window, env-overridable (OSBORN_CONTENT_LENS_MODEL). Default
  * minimax/minimax-m3 — verified 2026-10-05 via GET /api/v1/models:
@@ -13,6 +14,9 @@
  * if its worst-case cost would cross the cap; actual cost comes from OpenRouter's
  * usage accounting when present.
  */
+
+import { type ContentProviderId, ZAI_NOMINAL_PRICE, contentChat, contentProviderId, extraOutputTokens, markOpenRouterRejected, openRouterKey } from './content-llm.js'
+import { ZAI_CONTEXT_LENGTH, zaiModel } from '../env-key.js'
 
 const OPENROUTER = 'https://openrouter.ai/api/v1'
 export const DEFAULT_MODEL = 'minimax/minimax-m3'
@@ -32,16 +36,29 @@ export interface ModelInfo {
   contextLength: number
   promptPerTok: number
   completionPerTok: number
-  /** true = read from the OpenRouter models API this run; false = built-in fallback. */
+  /** true = read from the OpenRouter models API this run; false = built-in (or z.ai's documented) values. */
   verified: boolean
 }
 
-/** Live context length + price. Null for an unknown overridden model (can't enforce the cost cap). */
-export async function getModelInfo(apiKey: string, id = lensModel()): Promise<ModelInfo | null> {
+/** z.ai's model: documented context, nominal price (content-llm.ts ZAI_NOMINAL_PRICE). */
+const zaiModelInfo = (): ModelInfo => ({ id: zaiModel(), contextLength: ZAI_CONTEXT_LENGTH, promptPerTok: ZAI_NOMINAL_PRICE.p, completionPerTok: ZAI_NOMINAL_PRICE.c, verified: false })
+
+/**
+ * Context length + price of the model the next call runs on: z.ai's documented
+ * values when z.ai serves; else live from OpenRouter. Null for an unknown
+ * overridden OpenRouter model (can't enforce the cost cap).
+ */
+export async function getModelInfo(id = lensModel()): Promise<ModelInfo | null> {
+  if (contentProviderId() === 'zai') return zaiModelInfo()
+  const key = openRouterKey()
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), META_TIMEOUT_MS)
   try {
-    const resp = await fetch(`${OPENROUTER}/models`, { signal: ctrl.signal, headers: { Authorization: `Bearer ${apiKey}` } })
+    const resp = await fetch(`${OPENROUTER}/models`, { signal: ctrl.signal, headers: key ? { Authorization: `Bearer ${key}` } : {} })
+    if (key && resp.status === 401) {
+      markOpenRouterRejected(resp.status)
+      if (contentProviderId() === 'zai') return zaiModelInfo()
+    }
     if (resp.ok) {
       const data: any = await resp.json()
       const m = (data?.data ?? []).find((x: any) => x?.id === id)
@@ -160,7 +177,10 @@ export interface ChatResult {
   content: string
   /** 'stop' normally; 'length' = output cap hit (JSON likely truncated). */
   finish: string
+  /** Who answered: OpenRouter's upstream provider name, or "z.ai". */
   provider: string
+  /** The content provider that took the call (content-llm.ts contentChat). */
+  via: ContentProviderId
   promptTokens: number
   completionTokens: number
   costUsd: number
@@ -173,17 +193,16 @@ export const modelCallFailed = (e: any): string => `${CALL_FAILED}: ${e?.message
 export const isTransportError = (errors: string[]): boolean => errors.some(e => e.startsWith(CALL_FAILED))
 
 /** One chat call. Returns null when the budget refuses; throws on HTTP/timeout errors. */
-export async function chat(budget: Budget, user: string, apiKey: string, maxOut = 16_000): Promise<ChatResult | null> {
+export async function chat(budget: Budget, user: string, maxOut = 16_000): Promise<ChatResult | null> {
   const estPrompt = Math.ceil((SYSTEM.length + user.length) / 4)
-  if (!budget.take(estPrompt, maxOut)) return null
+  // z.ai cannot switch reasoning off: its worst case includes the reasoning headroom.
+  const worstOut = maxOut + extraOutputTokens()
+  if (!budget.take(estPrompt, worstOut)) return null
   const ctrl = new AbortController()
   const timer = setTimeout(() => ctrl.abort(), CALL_TIMEOUT_MS)
   try {
-    const resp = await fetch(`${OPENROUTER}/chat/completions`, {
-      method: 'POST',
-      signal: ctrl.signal,
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    const { data, served, provider: via } = await contentChat(
+      {
         model: budget.info.id,
         temperature: 0.1,
         max_tokens: maxOut,
@@ -197,10 +216,9 @@ export async function chat(budget: Budget, user: string, apiKey: string, maxOut 
           { role: 'system', content: SYSTEM },
           { role: 'user', content: user },
         ],
-      }),
-    })
-    if (!resp.ok) throw new Error(`OpenRouter HTTP ${resp.status}`)
-    const data: any = await resp.json()
+      },
+      { signal: ctrl.signal },
+    )
     const pt = Number(data?.usage?.prompt_tokens) || estPrompt
     const ct = Number(data?.usage?.completion_tokens) || 0
     const reported = Number(data?.usage?.cost)
@@ -209,7 +227,8 @@ export async function chat(budget: Budget, user: string, apiKey: string, maxOut 
     return {
       content: String(data?.choices?.[0]?.message?.content ?? ''),
       finish: String(data?.choices?.[0]?.finish_reason ?? ''),
-      provider: String(data?.provider ?? ''),
+      provider: served,
+      via,
       promptTokens: pt,
       completionTokens: ct,
       costUsd: cost,
@@ -217,7 +236,7 @@ export async function chat(budget: Budget, user: string, apiKey: string, maxOut 
   } catch (err) {
     budget.failures++
     // A failed/timed-out call may still bill: charge the worst case so the cap stays hard.
-    budget.spentUsd += budget.estimate(estPrompt, maxOut)
+    budget.spentUsd += budget.estimate(estPrompt, worstOut)
     throw err
   } finally {
     clearTimeout(timer)
