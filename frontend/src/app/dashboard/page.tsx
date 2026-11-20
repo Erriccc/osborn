@@ -508,6 +508,20 @@ export default function Dashboard() {
   }, [agentUrl, canFetchAgent, connectionMode, user, SESSIONS_CACHE_KEY, SESSIONS_CACHE_TTL])
 
   useEffect(() => { if (!loading) fetchSessions() }, [loading, fetchSessions])
+
+  // The session live on the machine right now (read-only room view, #383): its Recent row gets View.
+  const [liveSessionId, setLiveSessionId] = useState<string | null>(null)
+  useEffect(() => {
+    if (!agentOnline || !canFetchAgent()) { setLiveSessionId(null); return }
+    let cancelled = false
+    const read = () => fetch(`${agentReadUrl(agentUrl, 'view-token')}?status=1`, { cache: 'no-store' })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => { if (!cancelled) setLiveSessionId(d?.live && typeof d.sessionId === 'string' ? d.sessionId : null) })
+      .catch(() => {})
+    read()
+    const id = setInterval(read, 20_000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [agentOnline, agentUrl, canFetchAgent])
   // A machine known to be offline has no sessions coming: end the loading state.
   useEffect(() => { if (agentOnline === false) setSessionsLoading(false) }, [agentOnline])
 
@@ -1561,7 +1575,7 @@ export default function Dashboard() {
           <NotesCard />
 
           {/* Recent: sessions (once each), notes and finished briefs in one list. */}
-          <TodayList sessions={recentSessions} sessionsLoading={sessionsLoading} onResume={(id, cwd) => startChat(id, cwd)} />
+          <TodayList sessions={recentSessions} sessionsLoading={sessionsLoading} onResume={(id, cwd) => startChat(id, cwd)} liveSessionId={liveSessionId} />
 
           {/* Agenda-card action stack — DESKTOP ONLY (lg+). Keeps ≤3 primary
               actions visible: the amber CTA above + these two. Each is a single

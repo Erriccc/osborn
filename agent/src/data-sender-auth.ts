@@ -10,6 +10,8 @@
  * dropped. The gate FAILS CLOSED: a type that is not on the read-only list
  * (including any new type added to index.ts later) requires the controller.
  *
+ * Read-only viewers (`viewer-*`, #383) are refused for every type.
+ *
  * Full set of types handleDataReceived handles (2026-11-07):
  *   Gated (state-changing or leaks session/process ids):
  *     user_text, claude_auth_code, permission_response, list_sessions,
@@ -121,6 +123,25 @@ export const USER_IDENTITY_PREFIX = 'user-'
  */
 export const AGENT_SELF_IDENTITY = 'osborn-agent'
 
+/**
+ * Identity prefix of the read-only room view (#383, GET /view-token). A viewer
+ * joins hidden and subscribe-only (no publish, no data), is never adopted as
+ * the voice user or the controller, never counts as someone in the room, and
+ * its leaving ends nothing.
+ */
+export const VIEWER_IDENTITY_PREFIX = 'viewer-'
+
+export function isViewerIdentity(identity: string | undefined | null): boolean {
+  return !!identity && identity.startsWith(VIEWER_IDENTITY_PREFIX)
+}
+
+/** People in the room for the leave and idle timers: everyone but read-only viewers. */
+export function roomOccupants(identities: Iterable<string>): number {
+  let n = 0
+  for (const id of identities) if (!isViewerIdentity(id)) n++
+  return n
+}
+
 export interface SenderCheck {
   ok: boolean
   reason?: string
@@ -131,6 +152,8 @@ export function checkControlSender(
   senderIdentity: string | undefined | null,
   controllingIdentity: string | null,
 ): SenderCheck {
+  // A viewer's token cannot publish data; refuse it here too, read-only queries included.
+  if (isViewerIdentity(senderIdentity)) return { ok: false, reason: `sender ${senderIdentity} is a read-only viewer` }
   if (READ_ONLY_MESSAGE_TYPES.has(type)) return { ok: true }
   if (!senderIdentity) return { ok: false, reason: 'no sender participant' }
   if (type === 'permission_response' && senderIdentity === AGENT_SELF_IDENTITY) return { ok: true }
@@ -341,6 +364,8 @@ export interface JoinDecision {
  *   gets the voice session only in a room the agent joined through an
  *   authorised phone connect, and only while no controller holds the session.
  *   Anywhere else it is ignored, in single-tenant mode too.
+ * - A read-only viewer (`viewer-*`): never the controller and never adopted,
+ *   in a phone room and in single-tenant mode too.
  * - Any other identity: never the controller; gets a session only in
  *   single-tenant mode (no owner), matching the old behavior there.
  */
@@ -351,6 +376,7 @@ export function resolveJoin(
   currentController: string | null,
   opts: JoinOptions = {},
 ): JoinDecision {
+  if (isViewerIdentity(joinerIdentity)) return { adoptSession: false, controller: currentController }
   if (opts.sip) {
     return { adoptSession: !!opts.phoneRoom && !currentController, controller: currentController }
   }
