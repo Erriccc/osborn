@@ -30,7 +30,7 @@ function check(body: string): 'template' | 'pass' {
   assert.match(reason, /Steward sign-off required/)
   return 'pass'
 }
-const SECTIONS = ['What changed', 'Why', 'Net-new', 'Removed', 'User time', 'Tested', 'Steward']
+const SECTIONS = ['What changed', 'Why', 'History', 'Net-new', 'Removed', 'User time', 'Tested', 'Steward']
 const body = (over: Record<string, string> = {}, extra = '') =>
   SECTIONS.map((h) => `## ${h}\n${over[h] ?? 'filled'}\n`).join('\n') + extra
 
