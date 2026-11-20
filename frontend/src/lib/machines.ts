@@ -1216,9 +1216,6 @@ async function updateOsbornImpl(
   // re-extract (~5s) = ~1-2 min total, same as legacy image-swap, but with
   // volume-as-truth architecture in place.
   //
-  // Dev builds go on in place through installOsbornSpec() below (same
-  // version as the image, so the entrypoint keeps them).
-  //
   // Clear any stale manifest file from the abandoned manifest-flow (best-
   // effort, fire-and-forget).
   execInMachine(appName, machine.id, ['rm', '-f', '/workspace/.osborn-want-version'], 5).catch(() => {})
@@ -1383,16 +1380,14 @@ async function updateOsbornImpl(
   )
 }
 
-/** A dev build of the agent, packed from a git ref (frontend/scripts/fly-dev-install.ts). */
-export interface OsbornInstallSpec {
-  tarball: Buffer
-  sha256: string
-}
-
 const IMAGE_OSBORN_PKG = '/usr/local/lib/node_modules/osborn/package.json'
-const VOLUME_OSBORN_DIR = '/workspace/.npm-global/lib/node_modules/osborn'
+const VOLUME_PREFIX = '/workspace/.npm-global'
+const VOLUME_MODULES = `${VOLUME_PREFIX}/lib/node_modules`
+const STAGE_PREFIX = '/workspace/.osborn-stage'
 // base64 text per exec argument, under Linux's 128 KB single-argument limit.
 const TARBALL_CHUNK_CHARS = 96 * 1024
+/** Fly exec timeout for the staged npm install (the install keeps running past it). */
+export const DEV_INSTALL_TIMEOUT_SEC = 600
 
 /** The osborn version baked into the machine's image (what the entrypoint compares against). */
 export async function readImageOsbornVersion(appName: string): Promise<string | null> {
@@ -1403,10 +1398,12 @@ export async function readImageOsbornVersion(appName: string): Promise<string | 
 }
 
 /**
- * Install a packed osborn tarball onto a running machine's volume, without
- * npm publish or an image swap: send it in base64 chunks over exec, verify its
- * sha256, `npm install -g` into /workspace/.npm-global, refresh the skills it
- * ships, restart, and confirm /health reports expectVersion.
+ * Install a packed osborn tarball (frontend/scripts/fly-dev-install.ts) on a
+ * running machine's volume, without npm publish or an image swap: send it in
+ * base64 chunks over exec, verify its sha256, npm install it into a staging
+ * prefix while the agent keeps running, swap it into /workspace/.npm-global
+ * with the skills it ships, restart, and confirm the machine runs it
+ * (/health version, package.json osbornDevSha, `osborn` on the volume).
  *
  * The tarball MUST carry the image's version: the entrypoint reinstalls osborn
  * from npm at boot when the volume copy's version differs from the image's.
@@ -1414,7 +1411,7 @@ export async function readImageOsbornVersion(appName: string): Promise<string | 
  */
 export async function installOsbornSpec(
   appName: string,
-  spec: OsbornInstallSpec,
+  spec: { tarball: Buffer; sha256: string; devSha: string },
   userId: string,
   expectVersion: string,
 ): Promise<{ success: boolean; version: string | null; log: string }> {
@@ -1424,39 +1421,58 @@ export async function installOsbornSpec(
   const run = async (step: string, cmd: string[], timeoutSec: number) => {
     const r = await execInMachine(appName, machine.id, cmd, timeoutSec)
     if (r.exitCode !== 0) throw new Error(`${step} failed (exit ${r.exitCode}): ${(r.stdErr || r.stdOut).substring(0, 400)}`)
-    return r.stdOut
+    return r.stdOut.trim()
   }
+  const fail = (log: string, version: string | null = null) => ({ success: false, version, log })
+  const onVolume = 'installed on the volume; goes live on next restart, and survives only while the image version is unchanged'
+  let swapped = false
 
   try {
-    await run('reset', ['rm', '-f', `${tgz}.b64`, tgz], 10)
+    await run('reset', ['rm', '-rf', `${tgz}.b64`, tgz, STAGE_PREFIX], 30)
     const b64 = spec.tarball.toString('base64')
     for (let i = 0; i < b64.length; i += TARBALL_CHUNK_CHARS) {
       await run('upload', ['sh', '-c', `printf %s "$1" >> ${tgz}.b64`, 'sh', b64.slice(i, i + TARBALL_CHUNK_CHARS)], 30)
     }
     await run('decode', ['sh', '-c', `base64 -d ${tgz}.b64 > ${tgz} && rm -f ${tgz}.b64`], 30)
-    const sum = (await run('sha256sum', ['sha256sum', tgz], 30)).trim().split(/\s+/)[0]
+    const sum = (await run('sha256sum', ['sha256sum', tgz], 30)).split(/\s+/)[0]
     if (sum !== spec.sha256) throw new Error(`sha256 mismatch: got ${sum}, expected ${spec.sha256}`)
-    console.log(`[machines] installOsbornSpec: npm install -g dev build v${expectVersion} on ${appName}`)
-    // The entrypoint seeds $HOME/.claude/skills from the IMAGE's package, so
-    // copy the dev build's skills over the same names (as its refresh does).
-    await run('npm install', ['sh', '-c', [
-      `NPM_CONFIG_PREFIX=/workspace/.npm-global npm install -g ${tgz} --no-audit --no-fund`,
+    console.log(`[machines] installOsbornSpec: staging npm install of v${expectVersion} on ${appName}`)
+    await run('npm install', ['npm', 'install', '-g', '--prefix', STAGE_PREFIX, tgz, '--no-audit', '--no-fund'], DEV_INSTALL_TIMEOUT_SEC)
+    // Swap right before the restart. The old copy goes to .osborn-prev (a name
+    // the entrypoint's own `.osborn-*` cleanup covers); bin links are recreated
+    // relative, as npm writes them; skills are copied over the same names, as
+    // the entrypoint's seeding does from the image package.
+    await run('swap', ['sh', '-c', [
+      'set -e',
+      `M=${VOLUME_MODULES}`,
+      `test -f ${STAGE_PREFIX}/lib/node_modules/osborn/package.json`,
+      'rm -rf "$M/.osborn-prev"',
+      'if [ -d "$M/osborn" ]; then mv "$M/osborn" "$M/.osborn-prev"; fi',
+      `mv ${STAGE_PREFIX}/lib/node_modules/osborn "$M/osborn" || { mv "$M/.osborn-prev" "$M/osborn"; exit 1; }`,
+    ].join('\n')], 60)
+    swapped = true
+    await run('links and skills', ['sh', '-c', [
+      'set -e',
+      `mkdir -p ${VOLUME_PREFIX}/bin && cd ${VOLUME_PREFIX}/bin`,
+      `node -e 'const b=require("../lib/node_modules/osborn/package.json").bin||{};for(const[k,v]of Object.entries(typeof b==="string"?{osborn:b}:b))console.log(k+" "+v)' | while read n p; do ln -sfn "../lib/node_modules/osborn/$p" "$n"; chmod +x "$n"; done`,
       'mkdir -p /workspace/.claude/skills',
-      `for d in ${VOLUME_OSBORN_DIR}/.claude/skills/*/; do [ -d "$d" ] || continue; n=$(basename "$d"); rm -rf "/workspace/.claude/skills/$n"; cp -r "$d" "/workspace/.claude/skills/$n"; done`,
-    ].join(' && ')], 600)
+      `for d in ${VOLUME_MODULES}/osborn/.claude/skills/*/; do [ -d "$d" ] || continue; n=$(basename "$d"); rm -rf "/workspace/.claude/skills/$n"; cp -r "$d" "/workspace/.claude/skills/$n"; done`,
+    ].join('\n')], 60)
   } catch (err) {
-    return { success: false, version: null, log: (err as Error).message }
+    return fail(`${(err as Error).message}${swapped ? `; ${onVolume}` : ''}`)
   }
 
-  const pending = 'installed on the volume; goes live on next restart'
   if (!(await restartService(appName, userId))) {
-    return { success: false, version: null, log: `Restart did not come back healthy: ${pending}` }
+    return fail(`Restart did not come back healthy; the machine may be stopped. Dev build ${onVolume}`)
   }
   const installed = await readInstalledOsbornVersion(appName)
-  if (installed !== expectVersion) {
-    return { success: false, version: installed, log: `/health reports v${installed ?? 'unknown'} after restart, expected v${expectVersion}; the dev build is installed on the volume` }
+  const devSha = await run('verify', ['node', '-p', `require('${VOLUME_MODULES}/osborn/package.json').osbornDevSha`], 15).catch(() => '')
+  const bin = await run('verify', ['sh', '-c', 'readlink -f "$(command -v osborn)"'], 15).catch(() => '')
+  if (installed !== expectVersion || devSha !== spec.devSha || !bin.startsWith(`${VOLUME_PREFIX}/`)) {
+    return fail(`Machine is not running the dev build after restart (version ${installed ?? 'unknown'}, osbornDevSha ${devSha || 'none'}, osborn at ${bin || 'unknown'}); it was replaced or not loaded`, installed)
   }
-  return { success: true, version: installed, log: `Installed dev build as osborn@${installed}` }
+  await run('cleanup', ['rm', '-rf', `${VOLUME_MODULES}/.osborn-prev`, STAGE_PREFIX, tgz], 60).catch(() => {})
+  return { success: true, version: installed, log: `Installed dev build ${spec.devSha} as osborn@${installed}` }
 }
 
 // REMOVED 2026-05-22: updateViaManifest function.

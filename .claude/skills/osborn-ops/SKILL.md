@@ -126,6 +126,16 @@ curl -sS "$URL" -o /tmp/transcript.json
 ```
 Region MUST be `us-west-2` — defaults won't work. The convenience endpoint `/bot/{id}/transcript` does NOT exist (returns 404). Documented chain is above.
 
+## Dev iteration (no npm)
+
+Try an unreleased agent build on one Fly machine without publishing:
+`cd frontend && npx tsx scripts/fly-dev-install.ts <fly-app> [ref, default HEAD] --yes`
+(needs `FLY_API_TOKEN` in `frontend/.env.local`; the Supabase service key, if set, adds the owners to the printout).
+- Packs `agent/` at that commit under the image's version (refuses if `/health` reports another), with `osbornDevSha` set in its package.json.
+- Sends it over Fly exec, installs it into `/workspace/.osborn-stage` while the agent runs, swaps it into `/workspace/.npm-global` with its skills, restarts, then checks `/health`, `osbornDevSha` and that `osborn` resolves on the volume. The printout is the only record.
+- It cannot see whether the agent is mid-task (no busy signal over HTTP), and the restart ends a running turn. Do not press Update on the dashboard while it runs.
+- Rollback: the dashboard Update button or the next release image replaces it once the version changes. At the same version, delete `/workspace/.npm-global/lib/node_modules/osborn` on the machine and restart; the entrypoint reinstalls the image's version from npm (skills the dev build copied stay until the next version change).
+
 ## Quick architecture facts
 
 - Compaction events: `agent/src/index.ts buildOnCompactionEvent()` bridges `PreCompact`/`PostCompact` hooks (and SDK iterator's `subtype:'compact_boundary'` + `subtype:'status'` messages) to the frontend via `claude_output` data channel events. All three modes (direct/realtime/pipeline) wire this — pipeline mode silently dropped it before v0.9.44.
