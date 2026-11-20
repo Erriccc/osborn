@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url'
 const tmp = mkdtempSync(join(tmpdir(), 'library-session-end-'))
 process.env.CLAUDE_CONFIG_DIR = join(tmp, 'claude')
 delete process.env.OPENROUTER_API_KEY
+delete process.env.Z_AI_PERSONAL_API_KEY // a z.ai key is a model key too (content-llm.ts)
+delete process.env.ZAI_API_KEY
 delete process.env.OSBORN_CONTENT_LENS
 delete process.env.OSBORN_SYNC_TOKEN
 const { launchLibraryOnSessionEnd, lastLibraryRun, launchCompactionLens, launchCompactionLensWithRetry, sessionEndRetry, librarySweepHealth } =

@@ -28,6 +28,7 @@ import { loadClientRedactor } from './lens-redact.js'
 import { redactSecrets } from './transcript-sanitizer.js'
 import { runPeriodMap } from './period-run.js'
 import { isTransportError } from './lens-model.js'
+import { hasContentModelKey } from './content-llm.js'
 import { DEFAULT_MIN_SPAN_MS, pageFileName, period, pickLibraryPeriod, segmentPeriods, type LibraryPeriod, type Segmentation } from './lens-library-select.js'
 import { rebuildIndex } from './lens-library-index.js'
 import { contentHashFor, ingestPage, needsIngest, resolveIngestConfig, type IngestOptions, type IngestState } from './lens-ingest.js'
@@ -288,7 +289,7 @@ export async function runLibraryStep(o: LibraryStepOptions): Promise<LibraryStep
   timer?.unref()
   try {
     if (!isContentLensEnabled()) return { ...res, status: 'disabled' }
-    if (!o.dry && !(process.env.OPENROUTER_API_KEY || '').trim()) return { ...res, status: 'no-key' }
+    if (!o.dry && !hasContentModelKey()) return { ...res, status: 'no-key' }
     const db = resolveSessionDb(o.sessionId, o.projectDir, o.cwd)
     if (!db) return { ...res, status: 'no-db' }
     const projectDir = dirname(dirname(dirname(db)))

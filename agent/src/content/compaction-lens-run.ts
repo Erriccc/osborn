@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path'
 import { runCompactionLens, type LensRunReport } from './compaction-lens.js'
 import { loadConversationRows, packWindows, resolveSessionDb } from './lens-db.js'
 import { getModelInfo, windowTokensFor } from './lens-model.js'
+import { NO_CONTENT_KEY, hasContentModelKey } from './content-llm.js'
 import { buildRecordIndex, verifyQuote } from './lens-quotes.js'
 import { isBillingAngle, loadClientRedactor } from './lens-redact.js'
 import { launchCompactionLens } from './lens-launch.js'
@@ -44,10 +45,9 @@ function printReport(r: LensRunReport): void {
 }
 
 async function estimate(sid: string): Promise<void> {
-  const key = process.env.OPENROUTER_API_KEY
-  if (!key) throw new Error('OPENROUTER_API_KEY not set')
+  if (!hasContentModelKey()) throw new Error(NO_CONTENT_KEY)
   const db = mustDb(sid)
-  const info = await getModelInfo(key)
+  const info = await getModelInfo()
   if (!info) throw new Error('model unknown')
   const wt = windowTokensFor(info)
   const red = loadClientRedactor(projectOf(db))

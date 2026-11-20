@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { hasContentModelKey } from './content-llm.js'
 import { LOCK_FILE, LOCK_TTL_MS, LOG_FILE, acquireLock, findTranscriptBySessionId, libraryHomeDir, readSweepStatus, releaseLock, resolveProjectDir, slugDir, sweepCoolingDown, writeLiveSessions, writeSweepStatus, type SweepError } from './lens-paths.js'
 
 export interface LensLaunchPayload {
@@ -70,11 +71,11 @@ export function resolveWorkerCommand(): { args: string[]; worker: string } | nul
 
 let warnedSpawn = false
 
-/** The worker command, or why no worker can run (switched off, no OpenRouter key, no worker file). */
+/** The worker command, or why no worker can run (switched off, no model key, no worker file). */
 function workerOrSkip(): { args: string[]; worker: string } | Extract<LensLaunchResult, { status: 'disabled' | 'no-key' | 'no-worker' }> {
   if (!isContentLensEnabled()) return { status: 'disabled' }
-  // OpenRouter is the only model path; without a key the worker can do nothing.
-  if (!(process.env.OPENROUTER_API_KEY || '').trim()) return { status: 'no-key' }
+  // Without an OpenRouter or z.ai key the worker can do nothing.
+  if (!hasContentModelKey()) return { status: 'no-key' }
   return resolveWorkerCommand() ?? { status: 'no-worker' }
 }
 

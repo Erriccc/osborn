@@ -6,7 +6,7 @@
  *   3. period map     lens-period (one OpenRouter call, quotes verified deterministically)
  *   4. audio (opt.)   lens-audio AudioAdapter — offsets only when a recording exists
  *   5. render         lens-period-render → review .md (redacted again)
- * OpenRouter only. Hard cap: 1 call, $0.50. Never writes content-profile.md or the HWM.
+ * Model via contentChat (OpenRouter, else z.ai). Hard cap: 1 call, $0.50. Never writes content-profile.md or the HWM.
  *
  * CLI: npx tsx agent/src/content/period-run.ts --session <id> --out <file.md>
  *        [--since 24h|ISO] [--until ISO] [--from-row N] [--dry]
@@ -22,6 +22,7 @@ import { redactSecrets } from './transcript-sanitizer.js'
 import { readCompactionBoundaries } from './lens-period-boundaries.js'
 import { localRecordingAdapter, type AudioAdapter } from './lens-audio.js'
 import { refuseOutPath } from './lens-paths.js'
+import { NO_CONTENT_KEY, hasContentModelKey } from './content-llm.js'
 import { parseSince, selectBlock } from './lens-period-block.js'
 import { attachAudio, periodPrompt, readPeriodMap } from './lens-period.js'
 import { renderPeriodMd, type PeriodRunReport } from './lens-period-render.js'
@@ -52,9 +53,8 @@ export async function runPeriodMap(o: PeriodOptions): Promise<PeriodRunReport> {
   const projectDir = dirname(dirname(dirname(db)))
   const refused = refuseOutPath(o.outPath, projectDir)
   if (refused) throw new Error(refused)
-  const key = process.env.OPENROUTER_API_KEY
-  if (!key && !o.dry) throw new Error('OPENROUTER_API_KEY not set')
-  const info = await getModelInfo(key ?? '')
+  if (!o.dry && !hasContentModelKey()) throw new Error(NO_CONTENT_KEY)
+  const info = await getModelInfo()
   if (!info) throw new Error('model info unavailable (cannot enforce the cost cap)')
   const capTokens = windowTokensFor(info)
   const red = loadClientRedactor(projectDir)
@@ -90,11 +90,11 @@ export async function runPeriodMap(o: PeriodOptions): Promise<PeriodRunReport> {
   const budget = new Budget(info, { maxCalls: 1, maxCostUsd: PERIOD_CAP_USD })
   const prompt = periodPrompt(block.text, { from: block.from, to: block.to, rows: block.records.length })
   try {
-    const res = await chat(budget, prompt, key!, MAX_OUT)
+    const res = await chat(budget, prompt, MAX_OUT)
     if (!res) r.errors.push('refused by the cost cap')
     else {
       Object.assign(r, { promptTokens: res.promptTokens, completionTokens: res.completionTokens, finish: res.finish, provider: res.provider })
-      log(`map: ${res.promptTokens}+${res.completionTokens} tok, $${res.costUsd.toFixed(4)}, finish=${res.finish}`)
+      log(`map: via ${res.via} (${res.provider || '?'}), ${res.promptTokens}+${res.completionTokens} tok, $${res.costUsd.toFixed(4)}, finish=${res.finish}`)
       if (res.finish === 'length') r.errors.push('output cap hit (JSON may be truncated)')
       r.map = readPeriodMap(res.content, block.records)
       if (!r.map) {

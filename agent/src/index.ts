@@ -59,6 +59,7 @@ import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmithery
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled } from './content/lens-launch.js'
+import { hasContentModelKey } from './content/content-llm.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { readCompactionMarkers } from './compaction-log.js'
@@ -952,7 +953,7 @@ function startApiServer(workingDir: string, port: number): void {
         // Library: is it on, can it call the model, does it reach /library. Public: counts, times and codes only.
         library: {
           enabled: isContentLensEnabled(),
-          modelKey: !!(process.env.OPENROUTER_API_KEY || '').trim(),
+          modelKey: hasContentModelKey(),
           ingest: (() => { const c = resolveIngestConfig(); return 'reason' in c ? (c.reason === 'no-key' ? 'no-anon-key' : c.reason) : 'on' })(),
           // Last launches, the worker's step outcome, the sweep's backlog and result, the last worker failure.
           ...librarySweepHealth(),
@@ -2107,7 +2108,7 @@ function startApiServer(workingDir: string, port: number): void {
   {
     const c = resolveIngestConfig()
     const why = 'reason' in c ? c.reason : null
-    if (!(process.env.OPENROUTER_API_KEY || '').trim()) console.warn('⚠️ library: OPENROUTER_API_KEY is not set: no Library pages will be written')
+    if (!hasContentModelKey()) console.warn('⚠️ library: neither OPENROUTER_API_KEY nor a z.ai key (Z_AI_PERSONAL_API_KEY / ZAI_API_KEY) is set: no Library pages will be written')
     else if (why && why !== 'disabled') console.warn(`⚠️ library: pages stay on this machine, nothing reaches /library (${why})`)
   }
   server.listen(port, host, () => {
