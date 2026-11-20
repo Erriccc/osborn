@@ -864,7 +864,7 @@ export interface ClaudeSessionEntry {
   title?: string          // ai-title or first real user message (sanitized)
   messageCount: number    // conversation turns (real user turns + assistant text messages)
   firstTs?: string        // first record timestamp (session start)
-  lastActivityAt?: string // last real user/assistant turn timestamp (not mtime)
+  lastActivityAt?: string // last real turn's timestamp (a large file's undated tail: any dated record there); unset → mtime
   filePath: string        // full path to the .jsonl file
   fileSize: number        // bytes
 }
