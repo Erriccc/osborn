@@ -95,7 +95,7 @@ export async function screenTail(page: Page): Promise<string> {
  */
 export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   const { peekCapture, recordingMsAt } = await import('./audio-capture')
-  const { base64, captureStartedAt, clock } = await peekCapture(page)
+  const { bytes: raw, captureStartedAt, clock } = await peekCapture(page)
   // word.start is file-relative; the file runs on the page's audio clock, not the
   // wall clock, so the window is converted through the recorded clock samples.
   const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
@@ -103,7 +103,7 @@ export async function hearSince(page: Page, sinceMs: number): Promise<string> {
   const { join } = await import('node:path')
   const dir = mkdtempSync(join(tmpdir(), 'hear-'))
   try {
-    const raw = Buffer.from(base64, 'base64'); writeFileSync(join(dir, 'in.webm'), raw)
+    writeFileSync(join(dir, 'in.webm'), raw)
     const fileSinceMs = Math.max(0, recordingMsAt(clock, captureStartedAt + sinceMs))
     const cut = await cutTurn(join(dir, 'in.webm'), fileSinceMs, false)
     // Nothing decodable and next to nothing recorded: the page played nothing.

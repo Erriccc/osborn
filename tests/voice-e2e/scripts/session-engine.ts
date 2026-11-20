@@ -574,15 +574,15 @@ async function main() {
   const peekAudioToWav = async (page: Page = active, maxMs = AUDIO_DECODE_CAP_MS): Promise<{ wav: string; clock: AudioClock; durationMs: number } | null> => {
     let cleanup: string[] = []
     try {
-      const { base64, sinceStartMs, clock } = await peekCapture(page)
-      if (!base64) return null
+      const { bytes, sinceStartMs, clock } = await peekCapture(page)
+      if (!bytes.length) return null
       // Decoding the whole recording on every turn does not scale (a 2h
       // capture is ~30s of ffmpeg and ~700MB of wav). Past the cap, proof
       // clips go without the page-audio track rather than stall every /say.
       if (sinceStartMs > maxMs) { mark(`page-audio track skipped — recording is ${Math.round(sinceStartMs / 60000)}min long`); return null }
       const id = ++peekSeq
       const webm = join(RUN_DIR, `_peek-${id}.webm`)
-      writeFileSync(webm, Buffer.from(base64, 'base64'))
+      writeFileSync(webm, bytes)
       const wav = join(RUN_DIR, `_peek-${id}.wav`)
       cleanup = [webm, wav]
       // Full decode → wav: MediaRecorder opus can't be seeked directly (bad
@@ -1673,11 +1673,13 @@ async function main() {
           const decoded = !decoding ? null : await withTimeout(decoding, decodeMs!, `decoding the recording ran out of time (${Math.round(decodeMs! / 1000)}s)`)
             .catch((e) => { hearError = (e as Error).message; void decoding.then((a) => { if (a) rmSync(a.wav, { force: true }) }); return null })
           lap('decode')
-          // Wall-clock span the transcript covers: speaking until the recording was copied (#185).
-          const hearSpan = nothingToHear || hearError ? null : [t0, Date.now()]
+          // Wall-clock span the transcript covers: speaking until the recording was copied (#185);
+          // null when hearing has to copy it again itself (no decode).
+          const hearing = !nothingToHear && !hearError
+          const hearSpan = hearing && decoded ? [t0, Date.now()] : null
           const hearRaw = () => hearSince(page, Math.max(0, t0 - (ears.startedAt ?? tCapture)))
           const budget = left(5000)
-          const heard = !hearSpan ? '' : await withTimeout(decoded ? hearFromWav(decoded.wav, recordingMsAt(decoded.clock, t0)).catch(hearRaw) : hearRaw(),
+          const heard = !hearing ? '' : await withTimeout(decoded ? hearFromWav(decoded.wav, recordingMsAt(decoded.clock, t0)).catch(hearRaw) : hearRaw(),
             budget, `hearing ran out of time (${Math.round(budget / 1000)}s left in the turn)`)
             .catch((e) => { hearError = (e as Error).message.slice(0, 160); return '' })
           lap('hear')

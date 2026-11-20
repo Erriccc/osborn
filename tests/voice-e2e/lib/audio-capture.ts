@@ -291,7 +291,12 @@ export function mergePeek(held: PeekCache | undefined, got: { startedAt: number;
 // grew with the capture's age.
 const peekHeld = new WeakMap<Page, PeekCache>()
 
-export async function peekCapture(page: Page): Promise<{ base64: string; sinceStartMs: number; captureStartedAt: number; clock: AudioClock }> {
+/** What to keep after a peek: past the decode cap nothing is held, and every peek copies it all again. */
+export function heldAfterPeek(merged: PeekCache, sinceStartMs: number): PeekCache | undefined {
+  return sinceStartMs > AUDIO_DECODE_CAP_MS ? undefined : merged
+}
+
+export async function peekCapture(page: Page): Promise<{ bytes: Buffer; sinceStartMs: number; captureStartedAt: number; clock: AudioClock }> {
   const copy = (held: PeekCache | undefined) => page.evaluate(async ({ from, startedAt }) => {
     const cap = (window as any).__osbornCapture
     if (!cap) throw new Error('startCapture was never called')
@@ -321,8 +326,9 @@ export async function peekCapture(page: Page): Promise<{ base64: string; sinceSt
     got = await copy(undefined)
     merged = mergePeek(undefined, { startedAt: got.captureStartedAt, from: 0, total: got.total, bytes: Buffer.from(got.base64, 'base64') })!
   }
-  peekHeld.set(page, merged)
-  return { base64: merged.bytes.toString('base64'), sinceStartMs: got.sinceStartMs, captureStartedAt: got.captureStartedAt, clock: got.clock }
+  const keep = heldAfterPeek(merged, got.sinceStartMs)
+  if (keep) peekHeld.set(page, keep); else peekHeld.delete(page)
+  return { bytes: merged.bytes, sinceStartMs: got.sinceStartMs, captureStartedAt: got.captureStartedAt, clock: got.clock }
 }
 
 export async function stopCapture(page: Page): Promise<{ base64: string; durationMs: number }> {
