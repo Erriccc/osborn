@@ -36,6 +36,10 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match agent/package.json version $VERSION (expected agent-v$VERSION)"
             exit 1
           fi
+          if [ "$GITHUB_REF_TYPE" = "branch" ] && [ "$GITHUB_REF_NAME" != "main" ]; then
+            echo "::error::Run from main or an agent-v* tag, not $GITHUB_REF_NAME"
+            exit 1
+          fi
           if OUT=$(npm view "osborn@$VERSION" version 2>&1); then
             if [ -n "$OUT" ]; then
               echo "::error::osborn@$VERSION is already on the registry; bump agent/package.json"
@@ -50,13 +54,11 @@ jobs:
       - name: Install
         working-directory: agent
         run: npm ci --no-audit --no-fund
-      - name: Build
-        working-directory: agent
-        run: npm run build
       # Same runner as agent-tests.yml.
       - name: Run tests
         working-directory: agent
         run: node ../frontend/scripts/run-tests.mjs . skill-secrets
+      # prepublishOnly builds dist/ first; a failed build aborts before upload.
       # Provenance is generated automatically with trusted publishing from a public repo.
       - name: Publish
         working-directory: agent
