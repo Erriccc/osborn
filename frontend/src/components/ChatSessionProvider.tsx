@@ -53,7 +53,6 @@ interface ChatSessionContextValue {
   provider: string
   voiceArch: string
   codingAgent: string
-  preSelectedSessionId: string | null
   // Optional seed prompt (URL ?prompt=) auto-sent once when a FRESH session
   // connects — powers "Talk about it" from a public page without any new API:
   // same /chat route + the existing send path, just pre-filled.
@@ -1159,7 +1158,6 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     provider,
     voiceArch,
     codingAgent,
-    preSelectedSessionId,
     seedPrompt,
     reconnect: retry,
     disconnect,
