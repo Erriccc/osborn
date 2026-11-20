@@ -92,6 +92,10 @@ export function resolveIngestConfig(): IngestConfig {
   return { ok: true, url, anonKey, token }
 }
 
+/** A content_ingest row key (its content_hash): sha256 of the kind and its parts, one per line. */
+export const ingestRowKey = (kind: string, ...parts: (string | number)[]): string =>
+  createHash('sha256').update([kind, ...parts].join('\n')).digest('hex')
+
 export function contentHashFor(p: Pick<IngestPage, 'sessionId' | 'startRowId' | 'markdown'>): string {
   return createHash('sha256').update(`${p.sessionId}\n${p.startRowId}\n${p.markdown}`).digest('hex')
 }
