@@ -54,7 +54,7 @@ export function spokePhoneNotice(project: string, status: string, text: string):
 }
 
 /** Flat shape: the agent builds without strictNullChecks, so a union would not narrow. */
-export interface DispatchTarget { ok: boolean; sessionId?: string; cwd?: string; project?: string; error?: string }
+export interface DispatchTarget { ok: boolean; sessionId?: string; cwd?: string; project?: string; error?: string; reason?: string }
 
 const DISPATCH_LIVE_WINDOW_MS = 3 * 60_000
 const projectKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '')
@@ -79,6 +79,8 @@ export function resolveDispatchTarget(
   const pick = hits[0]
   const seat = deps.seat(pick.sessionId)
   if (!seat.ok) {
+    // At the cap the target is known, so the caller can keep the instruction for that project (#378).
+    if (seat.reason === 'cap') return { ok: false, error: seat.error, reason: 'cap', sessionId: pick.sessionId, cwd: pick.cwd, project: basename(pick.cwd) }
     if (seat.reason !== 'duplicate') return { ok: false, error: seat.error }
     if (deps.slotState(pick.sessionId) === 'busy') return { ok: false, error: `${basename(pick.cwd)} is still working on an earlier task` }
   }

@@ -23,7 +23,7 @@ setMaxListeners(50)
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync, utimesSync, createWriteStream, openSync, readSync, closeSync, fstatSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
@@ -57,7 +57,7 @@ import { clearPipelineFastBrainSession, prewarmBM25Index, probeFastBrain, fastBr
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { loopIds } from './loops-ledger.js'
+import { loopIds, appendQueuedLoop } from './loops-ledger.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport } from './prompts.js'
@@ -3203,6 +3203,9 @@ async function main() {
     await sendToFrontend({ type: 'background_session_spawned', slotId, workingDir: slotWorkingDir })
   }
 
+  // At the slot cap the instruction is kept in the TARGET project's own ledger (#378), so it files to that project's repo, never the hub's.
+  const keepQueued = (sessionId: string, cwd: string, instruction: string, project: string, typed = false): string =>
+    appendQueuedLoop(sessionId, cwd, instruction, project, { typed }) ? ` It is saved as a queued item for ${project}; it has not started.` : ''
   const DISPATCH_REPORT_CAP_MS = 60 * 60 * 1000  // a spoke still working after an hour is reported as timed out (it keeps running)
   // When a spoke slot we spawned was freed: its last session write is ours, not a terminal's (resolveDispatchTarget).
   const spokeFreedAt = new Map<string, number>()
@@ -3216,6 +3219,11 @@ async function main() {
     if (targetSessionId === focusedId) return fail('Target is the focused session — use the normal path')
     const spawned = !slots.has(targetSessionId)
     if (spawned) {
+      // Full: nothing starts, and no slot_refused for the hub's repo. Text typed in the Instances panel (no `report`) is the user's own.
+      const seat = slots.admit(targetSessionId)
+      const capCwd = !seat.ok && seat.reason === 'cap' ? opts.cwd ?? await resolveCwdForSession(targetSessionId, null) : null
+      const kept = capCwd ? keepQueued(targetSessionId, capCwd, instruction, opts.report?.project ?? basename(capCwd), !opts.report) : ''
+      if (kept) return fail(`${seat.error}${kept}`)
       try { await spawnBackgroundSession(targetSessionId, opts.cwd) } catch (err) { return fail(err instanceof Error ? err.message : String(err)) }
     }
     const slot = slots.get(targetSessionId)
@@ -3282,9 +3290,10 @@ async function main() {
     const pick = resolveDispatchTarget(project.trim(), await listAllClaudeSessions(1000), {
       seat: (id) => slots.admit(id), slotState: targetSlotState, dirExists: existsSync, ownWriteAt: (id) => spokeFreedAt.get(id),
     })
-    if (!pick.ok) return `Not sent: ${pick.error}`
+    if (!pick.ok && pick.reason !== 'cap') return `Not sent: ${pick.error}`
     const cwd = await resolveCwdForSession(pick.sessionId, pick.cwd)
     if (!cwd) return `Not sent: the ${pick.project} session's folder is gone.`
+    if (!pick.ok) return `Not sent: ${pick.error}${keepQueued(pick.sessionId, cwd, instruction.trim(), pick.project)}`
     const sent = await dispatchToSlot(pick.sessionId, instruction.trim(), { cwd, report: { project: pick.project } })
     return sent.ok ? `Sent to ${pick.project}. Its result comes back as a notification.` : `Not sent: ${sent.error}`
   }

@@ -86,6 +86,19 @@ await t('slot cap refusal appends slot_refused', () => {
   assert.ok(body.indexOf("kind: 'slot_refused'") < body.indexOf('return'), 'recorded before the early return')
 })
 
+await t('the spoken dispatch and the panel dispatch keep a capped instruction in the target ledger, not the hub', () => {
+  const spawn = slice(idx, 'async function spawnBackgroundSession(', 'const slotWorkingDir')
+  assert.doesNotMatch(spawn, /queued/i, 'the spawn refusal never writes the hub ledger with the instruction')
+  const keep = slice(idx, 'const keepQueued = ', 'const DISPATCH_REPORT_CAP_MS')
+  assert.match(keep, /appendQueuedLoop\(sessionId, cwd, instruction, project, \{ typed \}\)/)
+  const byName = slice(idx, 'async function dispatchByName(', 'const hubTools')
+  assert.match(byName, /pick\.reason !== 'cap'[\s\S]*resolveCwdForSession\(pick\.sessionId, pick\.cwd\)[\s\S]*keepQueued\(pick\.sessionId, cwd,/)
+  assert.doesNotMatch(byName, /recordLoop/)
+  const slot = slice(idx, 'async function dispatchToSlot(', 'const slot = slots.get(targetSessionId)')
+  assert.match(slot, /seat\.reason === 'cap'[\s\S]*keepQueued\(targetSessionId, capCwd,[\s\S]*if \(kept\) return fail\(/)
+  assert.ok(slot.indexOf('if (kept) return') < slot.indexOf('spawnBackgroundSession('), 'a kept instruction returns before the spawn, so the hub ledger gets no slot_refused')
+})
+
 await t('index registers SIGINT and SIGTERM handlers that flush', () => {
   assert.match(idx, /for \(const sig of \['SIGINT', 'SIGTERM'\] as const\)/)
   const body = slice(idx, "for (const sig of ['SIGINT', 'SIGTERM'] as const)", '\n}\n')

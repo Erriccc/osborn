@@ -310,7 +310,7 @@ const KIND_LABEL: Record<string, string> = {
   todo: 'Unfinished todo', todo_status: 'Unfinished todo', task: 'Unfinished task', task_status: 'Unfinished task',
   dispatch_started: 'Unfinished agent run', dispatch_severed: 'Unfinished agent run',
   question: 'Unanswered question', permission_pending: 'Approval never given', permission_settled: 'Approval never given',
-  slot_refused: 'Refused background session',
+  slot_refused: 'Refused background session', queued: 'Queued, not started',
   budget_denied: 'Work cut off', steward_block: 'Blocked change', open_loop: 'Open item',
 }
 

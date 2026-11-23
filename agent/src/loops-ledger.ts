@@ -20,6 +20,7 @@ import { dirname, join } from 'node:path'
 import { getSidecarPath } from './session-store.js'
 import { appendJsonlLine, readJsonlLines } from './jsonl-sidecar.js'
 import { claudeDir } from './content/lens-paths.js'
+import { clip } from './content/lens-ingest.js'
 import { githubIssueBase } from './steward-verdict.js'
 
 const LOOPS_FILE = 'loops.jsonl'
@@ -45,7 +46,7 @@ export type LoopKind =
   | 'steward_block' | 'steward_clear'
   | 'question' | 'question_answered'
   | 'permission_pending' | 'permission_settled'
-  | 'slot_refused' | 'budget_denied' | 'open_loop'
+  | 'slot_refused' | 'budget_denied' | 'open_loop' | 'queued'
   | 'filed' | 'recapped' | 'held'
 
 export interface LoopRecord {
@@ -64,6 +65,8 @@ export interface LoopRecord {
   by?: 'user' | 'abort'
   url?: string
   cwd?: string
+  /** `queued`: the instruction itself, kept to start it later (`text` is a short title). */
+  instruction?: string
   /** `held`: the repo that held the item back (public or unknown visibility). */
   repo?: string
   truncated?: boolean
@@ -155,6 +158,8 @@ const OPENS: Partial<Record<LoopKind, (r: LoopRecord) => boolean>> = {
   slot_refused: () => true,
   budget_denied: () => true,
   open_loop: () => true,
+  // An instruction that found no free background slot: startable later, open until filed.
+  queued: () => true,
 }
 
 /** Fold the ledger: the last record per item id wins. `prompt` and `session` lines are never items. */
@@ -234,7 +239,34 @@ export const loopIds = {
   slot: (text: string) => `slot:${loopKey('slot', text)}`,
   budget: (turn: number, at: string) => `budget:${turn}:${at}`,
   openLoop: (text: string) => `open_loop:${loopKey('open_loop', text)}`,
+  queued: (project: string, instruction: string) => `queued:${loopKey('queued', `${project} ${instruction}`)}`,
   steward: () => 'steward',
+}
+
+// Keeps the record, title included, under MAX_LINE_BYTES (one O_APPEND write) for most text.
+const MAX_QUEUED_INSTRUCTION = 800
+
+/**
+ * The record for an instruction refused at slot capacity. `text` is a short title; `instruction` keeps enough
+ * to start it later. The hub model wrote the instruction, so it is inferred; only text the user typed
+ * themselves (`typed`) is explicit.
+ */
+export function queuedLoopRecord(instruction: string, project: string, opts: { typed?: boolean } = {}): LoopRecordInput {
+  const full = clip(String(instruction || '').replace(/\s+/g, ' ').trim(), MAX_QUEUED_INSTRUCTION)
+  const typed = opts.typed === true
+  return {
+    kind: 'queued', id: loopIds.queued(project, full), text: clip(`Queued for ${project}: ${full}`, MAX_ITEM_CHARS), instruction: full,
+    source: typed ? 'explicit' : 'inferred', origin: typed ? 'user_mic' : 'tool',
+  }
+}
+
+/**
+ * Keep a refused instruction in the TARGET project's ledger (its session `sessionId` under `cwd`), so the flush
+ * files it to that project's own repo and never to the hub's. Writes the ledger's `session` line when missing.
+ */
+export function appendQueuedLoop(sessionId: string, cwd: string, instruction: string, project: string, opts: { typed?: boolean } = {}): boolean {
+  if (!readLoopRecords(sessionId, cwd).some((r) => r.kind === 'session' && r.cwd)) appendLoopRecord(sessionId, cwd, { kind: 'session', cwd, fg: true })
+  return appendLoopRecord(sessionId, cwd, { ...queuedLoopRecord(instruction, project, opts), fg: true })
 }
 
 // ── IO ──────────────────────────────────────────────────────────────────────
