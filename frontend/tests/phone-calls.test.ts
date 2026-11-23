@@ -101,6 +101,7 @@ async function main() {
       let cols = ''
       const b: any = {
         select: (c: string) => { cols = c; return b }, eq: () => b,
+        update: (v: any) => { (st.updates ||= []).push(v); return b },
         single: async () => ({ data: st.instance, error: null }),
         then: (res: any) => res({ data: cols === 'user_id' ? st.claims : st.instance, error: null }),
       }
@@ -309,6 +310,8 @@ async function main() {
     const f = st.fetches.find((x: any) => x.url === 'https://agent.example/connect-room')
     eq(JSON.parse(f.init.body).roomName, ROOM, 'caller room')
     eq(st.deleted, [], 'no hang-up')
+    eq(st.updates.length, 1, 'one last_seen write')
+    ok(!Number.isNaN(Date.parse(st.updates[0].last_seen)), 'last_seen is a timestamp')
   })
   await t('routeCall: unknown number is hung up and no machine is touched', async () => {
     reset(); st.rpc = { data: null, error: null }

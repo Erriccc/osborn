@@ -189,8 +189,11 @@ export async function routeCall(
     } finally {
       await (await hold.playing)?.()
     }
-    if (r.ok) touchLastSeen(admin, userId)
-    if (r.ok) return r.callCode ? await codeStep(admin, userId, call.roomName, r.agentUrl, syncToken) : 'connected'
+    if (r.ok) {
+      const out = r.callCode ? await codeStep(admin, userId, call.roomName, r.agentUrl, syncToken) : 'connected'
+      if (out === 'connected') touchLastSeen(admin, userId)
+      return out
+    }
     if (r.reason === 'busy') {
       await sayThenHangUp(call.roomName, 'busy', r.agentUrl && agentLine(r.agentUrl, syncToken, BUSY_LINE), BUSY_HANGUP_MS)
       return 'busy'

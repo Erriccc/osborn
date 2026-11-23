@@ -422,7 +422,7 @@ async function main() {
   const call = { roomName: ROOM, callerE164: '+15551230000' }
   const admin2: any = { ...admin, rpc: async () => ({ data: USER, error: null }) }
   admin2.from = (name: string) => name === 'instances'
-    ? { select: () => ({ eq: () => ({ single: async () => ({ data: { sandbox_id: 'osborn-mine', sync_token: TOKEN } }) }) }) }
+    ? { update: () => ({ eq: () => ({ then: (r: any) => r({ error: null }) }) }), select: () => ({ eq: () => ({ single: async () => ({ data: { sandbox_id: 'osborn-mine', sync_token: TOKEN } }) }) }) }
     : table(name)
   mocks['@/lib/sandbox-claims'].serviceClient = () => admin2
 

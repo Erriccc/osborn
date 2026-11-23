@@ -9,5 +9,9 @@ interface InstancesClient {
 
 /** Record activity on the user's machine (the admin "Last active" reads instances.last_seen). Never awaited: a failed write must not slow or fail the request. */
 export function touchLastSeen(client: InstancesClient, userId: string): void {
-  client.from('instances').update({ last_seen: new Date().toISOString() }).eq('user_id', userId).then(({ error }) => { if (error) console.warn(`[last-seen] write failed for ${userId}: ${error.message}`) }, () => {})
+  try {
+    client.from('instances').update({ last_seen: new Date().toISOString() }).eq('user_id', userId).then(({ error }) => { if (error) console.warn(`[last-seen] write failed for ${userId}: ${error.message}`) }, () => {})
+  } catch (e) {
+    console.warn(`[last-seen] write failed for ${userId}: ${(e as Error).message}`)
+  }
 }

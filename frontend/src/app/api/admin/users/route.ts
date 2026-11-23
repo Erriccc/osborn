@@ -73,7 +73,7 @@ export async function GET() {
     const instance = instanceByUser.get(u.id as string)
     const machine = live.get(u.id as string)
     // Supabase records last_sign_in_at only when someone signs in again, so a saved session never moves it.
-    // "Last active" is the newest of when the app last provisioned, started or connected to the machine (last_seen) and the
+    // "Last active" is the newest of when the app last provisioned, started, synced or connected to the machine, in the app or by phone (last_seen) and the
     // machine's last start or exit (Fly).
     const activeAt = Math.max(Date.parse(instance?.last_seen as string) || 0, machine?.lastEventAt ?? 0)
     return {
