@@ -58,7 +58,7 @@ import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { loopIds } from './loops-ledger.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir, } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
@@ -3207,7 +3207,8 @@ async function main() {
   const spokeFreedAt = new Map<string, number>()
 
   // Push an instruction into a background slot (spawning it first if needed). With `report`, the hub
-  // hears the result when the slot goes idle (the Instances panel path passes none and is unchanged).
+  // hears the result when the slot goes idle. A cold slot first answers its kickoff, so the Instances panel path
+  // now waits up to a minute for it and then fails with 'Slot did not start within a minute' (the slot stays held until hang-up).
   async function dispatchToSlot(targetSessionId: string, instruction: string, opts: { cwd?: string; report?: { project: string } } = {}): Promise<{ ok: boolean; error?: string }> {
     const fail = (error: string) => { void sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error }); return { ok: false, error } }
     const focusedId = currentLLM?.sessionId || currentResumeSessionId || null

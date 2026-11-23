@@ -3548,7 +3548,7 @@ class ClaudeLLMStream extends llm.LLMStream {
           return
         }
         const steerNow = process.env.OSBORN_MSG_PRIORITY !== 'off'
-          && steersTurn(userText)               // meeting chunks, system notes and spoke reports never abort a turn
+          && steersTurn(userText)               // meeting chunks, [SYSTEM notes and spoke reports never abort a turn
           && !this.#llmRef.permissionPending    // don't abort the turn awaiting the user's answer
           && !this.#llmRef.compacting           // don't cancel an in-flight compaction
         this.#llmRef.pushMessage(userText, sdkOptions, {

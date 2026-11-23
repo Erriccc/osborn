@@ -38,5 +38,7 @@ Status `done` means the spoke went idle, not that its checks passed: say what th
 - No time or spend budget; a spoke still working after an hour is reported as timed out and keeps running.
 - Spokes share the background-session limit with the Instances panel (2 by default, `OSBORN_MAX_BG_SLOTS`, at most 8), and a project takes one dispatch at a time.
 - Two dispatch calls for the same project at once can leave a seat held until hang-up; a switch to the spoke's session within 5 seconds after it finished can report it as stopped.
+- The mobile app's approval card does not scroll, so a very long instruction can push its buttons off screen: keep instructions short.
+- A cold project's session is started and then waits up to a minute for its first reply; if it does not, the call fails with "Slot did not start within a minute", the half-started session stays visible in the Instances panel until hang-up, and a retry works once it has started.
 - Only the main conversation has the tool: a background session does not, and a sub-agent's call is refused.
 - Unverified live: that the tool reaches `canUseTool` at runtime, how the dialog renders it, and that the handler runs end to end.

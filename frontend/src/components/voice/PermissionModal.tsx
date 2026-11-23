@@ -137,7 +137,7 @@ export function ApprovalCard({
       <div className="p-3 sm:p-4 space-y-3">
         {/* Description */}
         <div className="bg-gray-800/50 rounded-xl p-3 border border-gray-700/50">
-          <p className="text-gray-300 text-sm leading-relaxed">{permission.description}</p>
+          <p className="text-gray-300 text-sm leading-relaxed whitespace-pre-wrap break-words">{permission.description}</p>
           {inputDetails && !permission.description.includes(inputDetails.value) && (
             <div className="mt-2 pt-2 border-t border-gray-700/50">
               <span className="text-[10px] text-gray-500 uppercase tracking-wider">{inputDetails.label}</span>

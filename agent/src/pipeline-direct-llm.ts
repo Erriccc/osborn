@@ -15,7 +15,7 @@ import { askPipelineFastBrain, type PipelineFastBrainResult, type AgentControlCa
 import { storeExists, openStore, recentRows } from './session-store.js'
 import { statusManager } from './status-manager.js'
 import { noiseGate, GATE_CONTEXT_TURNS } from './noise-gate.js'
-import { cleanTurnText, redactSecrets, steersTurn } from './content/transcript-sanitizer.js'
+import { cleanTurnText, redactSecrets, isAmbientTurn } from './content/transcript-sanitizer.js'
 import { EventEmitter } from 'events'
 
 // Bypass marker for gate-approved contexts: the deferred gate stream re-enters
@@ -381,7 +381,7 @@ export class PipelineDirectLLM extends llm.LLM {
     // as the app's own action, not a model turn. Before the interruption
     // enrichment, so its context waits for the next real turn. The empty
     // deferred stream gives LiveKit a reply with nothing to say.
-    if (userText.trim() && steersTurn(userText) && this.#opts.takeVoiceAction?.(userText)) {
+    if (userText.trim() && !isAmbientTurn(userText) && this.#opts.takeVoiceAction?.(userText)) {
       console.log(`📞 [voice-action] handled without the model: "${userText.slice(0, 60)}"`)
       return new NoiseGateStream(this, { chatCtx, toolCtx, connOptions }, async () => {})
     }
@@ -392,7 +392,7 @@ export class PipelineDirectLLM extends llm.LLM {
     // in the SDK persistent subprocess history). Meeting chunks are not real
     // user turns and never get the tail.
     let sessionTailBlock = ''
-    if (this.#postCompactionTailPending && steersTurn(userText) && userText.trim()) {
+    if (this.#postCompactionTailPending && !isAmbientTurn(userText) && userText.trim()) {
       sessionTailBlock = buildSessionTail(
         this.#claudeLLM.sessionId,
         this.#opts.workingDirectory || process.cwd(),
@@ -421,7 +421,7 @@ export class PipelineDirectLLM extends llm.LLM {
     // [CONTEXT] (defeating the downstream '[MEETING' priority guard) and fire
     // interruptQuery() for a transcript chunk, aborting working turns nonstop.
     // Leave the pending context for the next REAL user message.
-    const isMeetingChunkEarly = !steersTurn(userText)  // meeting chunks, system notes, spoke reports
+    const isMeetingChunkEarly = isAmbientTurn(userText)  // meeting chunks and spoke reports
     // What the inner ClaudeLLM receives: the original chatCtx, or an enriched
     // shallow copy of it (see withLastUserContent).
     let ctxForClaude: llm.ChatContext = chatCtx
@@ -564,7 +564,7 @@ export class PipelineDirectLLM extends llm.LLM {
 
     // Fire pipeline fast brain in background — no await, no blocking. Skip for
     // meeting chunks (silent observer / meeting-response path, not a user turn).
-    if (userText.trim() && steersTurn(userText)) {
+    if (userText.trim() && !isAmbientTurn(userText)) {
       this.#firePipelineFastBrain(userText)
     }
 

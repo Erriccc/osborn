@@ -5,7 +5,7 @@ import { SlotRegistry } from '../src/slot-manager.js'
 import { dispatchServers } from '../src/dispatch-tool.js'
 import { DISPATCH_TOOL, DISPATCH_SERVER, DISPATCH_TOOL_NAME, dispatchFieldsOk, dispatchCallRefusal, resolveDispatchTarget, spokePhoneNotice } from '../src/dispatch.js'
 import { getSpokeReport } from '../src/prompts.js'
-import { steersTurn } from '../src/content/transcript-sanitizer.js'
+import { steersTurn, isAmbientTurn } from '../src/content/transcript-sanitizer.js'
 import { describePermission, speakablePermission } from '../src/approval-policy.js'
 import { classifyRisk } from '../src/risk-tier.js'
 import { readFileSync } from 'node:fs'
@@ -102,9 +102,11 @@ t('what goes to the phone has secrets redacted and a bounded length', () => {
   assert.ok(spokePhoneNotice('osborn', 'done', 'y'.repeat(900)).length < 330)
   assert.match(spokePhoneNotice('osborn', 'stopped', 'x'), /stopped/)
 })
-t('a typed message that merely starts with [SYSTEM or [MEETING still steers; injected notes do not', () => {
-  for (const typed of ['[SYSTEM design] fix login', '[MEETING notes] summarize', '[NOTIFICATIONS] on', 'fix the bug']) assert.equal(steersTurn(typed), true, typed)
-  for (const injected of ['[SYSTEM] note', '[SYSTEM — SILENT CONTROL MESSAGE] x', '[SYSTEM: x]', '[MEETING — bot1]:\nhi', '[NOTIFICATION] Spoke report']) assert.equal(steersTurn(injected), false, injected)
+t('steersTurn keeps every [SYSTEM and [MEETING note quiet and adds [NOTIFICATION]; the pipeline guards add only [NOTIFICATION] to [MEETING', () => {
+  for (const q of ['[SYSTEM note — the user enabled noise-cancellation mode', '[SYSTEM] note', '[SYSTEM design] x', '[MEETING — bot1]:\nhi', '[NOTIFICATION] Spoke report']) assert.equal(steersTurn(q), false, q)
+  for (const s of ['fix the bug', '[NOTIFICATIONS] on']) assert.equal(steersTurn(s), true, s)
+  for (const q of ['[MEETING — bot1]:\nhi', '[NOTIFICATION] Spoke report']) assert.equal(isAmbientTurn(q), true, q)
+  for (const s of ['[SYSTEM design] fix login', '[SYSTEM note — x', 'fix the bug', '[NOTIFICATIONS] on']) assert.equal(isAmbientTurn(s), false, s)
 })
 t('a follow-up to a session our freed slot just wrote is not refused as live elsewhere', () => {
   const now = Date.UTC(2026, 11, 1)
@@ -114,15 +116,11 @@ t('a follow-up to a session our freed slot just wrote is not refused as live els
   assert.equal(resolveDispatchTarget('proj', wrote, { ...base, now, ownWriteAt: () => now - 29_000 }).ok, true)
   assert.equal(resolveDispatchTarget('proj', wrote, { ...base, now, ownWriteAt: () => now - 120_000 }).ok, false, 'a later write is not ours')
 })
-t('the pipeline fast brain is skipped for every no-steer turn', () => {
-  assert.match(readFileSync(new URL('../src/pipeline-direct-llm.ts', import.meta.url), 'utf-8'), /userText\.trim\(\) && steersTurn\(userText\)\) \{\n\s+this\.#firePipelineFastBrain/)
-})
-t('the pipeline and the Claude wrapper both use the shared steer predicate', () => {
-  for (const f of ['../src/pipeline-direct-llm.ts', '../src/claude-llm.ts']) {
-    const src = readFileSync(new URL(f, import.meta.url), 'utf-8')
-    assert.match(src, /steersTurn\(userText\)/, f)
-    assert.doesNotMatch(src, /!userText\.startsWith\('\[MEETING'\)/, f)
-  }
+t('the pipeline guards and the Claude wrapper use the shared predicates', () => {
+  const pipe = readFileSync(new URL('../src/pipeline-direct-llm.ts', import.meta.url), 'utf-8')
+  assert.equal((pipe.match(/isAmbientTurn\(userText\)/g) || []).length, 4)
+  assert.doesNotMatch(pipe, /steersTurn/)
+  assert.match(readFileSync(new URL('../src/claude-llm.ts', import.meta.url), 'utf-8'), /steersTurn\(userText\)/)
 })
 t('a spoke report names project, session and status and bounds the summary', () => {
   const r = getSpokeReport({ project: 'osborn', sessionId: 'abcdef123456', status: 'failed', summary: 'x'.repeat(5000) })
