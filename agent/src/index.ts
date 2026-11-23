@@ -51,7 +51,7 @@ import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds, findUpdates } from './store-catalog.js'
 import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, skillHeading, storeName, type AgentDef, type Role } from './agent-store.js'
-import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
+import { clearPipelineFastBrainSession, prewarmBM25Index, probeFastBrain, fastBrainModelStatus } from './pipeline-fastbrain.js'
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
@@ -352,7 +352,7 @@ let currentDuck: ReturnType<typeof installDuck> | null = null
 let duckRestoreTimer: ReturnType<typeof setTimeout> | null = null
 // phoneRoom: join this caller's room (a phone call) instead of a fresh one.
 let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null
-// Failed fast-brain lookups are kept out of the chat; the count is on /health (read with curl, no page shows it yet).
+// Failed fast-brain lookups are kept out of the chat; the count is on /health, shown in Settings on a cloud machine.
 const fastBrainErrors = { count: 0, lastAt: null as string | null }
 // Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
 // agent's room and play the agent's REAL TTS audio track — bit-identical to
@@ -986,7 +986,7 @@ function startApiServer(workingDir: string, port: number): void {
         status: 'ok',
         workingDir,
         version,
-        fastBrain: { errors: fastBrainErrors.count, lastErrorAt: fastBrainErrors.lastAt },
+        fastBrain: { errors: fastBrainErrors.count, lastErrorAt: fastBrainErrors.lastAt, ...fastBrainModelStatus() },
         // Library: is it on, can it call the model, does it reach /library. Public: counts, times and codes only.
         library: {
           enabled: isContentLensEnabled(),
@@ -5788,6 +5788,8 @@ async function main() {
     const activeProvider = applyAuthFallback()
     agentActiveProvider = activeProvider === 'none' ? null : activeProvider
     console.log(`🧭 Active model provider: ${activeProvider}`)
+    // A retired fast-brain model is found now, not on the first turn.
+    if (sessionVoiceMode === 'pipeline') void probeFastBrain()
 
     // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession

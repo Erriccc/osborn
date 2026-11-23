@@ -38,12 +38,6 @@ export interface DirectConfig {
   }
 }
 
-// Inference model configuration (fast brain + future: main model override)
-export interface InferenceConfig {
-  fastBrainModel?: string   // OpenRouter model ID
-  fastBrainProvider?: 'openrouter'
-}
-
 export interface OsbornConfig {
   // Working directory for the coding agent
   workingDirectory?: string
@@ -56,9 +50,6 @@ export interface OsbornConfig {
 
   // STT/TTS provider config — admin-owned, not written to config.yaml
   direct?: DirectConfig
-
-  // Inference model config — admin-owned, not written to config.yaml
-  inference?: InferenceConfig
 
   // Tool approval mode (#364), set from the app; applies to browser and phone calls.
   approvalMode?: ApprovalMode
@@ -195,12 +186,11 @@ export interface McpServerStatus {
 // Leaving it undefined lets the runtime self-heal in index.ts resolve it on every boot
 // from OSBORN_CWD → process.cwd() at the actual time the agent starts.
 // ============================================================
-// PROVIDER DEFAULTS — Single source of truth for STT, TTS, and inference.
+// PROVIDER DEFAULTS — Single source of truth for STT and TTS.
 // To switch provider: change `provider` (and model/voice) here.
 // All alternatives are listed as comments. Env vars override without redeploy:
 //   STT:       OSBORN_STT_PROVIDER, OSBORN_STT_MODEL, OSBORN_STT_LANGUAGE
 //   TTS:       OSBORN_TTS_PROVIDER, OSBORN_TTS_MODEL, OSBORN_TTS_VOICE
-//   Inference: OSBORN_FAST_BRAIN_MODEL
 // These are admin-owned defaults — NOT written to config.yaml on disk.
 // ============================================================
 const DEFAULT_CONFIG: OsbornConfig = {
@@ -246,20 +236,6 @@ const DEFAULT_CONFIG: OsbornConfig = {
       // provider: 'groq-orpheus', model: 'canopylabs/orpheus-v1-english', voice: 'autumn'
       //   $22/M chars, fast (Groq chips). Voices: autumn diana hannah austin daniel troy.
     },
-  },
-  inference: {
-    // ── Active ───────────────────────────────────────────────────────────────
-    fastBrainModel: 'deepseek/deepseek-chat',
-    fastBrainProvider: 'openrouter',
-    // Parallel fast brain: answers greetings/follow-ups instantly while main agent
-    // processes. Uses OpenRouter (OPENROUTER_API_KEY). ~20ms TTFB on deepseek-chat.
-    //
-    // ── Alternatives ─────────────────────────────────────────────────────────
-    // fastBrainModel: 'deepseek/deepseek-reasoner'            — slower, deeper CoT
-    // fastBrainModel: 'google/gemini-flash-1.5'               — Google via OpenRouter
-    // fastBrainModel: 'openai/gpt-4o-mini'                    — OpenAI via OpenRouter
-    // fastBrainModel: 'meta-llama/llama-3.1-8b-instruct:free' — free tier via OpenRouter
-    // fastBrainModel: 'anthropic/claude-haiku-4-5-20251001'   — Haiku via OpenRouter
   },
   mcpServers: {
     // ─────────────────────────────────────────────────────────────────────────
@@ -335,10 +311,10 @@ export function loadConfig(): OsbornConfig {
   }
 
   // Create default config if it doesn't exist.
-  // Exclude `direct` (STT/TTS) and `inference` — admin-owned, not user config on disk.
+  // Exclude `direct` (STT/TTS) — admin-owned, not user config on disk.
   // Writing them to disk causes the file to permanently override npm package updates.
   if (!existsSync(CONFIG_FILE)) {
-    const { direct: _d, inference: _i, ...persistable } = DEFAULT_CONFIG
+    const { direct: _d, ...persistable } = DEFAULT_CONFIG
     writeFileSync(CONFIG_FILE, stringify(persistable), 'utf-8')
     console.log(`📝 Created default config: ${CONFIG_FILE}`)
     return DEFAULT_CONFIG
@@ -431,14 +407,6 @@ export function getDirectConfig(_config: OsbornConfig): Required<DirectConfig> {
       model: process.env.OSBORN_TTS_MODEL || defaults.tts!.model,
       voice: process.env.OSBORN_TTS_VOICE || defaults.tts!.voice,
     },
-  }
-}
-
-export function getInferenceConfig(_config: OsbornConfig): Required<InferenceConfig> {
-  const defaults = DEFAULT_CONFIG.inference!
-  return {
-    fastBrainModel: process.env.OSBORN_FAST_BRAIN_MODEL || defaults.fastBrainModel!,
-    fastBrainProvider: 'openrouter',
   }
 }
 
