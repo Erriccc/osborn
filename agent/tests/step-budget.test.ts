@@ -23,5 +23,9 @@ const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'prompts'
 assert.doesNotMatch(prompt, /your 3rd tool call/)
 const reminder = readFileSync(join(dir, 'turn-shape-reminder.md'), 'utf8')
 assert.doesNotMatch(reminder, /Call 3 max/)
-assert.match(reminder, /10 per turn/)
+assert.match(reminder, /at most 10 direct tool calls per turn/)
+// Both main-agent prompts ask for spoken progress at the same rhythm the code nudges at.
+for (const p of [prompt, research]) {
+  assert.match(p, new RegExp(`every ${cadence} calls`), 'prompt cadence matches SPEAK_CADENCE_N')
+}
 console.log('step-budget tests passed')
