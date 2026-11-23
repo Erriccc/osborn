@@ -3206,10 +3206,9 @@ async function main() {
 
   // At the slot cap the instruction is kept in the TARGET project's own ledger (#378), so it files to that project's repo, never the hub's.
   const keepQueued = (sessionId: string, cwd: string, instruction: string, project: string, typed = false): string =>
-    appendQueuedLoop(sessionId, cwd, instruction, project, { typed }) ? ` It is saved as a queued item for ${project}; it has not started.` : ''
-  // A freed slot offers ONE queued item to the hub (#378); it never starts one on its own.
+    appendQueuedLoop(sessionId, cwd, instruction, project, { typed }) && (queuedOfferer.add(project, instruction), true) ? ` It is saved as a queued item for ${project}; it has not started.` : ''
+  // A freed slot offers ONE item this process queued to the hub (#378), never a ledger's; it never starts one on its own.
   const queuedOfferer = makeOfferer({
-    hubCwd: () => (currentLLM as any)?.workingDirectory || workingDir,
     hubIdle: () => (currentLLM as any)?.busyState?.()?.idle ?? true,
   })
   const DISPATCH_REPORT_CAP_MS = 60 * 60 * 1000  // a spoke still working after an hour is reported as timed out (it keeps running)
@@ -3303,7 +3302,7 @@ async function main() {
     if (!cwd) return `Not sent: the ${pick.project} session's folder is gone.`
     if (!pick.ok) return `Not sent: ${pick.error}${keepQueued(pick.sessionId, cwd, instruction.trim(), pick.project)}`
     const sent = await dispatchToSlot(pick.sessionId, instruction.trim(), { cwd, report: { project: pick.project } })
-    if (sent.ok) markQueuedStarted(cwd, pick.project, instruction.trim())
+    if (sent.ok) { markQueuedStarted(cwd, pick.project, instruction.trim()); queuedOfferer.started(pick.project, instruction) }
     return sent.ok ? `Sent to ${pick.project}. Its result comes back as a notification.` : `Not sent: ${sent.error}`
   }
   const hubTools = dispatchServers(dispatchByName)

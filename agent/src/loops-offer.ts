@@ -1,43 +1,33 @@
 /**
- * loops-offer.ts — follow-through (#378) slice 2: when a background slot frees, offer the hub ONE queued
- * item (never start it). getSpokeReport words the offer; the hub asks the user, and on a yes it calls
- * mcp__dispatch__send (approval mode applies), which records `started`.
+ * loops-offer.ts — follow-through (#378) slice 2: when a background slot frees, offer the hub ONE item this
+ * process itself refused at the cap (never one read from a ledger file, which any agent can write). It never
+ * starts one: the hub asks the user and calls mcp__dispatch__send only on a yes (approval mode applies).
  */
-import { existsSync } from 'node:fs'
-import { basename } from 'node:path'
-import { listLedgers, nextQueued, readLoopRecordsAt, type LoopItem } from './loops-ledger.js'
 import { dispatchFieldsOk } from './dispatch.js'
 
 const OFFER_REPEAT_MS = 60 * 60 * 1000
+const MAX_OFFERS = 2
 
-/**
- * The oldest open queued item across ledgers of OTHER project folders that still exist. The ledger is model-written
- * data, so an item the dispatch tool itself would refuse (control or bidi characters, too long) is never offered.
- */
-function findQueuedOffer(hubCwd: string | undefined, skip: (id: string) => boolean): { project: string; item: LoopItem } | undefined {
-  const found: Array<{ project: string; item: LoopItem }> = []
-  for (const l of listLedgers()) {
-    if (!l.cwd || l.cwd === hubCwd || !existsSync(l.cwd)) continue
-    const item = nextQueued(readLoopRecordsAt(l.path))
-    const project = basename(l.cwd)
-    if (item && !skip(item.id) && dispatchFieldsOk(project, item.instruction)) found.push({ project, item })
-  }
-  return found.sort((a, b) => a.item.at.localeCompare(b.item.at))[0]
-}
-
-/** One offer per slot-free event, never the same item twice within an hour, never during a live hub turn. */
-export function makeOfferer(deps: { hubCwd: () => string | undefined; hubIdle: () => boolean; now?: () => number }) {
-  const offeredAt = new Map<string, number>()
+export function makeOfferer(deps: { hubIdle: () => boolean; now?: () => number }) {
+  const items = new Map<string, { project: string; instruction: string; offers: number; last: number }>()
   const now = deps.now ?? Date.now
+  const key = (project: string, instruction: string) => `${project}\n${instruction.trim()}`
   return {
-    /** The item to offer on a slot-free event, or null. Records the offer. */
+    /** Remember an item this process queued, with its full (already validated) instruction. */
+    add(project: string, instruction: string): void { if (dispatchFieldsOk(project, instruction)) items.set(key(project, instruction), { project, instruction: instruction.trim(), offers: 0, last: -Infinity }) },
+    /** The hub sent it: stop offering. */
+    started(project: string, instruction: string): void { items.delete(key(project, instruction)) },
+    /** The oldest item due an offer, or null. At most 2 offers per item, an hour apart, never during a live turn. */
     onSlotFree(): { project: string; instruction: string } | null {
       if (!deps.hubIdle()) return null
       const t = now()
-      const o = findQueuedOffer(deps.hubCwd(), (id) => t - (offeredAt.get(id) ?? -Infinity) < OFFER_REPEAT_MS)
-      if (!o) return null
-      offeredAt.set(o.item.id, t)
-      return { project: o.project, instruction: o.item.instruction! }
+      for (const [k, i] of items) {
+        if (t - i.last < OFFER_REPEAT_MS) continue
+        i.last = t
+        if (++i.offers >= MAX_OFFERS) items.delete(k)
+        return { project: i.project, instruction: i.instruction }
+      }
+      return null
     },
   }
 }

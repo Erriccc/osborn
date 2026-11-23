@@ -274,13 +274,6 @@ export function appendQueuedLoop(sessionId: string, cwd: string, instruction: st
   return appendLoopRecord(sessionId, cwd, { ...queuedLoopRecord(instruction, project, opts), fg: true })
 }
 
-/** The oldest queued item still open: not started, not filed. */
-export function nextQueued(records: LoopRecord[]): LoopItem | undefined {
-  return [...foldLoops(records).values()]
-    .filter((i) => i.kind === 'queued' && i.open && !i.filedUrl && !!i.instruction)
-    .sort((a, b) => a.at.localeCompare(b.at))[0]
-}
-
 /**
  * The hub sent `instruction` to `project` (folder `cwd`): close a matching open queued item in any of that
  * project's ledgers with `started` (same id as queuedLoopRecord). Returns whether one matched.
