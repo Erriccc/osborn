@@ -812,30 +812,22 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
       const hn = readSync(fd, headBuf, 0, HEAD, 0)
       const tailBuf = Buffer.alloc(TAIL)
       const tn = readSync(fd, tailBuf, 0, TAIL, Math.max(0, size - TAIL))
-      let head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
-      let tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
-      // A long session's samples can hold no user turn (one cut-off huge tool
-      // result, or a tail of tool calls), leaving it "Untitled session" with no
-      // preview. Only then read a wider window, bounded by PREVIEW_WIDEN.
-      const readWindow = (start: number, end: number, skipFirstPartial: boolean): PreviewAcc => {
-        const buf = Buffer.alloc(end - start)
-        const n = readSync(fd, buf, 0, end - start, start)
-        return scanPreviewLines(buf.toString('utf8', 0, n), skipFirstPartial)
+      const head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
+      const tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
+      // Samples with no user turn (a cut-off huge line, a tail of tool calls) widen once.
+      let widened: PreviewAcc | undefined
+      if (!tail.lastUser || !(tail.aiTitle ?? head.aiTitle ?? head.firstUser)) {
+        const start = Math.max(0, size - TAIL - PREVIEW_WIDEN)
+        const buf = Buffer.alloc(size - start)
+        const n = readSync(fd, buf, 0, size - start, start)
+        widened = scanPreviewLines(buf.toString('utf8', 0, n), start > 0)
       }
-      if (!tail.lastUser) {
-        const wide = readWindow(Math.max(0, size - TAIL - PREVIEW_WIDEN), size, true)
-        tail = { ...wide, count: tail.count, aiTitle: wide.aiTitle ?? tail.aiTitle }
-      }
-      if (!head.firstUser && !head.aiTitle && !tail.aiTitle) {
-        const wide = readWindow(0, Math.min(size, HEAD + PREVIEW_WIDEN), false)
-        head = { ...wide, count: head.count }
-      }
-      const lastMessage = tail.lastUser ?? head.lastUser
+      const lastMessage = tail.lastUser ?? widened?.lastUser ?? head.lastUser
       // A lower bound: the turns in both samples, floored at 3 to clear the list gate.
       const messageCount = Math.max(3, head.count + tail.count)
       return {
         lastMessage,
-        title: tail.aiTitle ?? head.aiTitle ?? head.firstUser,
+        title: tail.aiTitle ?? head.aiTitle ?? head.firstUser ?? widened?.aiTitle ?? widened?.firstUser,
         messageCount,
         firstTs: head.firstTs,
         // No dated turn in the tail sample: any dated record there (a tool result), else unset
