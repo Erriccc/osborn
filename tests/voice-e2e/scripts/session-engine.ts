@@ -69,7 +69,7 @@ import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, AUDIO_DECODE_CAP_MS, decodeBudgetMs, recordingAge, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
-import { shouldRetryWithVision, summarizeVision, VISION_MAX_STEPS, visionGate, visionInstruction } from '../lib/vision-retry'
+import { shouldRetryWithVision, summarizeVision, VISION_MAX_STEPS, viewportMatches, visionGate, visionInstruction } from '../lib/vision-retry'
 import { metricsDelta, NO_USAGE, readTotals, type ActUsage, type MetricsTotals } from '../lib/brain-metrics'
 import { actWithCache, brainPageFor, BRAIN_GONE, fencedCall, forgetCached, withTimeout, zombieGate } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
@@ -1529,27 +1529,38 @@ async function main() {
           let visionUsed = false
           let visionNote: string | null = null
           let blind = false
+          let visionTried = false
+          let visionMsg: string | null = null
           const gate = visionGate(body)
           // Bounded by what is left of the lock (less the settle wait a timeout needs), not a fresh full budget.
           const visionMs = zombieBudget() - SETTLE_MS
-          if (shouldRetryWithVision(r, gate) && visionMs < 10000) visionNote = 'no time left on the action lock for a screenshot-based retry'
+          const tabSize = page.viewportSize()
+          if (shouldRetryWithVision(r, gate) && stagehand && !viewportMatches(tabSize, stagehand.configuredViewport)) visionNote = `the screenshot-based retry is skipped on a ${tabSize?.width}x${tabSize?.height} tab: the brain maps clicks onto ${stagehand.configuredViewport.width}x${stagehand.configuredViewport.height}`
+          else if (shouldRetryWithVision(r, gate) && visionMs < 10000) visionNote = 'no time left on the action lock for a screenshot-based retry'
           else if (shouldRetryWithVision(r, gate)) {
+            visionTried = true
             try {
               const v = await brain(body.instruction, page, async (sh, signal) => {
                 signal.throwIfAborted()
                 const on = await brainPageFor(sh, page)
-                const res = await sh.agent({ mode: 'hybrid' }).execute({ instruction: visionInstruction(body.instruction), maxSteps: VISION_MAX_STEPS, ...(on ? { page: on as any } : {}) })
+                const res = await sh.agent({ mode: 'hybrid' }).execute({ instruction: visionInstruction(body.instruction), maxSteps: VISION_MAX_STEPS, highlightCursor: false, ...(on ? { page: on as any } : {}) })
                 const s = summarizeVision(res)
                 if (s.blind) blind = true
+                else if (!s.acted && res.success === false && res.message) visionMsg = res.message.slice(0, 120)
                 return { cached: false, healed: false, noop: !s.acted, did: s.acted ? s.did : null }
               }, visionMs)
               if (!v.noop) { r = v; visionUsed = true; mark(`act[${driver}]: DOM brain found nothing — ${v.did}`) }
-              else visionNote = blind ? 'the screenshot-based retry acted without looking at the screen first, so it was not counted' : 'a screenshot-based retry also found nothing to act on'
+              else visionNote = blind ? 'the screenshot-based retry acted without looking at the screen first, so it was not counted' : visionMsg ? `the screenshot-based retry did nothing: ${visionMsg}` : 'a screenshot-based retry also found nothing to act on'
             } catch (e) {
               visionNote = `the screenshot-based retry failed: ${((e as Error).message || String(e)).slice(0, 120)}`
               mark(`act[${driver}]: vision retry failed — ${visionNote}`)
             }
-          } else if (r?.noop && !gate.enabled) visionNote = `screenshot retry is off (${gate.why === 'env' ? 'engine kill switch' : 'vision:false'})`
+          }
+          if (visionTried && !brainAlive) {
+            page.off('popup', onPopup)
+            const dead = await usageNow()
+            return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver, tokens: dead.tokens, modelMs: dead.modelMs, brain: 'dead', brainModel: null }, 503)
+          }
           const usage = await usageNow()
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
@@ -1590,7 +1601,7 @@ async function main() {
             : scrollIntent ? (before.url !== after.url || moved(before, after))
             : structural || (textChanged && !textVolatile)
           const effect = {
-            changed, noop: !!r?.noop, fallback, ...(visionNote ? { visionNote } : {}),
+            changed, noop: !!r?.noop || (visionUsed && changed === false), fallback, ...(visionNote ? { visionNote } : {}),
             // true when the page's text was already changing on its own before
             // the action, so text was not used as evidence of an effect.
             textVolatile,
@@ -1640,7 +1651,7 @@ async function main() {
         if (clipError) (window as any).clipError = clipError
         writeManifest()
         addStep('act', String(body.instruction))
-        return json(res, { ok: !r?.noop, ...(r?.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, tokens: usage.tokens, modelMs: usage.modelMs, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
+        return json(res, { ok: !effect.noop, ...(effect.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, tokens: usage.tokens, modelMs: usage.modelMs, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
       }
       if (path === '/say') {
         const driver = driverId(req)

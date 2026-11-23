@@ -204,7 +204,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v68
-- When `/act` finds nothing in the DOM to match (a canvas, an embedded frame) the engine now makes one screenshot-based attempt before giving up (screenshot, then one interaction; its tokens are under-counted), and reports `effect.fallback:'vision'`. Opt out per call with `"vision":false` or engine-wide with `OSBORN_NO_VISION_RETRY=1`; see `references/harness-api.md`.
+- When `/act` finds nothing in the DOM to match (a canvas, an embedded frame) the engine now makes one screenshot-based attempt before giving up (screenshot, then one interaction; its tokens are not exact; it is skipped for conditional or destructive instructions unless you send `"vision":true`, and a retry that changes nothing stays `noop`), and reports `effect.fallback:'vision'`. Opt out per call with `"vision":false` or engine-wide with `OSBORN_NO_VISION_RETRY=1`; see `references/harness-api.md`.
 
 ## What's new in v67
 - A driver that posts `/canvas`, `/tts` or `/noise-cancel` to an agent from another machine sends the owner's Bearer token (see `references/streaming.md`); the agent's own localhost curl needs nothing extra.

@@ -61,20 +61,28 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   message), `brain_unavailable` (503), `bad_request` (400), `too_large` (413).
 - **Vision retry** (on by default): when the DOM brain finds nothing to match (a
   canvas, an embedded frame) the engine makes ONE screenshot-based attempt
-  (Stagehand `agent({mode:'hybrid'})`, same action lock and timeout fence as the
-  act, its time capped by what is left of the lock). It has a 2-step budget:
-  take a screenshot, then make one interaction (about three model calls with
-  Stagehand's forced final `done`). An interaction before the first screenshot,
-  or one whose tool reported failure, does not count. It reports
-  `effect.fallback:'vision'` (also on the manifest task); `effect.changed` is
-  judged as usual, and it is never written to `knowledge/<host>/actions.json`.
-  `modelMs` includes it (wall time). `tokens` are under-counted for it: the
-  `done` call is not in Stagehand's metrics. A failed, blind or empty retry
-  returns the original `noop` with `effect.visionNote` (never a 500). Opt out for
-  one call with `"vision":false` in the body, or for the whole engine with env
-  `OSBORN_NO_VISION_RETRY=1`. The brain model is the engine's own (Gemini Flash
-  by default; Stagehand warns that models outside its hybrid list may click less
-  accurately).
+  (Stagehand `agent({mode:'hybrid'})`, cursor highlight off so nothing is
+  injected). It runs under the same action lock with its own timeout fence,
+  capped by what is left of the lock (skipped when under 10s remain), and has a
+  2-step budget: take a screenshot, then make one interaction (about three
+  model calls with Stagehand's forced final `done`). An interaction before the
+  first screenshot, one whose tool reported failure, or the DOM `act` tool does
+  not count. It is skipped when the tab's viewport is not the brain's (1288x711,
+  so `/tab` mobile and tablet tabs never get mis-aimed clicks), and for
+  conditional ("if ... otherwise") or destructive (delete, pay, send, submit,
+  confirm, sign out ...) instructions unless the call sends `"vision":true`.
+  When it acts, `effect.fallback:'vision'` (also on the manifest task) and
+  `result.did` names the tool, target and coordinates; `effect.changed` is judged
+  as usual, and if nothing observable changed the answer stays `ok:false`
+  `code:'noop'`. It is never written to `knowledge/<host>/actions.json`.
+  A failed, blind, skipped or empty retry returns the original `noop` with
+  `effect.visionNote` (never a 500; `brain_unavailable` if the retry killed the
+  brain). Metrics: `modelMs` is the wall time of the whole attempt (nested act
+  time may be counted twice); `tokens` are not exact: Stagehand's forced `done`
+  call is not counted and an erroring attempt reports 0. Opt out for one call
+  with `"vision":false`, or engine-wide with env `OSBORN_NO_VISION_RETRY=1`. The
+  brain model is the engine's own (Gemini Flash by default, outside Stagehand's
+  hybrid list, so it only logs a warning): click accuracy on it is unverified.
 - **Async**: `POST /act|/say {"async":true}` → 202 `{job, resultUrl}`;
   `GET /result?id=<job>` → 202 `{done:false, runningSec}` or 200
   `{done:true, status, ...the synchronous response}`.

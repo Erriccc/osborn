@@ -3,7 +3,7 @@
  */
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { VISION_KILL_ENV, shouldRetryWithVision, summarizeVision, visionGate, visionInstruction } from './vision-retry.ts'
+import { VISION_KILL_ENV, shouldRetryWithVision, viewportMatches, summarizeVision, visionGate, visionInstruction } from './vision-retry.ts'
 
 test('on by default, off for one call or by the env switch', () => {
   assert.deepEqual(visionGate({}, {}), { enabled: true })
@@ -30,9 +30,9 @@ test('retries only a brain no-op', () => {
 test('a vision attempt counts as acted only after looking, and only when the tool succeeded', () => {
   assert.deepEqual(summarizeVision(null), { acted: false, did: '' })
   assert.equal(summarizeVision({ actions: [{ type: 'screenshot' }, { type: 'done' }] }).acted, false)
-  const s = summarizeVision({ actions: [{ type: 'screenshot' }, { type: 'think' }, { type: 'click', describe: 'the Play button', success: true }] })
+  const s = summarizeVision({ actions: [{ type: 'screenshot' }, { type: 'think' }, { type: 'click', describe: 'the Play button', coordinates: [10, 20], success: true }] })
   assert.equal(s.acted, true)
-  assert.match(s.did, /^vision \(click\): the Play button/)
+  assert.match(s.did, /^vision \(click\): the Play button at \(10,20\)/)
   assert.deepEqual(summarizeVision({ actions: [{ type: 'click', describe: 'x' }, { type: 'screenshot' }] }), { acted: false, did: '', blind: true })
   assert.equal(summarizeVision({ actions: [{ type: 'screenshot' }, { type: 'click', success: false }] }).acted, false)
   assert.equal(summarizeVision({ actions: [{ type: 'screenshot' }, { type: 'click', error: 'no element' }] }).acted, false)
@@ -45,4 +45,23 @@ test('the instruction keeps the original text, looks first and asks for one inte
   assert.match(t, /click the Play button/)
   assert.match(t, /First take a screenshot/)
   assert.match(t, /single interaction/)
+})
+
+test('the DOM act tool is not a vision interaction', () => {
+  assert.equal(summarizeVision({ actions: [{ type: 'screenshot' }, { type: 'act' }] }).acted, false)
+})
+
+test('conditional and destructive instructions are skipped unless vision:true is sent', () => {
+  for (const instruction of ['If a cookie banner shows, close it, otherwise do nothing', 'click Delete account', 'Submit the form', 'sign out', 'unless it is open, press Play']) {
+    assert.deepEqual(visionGate({ instruction }, {}), { enabled: false, why: 'instruction' }, instruction)
+    assert.equal(visionGate({ instruction, vision: true }, {}).enabled, true, instruction)
+  }
+  assert.equal(visionGate({ instruction: 'click the Play button' }, {}).enabled, true)
+  assert.equal(visionGate({ instruction: 'delete it', vision: true }, { [VISION_KILL_ENV]: '1' }).enabled, false)  // the kill switch wins
+})
+
+test('only a tab at the brain\'s viewport is retried', () => {
+  assert.equal(viewportMatches({ width: 1288, height: 711 }, { width: 1288, height: 711 }), true)
+  assert.equal(viewportMatches({ width: 390, height: 844 }, { width: 1288, height: 711 }), false)
+  assert.equal(viewportMatches(null, { width: 1288, height: 711 }), false)
 })
