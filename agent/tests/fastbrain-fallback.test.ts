@@ -40,6 +40,7 @@ Date.now = () => realNow() + 11 * 60_000
 urls.length = 0; script = [ok]
 await fb.requestWithFallback({})
 assert.match(urls[0], /fireworks/)
+assert.deepEqual(fb.fastBrainModelStatus(), { model: 'accounts/fireworks/models/glm-5p3-flash', fallbackFrom: null }, 'a model that answers again is no longer reported retired')
 Date.now = realNow
 
 // A bare 404 is not retirement: it throws, marks nothing dead, and the next turn tries the same model.

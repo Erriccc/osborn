@@ -453,7 +453,7 @@ export default function SettingsPage() {
             setAgentOnline(true)
             setStatusMessage({ text: 'Agent is back online', type: 'success' })
             checkVersion()
-            fetch(`${agentUrl.replace(/\/$/, '')}/health`).then((h) => (h.ok ? h.json() : null)).then((d) => setFastBrain(d?.fastBrain ?? null)).catch(() => {})
+            r.json().then((d) => setFastBrain(d?.fastBrain ?? null)).catch(() => {})
             setTimeout(() => setStatusMessage(null), 4000)
             return
           }
@@ -1120,7 +1120,7 @@ export default function SettingsPage() {
               <p className="mt-1.5 text-[12px] text-amber-400">
                 Fast brain:
                 {fastBrain.errors > 0 ? ` ${fastBrain.errors} failed ${fastBrain.errors === 1 ? 'lookup' : 'lookups'}${fastBrain.lastErrorAt ? `, last ${new Date(fastBrain.lastErrorAt).toLocaleString()}` : ''}.` : ''}
-                {fastBrain.fallbackFrom ? ` ${fastBrain.fallbackFrom} was retired${fastBrain.model && fastBrain.model !== fastBrain.fallbackFrom ? `; now using ${fastBrain.model}` : ''}.` : ''}
+                {fastBrain.fallbackFrom ? ` ${fastBrain.fallbackFrom} was retired${fastBrain.model ? `; now using ${fastBrain.model}` : ''}.` : ''}
               </p>
             )}
           </SettingsRow>
