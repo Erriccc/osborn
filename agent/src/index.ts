@@ -3228,6 +3228,9 @@ async function main() {
     await sendToFrontend({ type: 'background_session_spawned', slotId, workingDir: slotWorkingDir })
   }
 
+  // When a spoke slot we spawned was freed: its last session write is ours, not a terminal's (resolveDispatchTarget).
+  const spokeFreedAt = new Map<string, number>()
+
   // Push an instruction into a background slot (spawning it first if needed). With `report`, the hub
   // hears the result when the slot goes idle (the Instances panel path passes none and is unchanged).
   async function dispatchToSlot(targetSessionId: string, instruction: string, opts: { cwd?: string; report?: { project: string } } = {}): Promise<{ ok: boolean; error?: string; status?: number }> {
@@ -3267,7 +3270,7 @@ async function main() {
       // A hang-up or stop releases the slot on purpose; only a crash is a failure.
       const status = !gone ? 'done' : slot.released ? 'stopped' : 'failed'
       // This dispatch made the slot, so it frees the seat (a spoke stays open only when the panel opened it).
-      if (!gone && spawned) { slots.remove(slot.id, slot); void sendToFrontend({ type: 'background_session_stopped', slotId: slot.id }); armAloneTimer() }
+      if (!gone && spawned) { slots.remove(slot.id, slot); spokeFreedAt.set(slot.id, Date.now()); if (spokeFreedAt.size > 50) spokeFreedAt.delete(spokeFreedAt.keys().next().value as string); void sendToFrontend({ type: 'background_session_stopped', slotId: slot.id }); armAloneTimer() }
       const hubUp = !!currentLLM && !!activeRoom && peopleIn(activeRoom) > 0
       console.log(`📬 [DISPATCH] ${project} ${status}; ${hubUp ? 'telling the hub' : 'notifying the phone'}`)
       if (hubUp) {
@@ -8173,7 +8176,7 @@ async function main() {
 
   dispatchHook = async (project, instruction) => {
     const pick = resolveDispatchTarget(project, await listAllClaudeSessions(1000), {
-      seat: (id) => slots.admit(id), slotState: targetSlotState, dirExists: existsSync,
+      seat: (id) => slots.admit(id), slotState: targetSlotState, dirExists: existsSync, ownWriteAt: (id) => spokeFreedAt.get(id),
     })
     if (!pick.ok) return { status: pick.status, body: { error: pick.error } }
     const cwd = await resolveCwdForSession(pick.sessionId, pick.cwd)

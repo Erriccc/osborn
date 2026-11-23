@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { resolveDispatchTarget } from '../src/session-switch.js'
 import { SlotRegistry } from '../src/slot-manager.js'
-import { dispatchRefusal } from '../src/agent-store.js'
+import { dispatchRefusal, isDispatchCurl } from '../src/agent-store.js'
 import { getSpokeReport } from '../src/prompts.js'
 import { steersTurn } from '../src/content/transcript-sanitizer.js'
 import { isSlotEnvDenied } from '../src/slot-manager.js'
@@ -69,6 +69,23 @@ t('folders that no longer exist are dropped before the ambiguity check; a sessio
   assert.equal(resolveDispatchTarget('live', calm, { ...free(null, 'none', slots), now }).ok, true)
   slots.add({ id: 'live', llm: {}, isFocused: false, workingDir: '/w' })
   assert.equal(resolveDispatchTarget('live', fresh, { ...free(null, 'idle', slots), now }).ok, true, 'our own slot writing it is fine')
+})
+t('the hook asks on a dispatch curl and leaves canvas/tts curls alone', () => {
+  const skill = readFileSync(new URL('../.claude/skills/dispatch/SKILL.md', import.meta.url), 'utf-8')
+  const block = /```bash\n([\s\S]*?)```/.exec(skill)![1]
+  for (const c of [block, 'curl -X POST http://127.0.0.1:8741/dispatch -d x', 'curl https://localhost:9000/dispatch', 'curl localhost:8741/dispatch', 'curl -s http://[::1]:8741/dispatch']) assert.equal(isDispatchCurl(c), true, c)
+  for (const c of ['curl -X POST http://localhost:8741/canvas -d x', 'curl http://localhost:8741/tts?text=hi', 'curl http://localhost:8741/noise-cancel', 'npx tsx tests/dispatch-resolve.test.ts']) assert.equal(isDispatchCurl(c), false, c)
+})
+t('a follow-up to a session our freed slot just wrote is not refused as live elsewhere', () => {
+  const now = Date.UTC(2026, 11, 1)
+  const wrote = [{ sessionId: 'w', cwd: '/w/proj', timestamp: new Date(now - 30_000) }]
+  const base = free()
+  assert.equal(resolveDispatchTarget('proj', wrote, { ...base, now }).status, 409)
+  assert.equal(resolveDispatchTarget('proj', wrote, { ...base, now, ownWriteAt: () => now - 29_000 }).ok, true)
+  assert.equal(resolveDispatchTarget('proj', wrote, { ...base, now, ownWriteAt: () => now - 120_000 }).status, 409, 'a later write is not ours')
+})
+t('the pipeline fast brain is skipped for every no-steer turn', () => {
+  assert.match(readFileSync(new URL('../src/pipeline-direct-llm.ts', import.meta.url), 'utf-8'), /userText\.trim\(\) && steersTurn\(userText\)\) \{\n\s+this\.#firePipelineFastBrain/)
 })
 t('a spoke never gets the dispatch key', () => {
   assert.equal(isSlotEnvDenied('OSBORN_DISPATCH_KEY'), true)

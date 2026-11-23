@@ -272,6 +272,12 @@ function jsonRefusal(contentType: string | undefined): { status: number; error: 
   return /^application\/json\b/i.test(contentType || '') ? null : { status: 415, error: 'send JSON (Content-Type: application/json)' }
 }
 
+/** A shell command that calls the agent's POST /dispatch. Bash is in allowedTools, so canUseTool never
+ *  sees it; the PreToolUse hook asks on this instead. Over-asks on any curl/wget naming /dispatch. */
+export function isDispatchCurl(command: string): boolean {
+  return /\b(curl|wget)\b/.test(command) && /\/dispatch(?![\w-])/.test(command)
+}
+
 /** Refusal for POST /dispatch, or null. The target slots run with permissions bypassed, so only
  *  the hub may ask: a loopback request, not forwarded, from no browser page, carrying the per-boot
  *  dispatch key (slots never get it), sending JSON.

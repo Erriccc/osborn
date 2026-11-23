@@ -21,8 +21,8 @@ EOF
 
 - `project` is the project's folder name as the user said it ("osborn", "audos-com"). The newest session in that folder runs the task.
 - `instruction` must stand alone: the other session has none of this conversation. Say what to change, where, and how to know it worked.
-- The two headers come from your own environment (leave them exactly as written). Only the voice conversation has them: a background session cannot dispatch, so never use this skill from one.
-- The user is asked to approve each dispatch; this call is never pre-approved.
+- The two headers come from your own environment (leave them exactly as written). Only the voice conversation has them: a background session is not given the key (a process of the same user could still read it from /proc), so never use this skill from one.
+- The call goes through the approval dialog, so the saved approval mode applies: it asks, is auto-reviewed or is allowed as for any other tool, including in a phone call or an allow-all session.
 - Answer `{"status":"sent"}` with one short line: "Sent to <project>." Do not wait for it.
 
 ## Refusals

@@ -13,6 +13,7 @@ import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, PHONE_TOOLS_DENIED } from './prompts.js'
+import { isDispatchCurl } from './agent-store.js'
 import { steersTurn } from './content/transcript-sanitizer.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
@@ -2858,6 +2859,12 @@ class ClaudeLLMStream extends llm.LLMStream {
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
                 }
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
+              }
+
+              // A dispatch starts a bypassPermissions spoke: always go through the approval dialog
+              // (approval mode applies), as Write/Edit do below, since Bash never reaches canUseTool.
+              if (toolName === 'Bash' && isDispatchCurl(String(toolInput.command || ''))) {
+                return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
               }
 
               // File-edit access control (agent-store.ts EDIT_TOOLS) — keyed by the agent's ROLE

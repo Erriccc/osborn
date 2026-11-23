@@ -564,7 +564,7 @@ export class PipelineDirectLLM extends llm.LLM {
 
     // Fire pipeline fast brain in background — no await, no blocking. Skip for
     // meeting chunks (silent observer / meeting-response path, not a user turn).
-    if (userText.trim() && !isMeetingChunk) {
+    if (userText.trim() && steersTurn(userText)) {
       this.#firePipelineFastBrain(userText)
     }
 
