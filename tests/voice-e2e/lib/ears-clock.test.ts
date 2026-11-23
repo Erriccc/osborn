@@ -37,6 +37,9 @@ try {
   await flagged.evaluate(() => { (window as any).__mic.ready = true })
   const e4: any = await speakWav(flagged, '/dev/null').catch((e) => e)
   assert.ok(isNoMic(e4), `a ready flag with no audio context is no_mic (got ${e4?.message})`)
+  let flaggedSynth = false
+  const e5: any = await speakText(flagged, 'x', { onPlayStart: () => { flaggedSynth = true } }).catch((e) => e)
+  assert.ok(isNoMic(e5) && !flaggedSynth, 'speakText on a flag-only page is no_mic from the probe, before any synthesis')
   await flagged.evaluate(() => navigator.mediaDevices.getUserMedia({ audio: true }).then(() => true))
   await waitForMicOpen(flagged, 2000)
   await flagged.close()
