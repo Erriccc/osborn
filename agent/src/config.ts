@@ -51,8 +51,6 @@ export interface OsbornConfig {
   // STT/TTS provider config — admin-owned, not written to config.yaml
   direct?: DirectConfig
 
-  // Inference model config — admin-owned, not written to config.yaml
-
   // Tool approval mode (#364), set from the app; applies to browser and phone calls.
   approvalMode?: ApprovalMode
 }

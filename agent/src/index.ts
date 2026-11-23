@@ -2287,9 +2287,6 @@ async function main() {
     process.exit(1)
   }
 
-  // A retired fast-brain model is found now, not on the first turn.
-  void probeFastBrain()
-
   // Parse CLI args
   const cliArgs = parseArgs()
 
@@ -5791,6 +5788,8 @@ async function main() {
     const activeProvider = applyAuthFallback()
     agentActiveProvider = activeProvider === 'none' ? null : activeProvider
     console.log(`🧭 Active model provider: ${activeProvider}`)
+    // A retired fast-brain model is found now, not on the first turn.
+    if (sessionVoiceMode === 'pipeline') void probeFastBrain()
 
     // Create session based on voice mode (from frontend or config)
     let session: voice.AgentSession

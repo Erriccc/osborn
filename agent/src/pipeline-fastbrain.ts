@@ -15,7 +15,6 @@
 
 import { getPipelineFastBrainPrompt } from './prompts.js'
 import { ZAI_CODING_BASE, zaiApiKey } from './env-key.js'
-import { candidateId, isModelNotFound, pickCandidate, type FastBrainCandidate } from './fastbrain-fallback.js'
 
 // ============================================================
 // TYPES
@@ -49,12 +48,11 @@ export interface AgentControlCallbacks {
 // Provider: Fireworks (OpenAI-compatible) when FIREWORKS_API_KEY is set, else OpenRouter.
 // Override the model with OSBORN_FAST_BRAIN_MODEL (the noise gate falls back to it too unless OSBORN_GATE_MODEL is set).
 const FIREWORKS = !!process.env.FIREWORKS_API_KEY
-const PROVIDER_NAME = FIREWORKS ? 'Fireworks' : 'OpenRouter'
+const OPENROUTER_API = 'https://openrouter.ai/api/v1/chat/completions'
+const OPENROUTER_DEFAULT_MODEL = 'deepseek/deepseek-chat'
 const OPENROUTER_MODEL = process.env.OSBORN_FAST_BRAIN_MODEL ||
-  (FIREWORKS ? 'accounts/fireworks/models/glm-5p3-flash' : 'deepseek/deepseek-chat')
-const OPENROUTER_URL = FIREWORKS
-  ? 'https://api.fireworks.ai/inference/v1/chat/completions'
-  : 'https://openrouter.ai/api/v1/chat/completions'
+  (FIREWORKS ? 'accounts/fireworks/models/glm-5p3-flash' : OPENROUTER_DEFAULT_MODEL)
+const OPENROUTER_URL = FIREWORKS ? 'https://api.fireworks.ai/inference/v1/chat/completions' : OPENROUTER_API
 const TIMEOUT_MS = 20_000
 const MAX_TOOL_ROUNDS = 4
 
@@ -348,61 +346,68 @@ function buildTurnContext(chatHistory?: { role: string; content: string }[], res
 // OPENROUTER CALL
 // ============================================================
 
-const OPENROUTER_DEFAULT_URL = 'https://openrouter.ai/api/v1/chat/completions'
-const FIREWORKS_DEFAULT_MODEL = 'accounts/fireworks/models/glm-5p3-flash'
+interface FastBrainCandidate { url: string; key: string; model: string; name: string }
 
-/** Models in the order to try: the demo pass alone, else the configured provider, then the other
- *  provider's default, then the z.ai house key (the order model-provider.ts uses for the content routes). */
-export function fastBrainCandidates(): FastBrainCandidate[] {
+/** A retired or unknown model, by what the provider says: a bare 404 (a gateway's "No endpoints found")
+ *  is not retirement. */
+export function isModelNotFound(status: number, body: string): boolean {
+  return [400, 403, 404].includes(status) &&
+    /model[_ ]not[_ ]found|model\b.{0,80}(does not exist|not found|decommissioned|retired)|unknown model/i.test(body)
+}
+
+const candidateId = (c: FastBrainCandidate): string => `${c.url}|${c.model}`
+
+/** Models in the order to try. The demo pass is one model on the house key; otherwise the configured
+ *  provider, then (with both keys set) OpenRouter's default model: a turn falls back to that provider. */
+function fastBrainCandidates(): FastBrainCandidate[] {
   const demo = resolveFastBrainProvider()
   if (demo) return [{ ...demo, key: zaiApiKey() }]
-  const list: FastBrainCandidate[] = []
   const fw = process.env.FIREWORKS_API_KEY
   const or = process.env.OPENROUTER_API_KEY
+  const list: FastBrainCandidate[] = []
   if (FIREWORKS && fw) list.push({ url: OPENROUTER_URL, key: fw, model: OPENROUTER_MODEL, name: 'Fireworks' })
   else if (or) list.push({ url: OPENROUTER_URL, key: or, model: OPENROUTER_MODEL, name: 'OpenRouter' })
-  if (fw && or) list.push({ url: OPENROUTER_DEFAULT_URL, key: or, model: 'deepseek/deepseek-chat', name: 'OpenRouter' })
-  const zai = zaiApiKey()
-  if (zai) list.push({ url: `${ZAI_CODING_BASE}/chat/completions`, key: zai, model: 'glm-5.3-flash', name: 'z.ai' })
+  if (fw && or) list.push({ url: OPENROUTER_API, key: or, model: OPENROUTER_DEFAULT_MODEL, name: 'OpenRouter' })
   return list.filter((c) => c.key)
 }
 
-// Models that answered "not found" this process; later turns skip them.
-const deadModels = new Set<string>()
+// A model that answered "model not found" is skipped for DEAD_TTL_MS, and only while another model exists.
+const DEAD_TTL_MS = 10 * 60_000
+const deadUntil = new Map<string, number>()
 let fallbackFrom: string | null = null
 let modelInUse: string | null = null
+let probed = false
 
-/** For /health: the model answering now and the retired one it replaced. */
+const isDead = (c: FastBrainCandidate): boolean => (deadUntil.get(candidateId(c)) ?? 0) > Date.now()
+const firstLive = (all: FastBrainCandidate[]): FastBrainCandidate | undefined => all.find((c) => !isDead(c)) ?? all[0]
+
+/** For /health: the model that last answered and the retired one it replaced. */
 export const fastBrainModelStatus = () => ({ model: modelInUse, fallbackFrom })
 
-async function post(c: FastBrainCandidate, body: Record<string, unknown>): Promise<Response> {
-  return fetch(c.url, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${c.key}`, 'Content-Type': 'application/json', 'X-OpenRouter-Title': 'Osborn Fast Brain' },
-    body: JSON.stringify({ model: c.model, ...body }),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
-  })
-}
+/** Tests only. */
+export function resetFastBrainFallback() { deadUntil.clear(); fallbackFrom = null; modelInUse = null; probed = false }
 
-/** One request; on a model-not-found answer, mark that model dead and retry once on the next candidate. */
-async function requestWithFallback(body: Record<string, unknown>): Promise<any> {
+/** One request; on a model-not-found answer with another model available, mark that one dead and retry once on it. */
+export async function requestWithFallback(body: Record<string, unknown>): Promise<any> {
   const all = fastBrainCandidates()
-  let c = pickCandidate(all, deadModels)
-  for (let attempt = 0; c && attempt < 2; attempt++) {
-    const resp = await post(c, body)
+  let c = firstLive(all)
+  for (let attempt = 0; c; attempt++) {
+    const resp = await fetch(c.url, {
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${c.key}`, 'Content-Type': 'application/json', 'X-OpenRouter-Title': 'Osborn Fast Brain' },
+      body: JSON.stringify({ model: c.model, ...body }),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    })
     if (resp.ok) { modelInUse = c.model; return resp.json() }
     const text = await resp.text().catch(() => '')
-    if (attempt === 0 && isModelNotFound(resp.status, text)) {
-      deadModels.add(candidateId(c))
-      const next = pickCandidate(all, deadModels)
-      if (next) {
-        fallbackFrom ??= c.model
-        console.warn(`🧠⚡ [pipeline-fb] ${c.name} model ${c.model} not found; falling back to ${next.model}`)
-        c = next
-        continue
-      }
-    }
-    throw new Error(`${c.name} ${resp.status}: ${text.substring(0, 200)}`)
+    const tried = c
+    const next = attempt === 0 && isModelNotFound(resp.status, text) ? all.find((x) => x !== tried && !isDead(x)) : undefined
+    if (!next) throw new Error(`${tried.name} ${resp.status}: ${text.substring(0, 200)}`)
+    deadUntil.set(candidateId(tried), Date.now() + DEAD_TTL_MS)
+    if (modelInUse === tried.model) modelInUse = null
+    fallbackFrom ??= tried.model
+    console.warn(`🧠⚡ [pipeline-fb] ${tried.name} model ${tried.model} not found; falling back to ${next.model}`)
+    c = next
   }
   throw new Error('no fast-brain model available')
 }
@@ -411,9 +416,10 @@ async function callOpenRouter(messages: any[], tools: any[]): Promise<any> {
   return requestWithFallback({ messages, tools, tool_choice: 'auto' })
 }
 
-/** Startup probe: one tiny request so a retired model is found and replaced before the first turn. */
+/** One tiny request, once per process, so a retired model is replaced before the first turn. */
 export async function probeFastBrain(): Promise<void> {
-  if (!fastBrainCandidates().length) return
+  if (probed || !fastBrainCandidates().length) return
+  probed = true
   try { await requestWithFallback({ messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 }) }
   catch (err: any) { console.warn('🧠⚡ [pipeline-fb] startup probe failed:', err?.message) }
 }

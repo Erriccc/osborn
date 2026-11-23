@@ -223,13 +223,14 @@ export default function SettingsPage() {
     if (!awaitingMachine) refreshSecrets()
   }, [agentUrl, awaitingMachine, machineMessage, syncToken]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Machine location (agent /health region).
+  // Machine location and fast-brain state (agent /health region, fastBrain).
   useEffect(() => {
     if (connectionMode === 'local') { setMachineRegion(null); return }
     if (isLocalAgentUrl(agentUrl)) return
     fetch(`${agentUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(8000) })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
+        setFastBrain(d?.fastBrain ?? null)
         if (d?.region) {
           const city = FLY_REGION_CITIES[d.region] || String(d.region).toUpperCase()
           setMachineRegion(city)
@@ -238,14 +239,6 @@ export default function SettingsPage() {
       })
       .catch(() => {})
   }, [agentUrl, connectionMode])
-
-  useEffect(() => {
-    if (!agentUrl) return
-    fetch(`${agentUrl.replace(/\/$/, '')}/health`, { signal: AbortSignal.timeout(8000) })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => setFastBrain(d?.fastBrain ?? null))
-      .catch(() => {})
-  }, [agentUrl])
 
   // Persist prefs
   useEffect(() => {
@@ -460,6 +453,7 @@ export default function SettingsPage() {
             setAgentOnline(true)
             setStatusMessage({ text: 'Agent is back online', type: 'success' })
             checkVersion()
+            fetch(`${agentUrl.replace(/\/$/, '')}/health`).then((h) => (h.ok ? h.json() : null)).then((d) => setFastBrain(d?.fastBrain ?? null)).catch(() => {})
             setTimeout(() => setStatusMessage(null), 4000)
             return
           }
@@ -1124,9 +1118,9 @@ export default function SettingsPage() {
             )}
             {fastBrain && (fastBrain.errors > 0 || fastBrain.fallbackFrom) && (
               <p className="mt-1.5 text-[12px] text-amber-400">
-                Fast brain: {fastBrain.errors} failed {fastBrain.errors === 1 ? 'lookup' : 'lookups'}
-                {fastBrain.lastErrorAt ? `, last ${new Date(fastBrain.lastErrorAt).toLocaleString()}` : ''}
-                {fastBrain.fallbackFrom ? `. ${fastBrain.fallbackFrom} was retired; now using ${fastBrain.model}` : ''}
+                Fast brain:
+                {fastBrain.errors > 0 ? ` ${fastBrain.errors} failed ${fastBrain.errors === 1 ? 'lookup' : 'lookups'}${fastBrain.lastErrorAt ? `, last ${new Date(fastBrain.lastErrorAt).toLocaleString()}` : ''}.` : ''}
+                {fastBrain.fallbackFrom ? ` ${fastBrain.fallbackFrom} was retired${fastBrain.model && fastBrain.model !== fastBrain.fallbackFrom ? `; now using ${fastBrain.model}` : ''}.` : ''}
               </p>
             )}
           </SettingsRow>
