@@ -1,4 +1,4 @@
-// #296: the demo-access limiter stays bounded when the key rotates, and a key is held to its limit.
+// #296: the rate limiter stays bounded when the key rotates, and a key is held to its limit.
 import assert from 'node:assert/strict'
 import { createRateLimiter } from '../src/lib/demo-rate-limit'
 
