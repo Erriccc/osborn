@@ -1750,6 +1750,15 @@ export function getNotificationInjection(text: string): string {
   return `[NOTIFICATION] ${text}`
 }
 
+/** Follow-through (#378): items filed as GitHub issues while the user was away, injected once at the next session start. */
+export function getFollowThroughRecap(items: Array<{ text: string; url: string }>): string {
+  if (!items.length) return ''
+  return [
+    '[FOLLOW-THROUGH RECAP: open items from earlier sessions were filed as GitHub issues. Mention them briefly only if relevant.]',
+    ...items.map((i) => `Filed while you were away: ${i.text.slice(0, 120)} (${i.url})`),
+  ].join('\n')
+}
+
 // Legacy exports — kept for backward compatibility during transition
 export function getResearchCompleteInjection(task: string, fullResult: string): string {
   return getScriptInjection(fullResult)

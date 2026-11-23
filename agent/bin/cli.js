@@ -3,7 +3,7 @@
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { readFileSync, existsSync, lstatSync, symlinkSync } from 'fs'
+import { readFileSync, existsSync, lstatSync, symlinkSync, mkdirSync, openSync } from 'fs'
 import os from 'os'
 import { superviseChild } from './child-exit.js'
 
@@ -86,20 +86,26 @@ if (args.includes('start')) {
   args.splice(args.indexOf('dev'), 1)
 }
 
-// Use src/index.ts (dev) if available, otherwise dist/index.js (npm install)
-const srcPath = join(__dirname, '..', 'src', 'index.ts')
-const distPath = join(__dirname, '..', 'dist', 'index.js')
+const tsxPath = join(__dirname, '..', 'node_modules', '.bin', 'tsx')
 
+/** An agent entry: src/<rel>.ts (dev, run via tsx) if available, otherwise dist/<rel>.js (npm install), else null. */
+function agentEntry(rel) {
+  const src = join(__dirname, '..', 'src', `${rel}.ts`)
+  if (existsSync(src)) return { src }
+  const dist = join(__dirname, '..', 'dist', `${rel}.js`)
+  return existsSync(dist) ? { dist } : null
+}
+
+const entry = agentEntry('index')
 let child
-if (existsSync(srcPath)) {
+if (entry?.src) {
   // Dev mode: run via tsx
-  const tsxPath = join(__dirname, '..', 'node_modules', '.bin', 'tsx')
-  child = spawn(tsxPath, [srcPath, mode, ...args], {
+  child = spawn(tsxPath, [entry.src, mode, ...args], {
     stdio: 'inherit',
     cwd: join(__dirname, '..'),
     env: process.env,
   })
-} else if (existsSync(distPath)) {
+} else if (entry?.dist) {
   // Production: run compiled JS directly.
   // HEAP-OOM CRASH FIX (0.9.261): long heavy sessions (big context + many
   // sub-agents) grew the MAIN process past its default V8 old-space limit
@@ -113,7 +119,7 @@ if (existsSync(srcPath)) {
   // memory use and cause a system OOM instead).
   const heapMB = Math.max(3072, Math.floor((os.totalmem() / (1024 * 1024)) * 0.5))
   console.log(`[cli] main agent --max-old-space-size=${heapMB}MB (machine RAM ${Math.round(os.totalmem() / (1024 * 1024))}MB)`)
-  child = spawn('node', [`--max-old-space-size=${heapMB}`, distPath, mode, ...args], {
+  child = spawn('node', [`--max-old-space-size=${heapMB}`, entry.dist, mode, ...args], {
     stdio: 'inherit',
     cwd: join(__dirname, '..'),
     env: process.env,
@@ -123,4 +129,33 @@ if (existsSync(srcPath)) {
   process.exit(1)
 }
 
-superviseChild(child, { name: 'agent' })
+/**
+ * The agent died without filing its open follow-through items (heap-OOM abort, kill,
+ * crash; #378): file the last foreground session's items from a detached worker.
+ * A stop signal reaches the agent, which files them itself and exits 0. Resolves once
+ * the worker has spawned (or failed, or 2s passed); never throws.
+ */
+function spawnLoopsFlush() {
+  return new Promise((resolve) => {
+    const worker = agentEntry('content/loops-flush-worker')
+    let w
+    try {
+      // stderr to the same log launchLoopsFlush uses (lens-launch.ts), so this path leaves a trace.
+      let log = 'ignore'
+      try {
+        const dir = join(process.env.CLAUDE_CONFIG_DIR || join(os.homedir(), '.claude'), 'osb-loops')
+        mkdirSync(dir, { recursive: true })
+        log = openSync(join(dir, 'follow-through.log'), 'a', 0o600)
+      } catch {}
+      const opts = { detached: true, stdio: ['ignore', 'ignore', log], env: process.env }
+      if (worker?.src) w = spawn(tsxPath, [worker.src, '--last'], opts)
+      else if (worker?.dist) w = spawn('node', [worker.dist, '--last'], opts)
+      else return resolve(false)
+    } catch { return resolve(false) }
+    const timer = setTimeout(() => resolve(false), 2000)
+    w.once('spawn', () => { clearTimeout(timer); w.unref(); resolve(true) })
+    w.once('error', () => { clearTimeout(timer); resolve(false) })
+  })
+}
+
+superviseChild(child, { name: 'agent', onAbnormalExit: spawnLoopsFlush })

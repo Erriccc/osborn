@@ -9,12 +9,17 @@ function exitCodeFor(code, signal) {
   return 1
 }
 
-export function superviseChild(child, { name = 'agent', proc = process } = {}) {
+// onAbnormalExit(exitCode): optional, runs before a non-zero exit (awaited if it returns a promise).
+export function superviseChild(child, { name = 'agent', proc = process, onAbnormalExit } = {}) {
   child.on('error', (err) => {
     console.error(`Failed to start ${name}:`, err.message)
     proc.exit(1)
   })
-  child.on('exit', (code, signal) => proc.exit(exitCodeFor(code, signal)))
+  child.on('exit', (code, signal) => {
+    const exitCode = exitCodeFor(code, signal)
+    if (exitCode === 0 || !onAbnormalExit) return proc.exit(exitCode)
+    Promise.resolve().then(() => onAbnormalExit(exitCode)).catch(() => {}).finally(() => proc.exit(exitCode))
+  })
   for (const sig of ['SIGINT', 'SIGTERM']) {
     proc.on(sig, () => { child.kill(sig) })
   }

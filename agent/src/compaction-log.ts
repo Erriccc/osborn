@@ -28,9 +28,9 @@
  * are unit-tested directly (compaction-log.test.ts) — the IO wrappers only add
  * path resolution + append/read.
  */
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
-import { dirname, join } from 'path'
-import { getStorePath, storeExists, openStore } from './session-store.js'
+import { existsSync, readFileSync } from 'fs'
+import { getSidecarPath, storeExists, openStore } from './session-store.js'
+import { appendJsonlLine } from './jsonl-sidecar.js'
 
 /** One persisted compaction. `at` is ISO-8601; `v` guards the line format. */
 export interface CompactionRecord {
@@ -153,7 +153,7 @@ export function toCompactionMarker(rec: CompactionRecord): CompactionMarkerWire 
 
 /** Sidecar path for a session: next to session.db in the osb dir. */
 export function getCompactionLogPath(sessionId: string, workingDir: string): string {
-  return join(dirname(getStorePath(sessionId, workingDir)), 'compactions.jsonl')
+  return getSidecarPath(sessionId, workingDir, 'compactions.jsonl')
 }
 
 /** Read + parse the sidecar for a session. Missing file → []. */
@@ -221,8 +221,6 @@ export function appendCompactionRecord(
     transcriptRows: input.transcriptRows,
     ...(integrityWarning ? { integrityWarning } : {}),
   }
-  const p = getCompactionLogPath(sessionId, workingDir)
-  mkdirSync(dirname(p), { recursive: true })
-  appendFileSync(p, serializeCompactionRecord(rec) + '\n', 'utf-8')
+  appendJsonlLine(getCompactionLogPath(sessionId, workingDir), serializeCompactionRecord(rec))
   return rec
 }

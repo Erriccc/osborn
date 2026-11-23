@@ -284,6 +284,7 @@ export class PipelineDirectLLM extends llm.LLM {
   setAgents(a: any, roles?: any) { this.#claudeLLM.setAgents(a, roles) }
   setTurbo(on: boolean) { this.#claudeLLM.setTurbo(on) }
   setPhoneCall(on: boolean) { this.#claudeLLM.setPhoneCall(on) }
+  recordLoop(...a: Parameters<ClaudeLLM['recordLoop']>) { this.#claudeLLM.recordLoop(...a) }
   // CLICK-TIME OVERLAP (0.9.258): start the resume replay early so it overlaps
   // the connect handshake. Proxied to the inner ClaudeLLM.
   prewarmResume() { this.#claudeLLM.prewarmResume() }

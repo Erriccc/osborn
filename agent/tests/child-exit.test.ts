@@ -36,6 +36,18 @@ assert.equal(s.exited, 134)
 s.child.emit('error', new Error('boom'))
 assert.equal(s.exited, 1)
 
+// onAbnormalExit runs (and is awaited) before a non-zero exit, never on a clean one (#378).
+{
+  const seen: number[] = []
+  const mk = () => { const child: any = new EventEmitter(); child.kill = () => {}; const proc: any = new EventEmitter()
+    const o = { child, proc, exited: undefined as number | undefined }; proc.exit = (c: number) => { o.exited = c }
+    superviseChild(child, { proc, onAbnormalExit: async (c: number) => { seen.push(c) } }); return o }
+  const clean = mk(); clean.child.emit('exit', 0, null); assert.equal(clean.exited, 0)
+  const crash = mk(); crash.child.emit('exit', null, 'SIGABRT'); assert.equal(crash.exited, undefined)
+  await new Promise((r) => setTimeout(r, 10))
+  assert.equal(crash.exited, 134); assert.deepEqual(seen, [134])
+}
+
 // Real processes: a wrapper whose child aborts itself must exit 137, not 0.
 const dir = dirname(fileURLToPath(import.meta.url))
 const helper = join(dir, '..', 'bin', 'child-exit.js')

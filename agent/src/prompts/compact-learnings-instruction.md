@@ -1,6 +1,6 @@
 # Pre-Compaction Instructions
 
-Before Claude Code compacts this conversation, you MUST preserve critical context by including the following four sections at the very END of your compact summary. Be selective and specific — vague summaries are useless.
+Before Claude Code compacts this conversation, you MUST preserve critical context by including the following six sections at the very END of your compact summary. Be selective and specific — vague summaries are useless.
 
 ---
 
@@ -78,4 +78,13 @@ RECURRING:
 
 ---
 
-IMPORTANT: All five sections MUST appear at the end of the compact summary even if some are empty. Empty sections should have a single line: (none this session)
+## Section 6: OPEN_LOOPS
+Format: === OPEN_LOOPS ===
+List each thing that is still open at this point and would be lost if the session ended now, one per line, as a short paraphrase (under 200 characters, no quotes, no file paths, no secrets):
+- <something the user asked for that is not done yet, a question still waiting for an answer, or work that was started and not finished>
+
+Only include items that are genuinely still open. Do not include things that were finished or dropped.
+
+---
+
+IMPORTANT: All six sections MUST appear at the end of the compact summary even if some are empty. Empty sections should have a single line: (none this session)

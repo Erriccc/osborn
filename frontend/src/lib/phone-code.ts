@@ -124,7 +124,8 @@ async function readDailyMisses(admin: SupabaseClient, userId: string, now: numbe
   return { misses: dailyMisses(data as CallCodeRow[], now), rooms: data.map((r: { room_name: string }) => r.room_name) }
 }
 
-async function accountEmail(admin: SupabaseClient, userId: string): Promise<string | null> {
+/** The account's email via the service client, or null when it cannot be read. */
+export async function accountEmail(admin: SupabaseClient, userId: string): Promise<string | null> {
   const { data, error } = await admin.auth.admin.getUserById(userId)
   const email = data?.user?.email
   return !error && typeof email === 'string' && email ? email : null

@@ -98,6 +98,11 @@ export function getStorePath(sessionId: string, workingDir: string): string {
   return join(getOsbDir(sessionId, workingDir), 'session.db')
 }
 
+/** A sidecar file beside session.db (compactions.jsonl, steward.jsonl, loops.jsonl). */
+export function getSidecarPath(sessionId: string, workingDir: string, name: string): string {
+  return join(getOsbDir(sessionId, workingDir), name)
+}
+
 /** Returns the store path if it exists and is non-empty, else null. */
 export function storeExists(sessionId: string, workingDir: string): string | null {
   const p = getStorePath(sessionId, workingDir)

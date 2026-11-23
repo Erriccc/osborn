@@ -7,7 +7,7 @@
  * No awaits, no heavy imports (node: builtins only), never throws.
  */
 
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -15,7 +15,7 @@ import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { hasContentModelKey } from './content-llm.js'
-import { LOCK_FILE, LOCK_TTL_MS, LOG_FILE, acquireLock, findTranscriptBySessionId, libraryHomeDir, readSweepStatus, releaseLock, resolveProjectDir, slugDir, sweepCoolingDown, writeLiveSessions, writeSweepStatus, type SweepError } from './lens-paths.js'
+import { LOCK_FILE, LOCK_TTL_MS, LOG_FILE, acquireLock, claudeDir, findTranscriptBySessionId, libraryHomeDir, readLastSession, readSweepStatus, releaseLock, resolveProjectDir, slugDir, sweepCoolingDown, writeLiveSessions, writeSweepStatus, type SweepError } from './lens-paths.js'
 
 export interface LensLaunchPayload {
   sessionId: string
@@ -43,21 +43,25 @@ export type LensLaunchResult =
   | { status: 'spawned'; pid?: number; projectDir: string | null; worker: string }
   | { status: 'error'; error: string }
 
+/** ON unless the env var is 0 | off | false | no. */
+function envOn(name: string): boolean {
+  return !['0', 'off', 'false', 'no'].includes((process.env[name] ?? '').trim().toLowerCase())
+}
+
 /** ON by default; kill switch: OSBORN_CONTENT_LENS=0 | off | false | no. */
 export function isContentLensEnabled(): boolean {
-  const v = (process.env.OSBORN_CONTENT_LENS ?? '').trim().toLowerCase()
-  return !['0', 'off', 'false', 'no'].includes(v)
+  return envOn('OSBORN_CONTENT_LENS')
 }
 
 /**
  * Worker entry + node args. From dist → dist/content/compaction-lens-worker.js.
  * From a tsx/src dev run → the .ts sibling, loaded through tsx's ESM hook.
  */
-export function resolveWorkerCommand(): { args: string[]; worker: string } | null {
+export function resolveWorkerCommand(name = 'compaction-lens-worker'): { args: string[]; worker: string } | null {
   const here = dirname(fileURLToPath(import.meta.url))
-  const js = join(here, 'compaction-lens-worker.js')
+  const js = join(here, `${name}.js`)
   if (existsSync(js)) return { args: [js], worker: js }
-  const ts = join(here, 'compaction-lens-worker.ts')
+  const ts = join(here, `${name}.ts`)
   if (existsSync(ts)) {
     try {
       const tsxEsm = createRequire(import.meta.url).resolve('tsx/esm')
@@ -84,21 +88,26 @@ function workerOrSkip(): { args: string[]; worker: string } | Extract<LensLaunch
  * crash before the worker's own logging (bad import, OOM) is not lost.
  */
 function spawnWorker(cmd: { args: string[] }, argFile: string, logDir: string | null, onError: (err: Error) => void): number | undefined {
+  const child = spawnDetached([...cmd.args, argFile], logDir ? join(logDir, LOG_FILE) : null)
+  child.on('error', onError)
+  child.unref()
+  return child.pid
+}
+
+/** Spawn `node <args>` detached, stderr appended to `logFile` (stdout ignored). */
+function spawnDetached(args: string[], logFile: string | null): ChildProcess {
   let fd: number | null = null
   try {
-    if (logDir) fd = openSync(join(logDir, LOG_FILE), 'a', 0o600)
+    if (logFile) fd = openSync(logFile, 'a', 0o600)
   } catch {
     fd = null
   }
   try {
-    const child = spawn(process.execPath, [...cmd.args, argFile], {
+    return spawn(process.execPath, args, {
       detached: true,
       stdio: ['ignore', 'ignore', fd ?? 'ignore'],
       env: { ...process.env },
     })
-    child.on('error', onError)
-    child.unref()
-    return child.pid
   } finally {
     if (fd !== null) {
       try {
@@ -213,6 +222,8 @@ export function launchLibraryOnSessionEnd(
   sessionId: string | null | undefined, cwd: string | undefined, reason: string, live: string[] = liveSessions(), attempt = 0,
 ): LastRun | null {
   if (!sessionId) return null
+  // Follow-through first, independent of the Library's per-project lock and its in-process retries.
+  if (!attempt && cwd) void launchLoopsFlush({ sessionId, cwd }, reason)
   const exclude = live.filter(id => id && id !== sessionId)
   const r = launchCompactionLens({ sessionId, cwd, skipLens: true, sweep: { exclude, trigger: `session-end:${reason}` } })
   lastRun = { at: new Date().toISOString(), session: sessionId.slice(0, 8), reason, status: r.status, ...(attempt ? { attempt } : {}) }
@@ -308,4 +319,70 @@ export function librarySweepHealth(): Record<string, unknown> {
       : null,
     workerError: s?.workerError ? { at: s.workerError.at, kind: s.workerError.kind } : null,
   }
+}
+
+// ── Follow-through (#378): file a session's open items in a detached worker ──
+
+/** ON by default; kill switch: OSBORN_FOLLOW_THROUGH=0 | off | false | no. */
+export function isFollowThroughEnabled(): boolean {
+  return envOn('OSBORN_FOLLOW_THROUGH')
+}
+
+export type LoopsFlushTarget = { sessionId: string; cwd: string } | 'drain' | 'last'
+export type LoopsFlushResult = 'spawned' | 'disabled' | 'no-worker' | 'error'
+
+/**
+ * Spawn the loops-flush worker detached. Resolves once the child has actually
+ * spawned (then unrefs it) or failed, so an exit path can await it before
+ * process.exit instead of trusting a timer. The worker takes its own per-session
+ * lock; overlapping launches serialize there.
+ */
+export function launchLoopsFlush(target: LoopsFlushTarget, reason: string, timeoutMs = 2000): Promise<LoopsFlushResult> {
+  if (!isFollowThroughEnabled()) return Promise.resolve('disabled')
+  const cmd = resolveWorkerCommand('loops-flush-worker')
+  if (!cmd) return Promise.resolve('no-worker')
+  const args = target === 'drain' ? ['--drain'] : target === 'last' ? ['--last'] : ['--session', target.sessionId, '--cwd', target.cwd]
+  return new Promise<LoopsFlushResult>((resolve) => {
+    let child: ChildProcess
+    try {
+      const logDir = join(claudeDir(), 'osb-loops')
+      mkdirSync(logDir, { recursive: true })
+      child = spawnDetached([...cmd.args, ...args, '--reason', reason], join(logDir, 'follow-through.log'))
+    } catch (err) {
+      console.error('⚠️ follow-through: launch failed:', err instanceof Error ? err.message : err)
+      resolve('error')
+      return
+    }
+    const timer = setTimeout(() => resolve('error'), timeoutMs)
+    timer.unref?.()
+    child.once('spawn', () => {
+      clearTimeout(timer)
+      child.unref()
+      console.log(`📌 follow-through flush (${reason}) → spawned`)
+      resolve('spawned')
+    })
+    child.once('error', (err) => {
+      clearTimeout(timer)
+      console.error('⚠️ follow-through: worker spawn failed:', err?.message)
+      resolve('error')
+    })
+  })
+}
+
+/**
+ * Exit paths with no live brain (idle exit, memory recycle, stop signals): file the last
+ * foreground session's open items, wait until the worker has spawned, then exit after
+ * `delayMs` (the log tee's beat).
+ *
+ * Best-effort on a Fly stop: the machine may be torn down before the detached worker
+ * finishes. The reliable path there is the next boot's drain (`launchLoopsFlush('drain')`,
+ * 120s after start); the flush lock's TTL (LOOPS_LOCK_TTL_MS, 90s) is shorter, so a lock
+ * left by a worker killed with the machine never blocks it.
+ */
+export async function flushLastSessionThenExit(reason: string, code: number, delayMs: number): Promise<void> {
+  try {
+    const last = readLastSession()
+    if (last) await launchLoopsFlush({ sessionId: last.id, cwd: last.cwd }, reason)
+  } catch { /* never blocks the exit */ }
+  setTimeout(() => process.exit(code), delayMs)
 }
