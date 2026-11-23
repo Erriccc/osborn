@@ -42,7 +42,7 @@ export function canvasRouteAllowed(r: {
 }
 
 const OWN_API_ROUTES = new Set(['/canvas', '/tts', '/noise-cancel'])
-const JSON_HEADER = /^content-type:\s*application\/json$/i
+const JSON_HEADER = /^content-type:[ \t]*application\/json$/i
 
 /** Splits one shell line into words exactly as bash would, or null when it uses anything but plain
  *  words, '…' (literal, newlines included) and "…" with no expansion. Outside quotes `\'` and `\"` are

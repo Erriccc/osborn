@@ -37,6 +37,22 @@ const bad = [
 ]
 for (const c of bad) assert.equal(isOwnApiCurl(c), false, JSON.stringify(c))
 
+// Dedicated guards: route allow-list, '#', and non-printable URL characters.
+const J = `-d '{"a":1}'`
+const base = 'http://localhost:8741'
+for (const r of ['/canvas', '/tts', '/noise-cancel']) assert.equal(isOwnApiCurl(`curl ${base}${r} ${J}`), true, r)
+for (const p of ['/canvas/x', '/tts/extra/seg', '/noise-cancel/a', '//canvas', '/canvas//', '//tts', '/can%76as', '/tts%2fx', '/health', '/events', '/sessions', '/', '/canvas.json', '/Canvas'])
+  assert.equal(isOwnApiCurl(`curl ${base}${p} ${J}`), false, `path ${p}`)
+assert.equal(isOwnApiCurl(`curl '${base}/tts?text=a%20b' ${J}`), true, 'encoded query is fine')
+assert.equal(isOwnApiCurl(`curl '${base}/health?x=/canvas' ${J}`), false, 'route only in the query')
+for (const u of [`${base}/canvas#x`, `${base}/canvas?a=1#x`, `${base}/tts#`]) assert.equal(isOwnApiCurl(`curl '${u}' ${J}`), false, `hash ${u}`)
+for (const u of [`${base}/can\tvas`, `${base}/canvas\t`, `${base}/ca\nnvas`, `${base}/canvas\n`, `${base}/canvas\x01`, `${base}/canvas\x7f`, `${base}/canvasé`, `${base}/canvas x`])
+  assert.equal(isOwnApiCurl(`curl '${u}' ${J}`), false, `unprintable ${JSON.stringify(u)}`)
+// A CR/LF inside the header value is refused (single quotes keep it in one word).
+for (const h of ['Content-Type:\nx application/json', 'Content-Type:\r\napplication/json', 'Content-Type: application/json\n', 'Content-Type:\vapplication/json'])
+  assert.equal(isOwnApiCurl(`curl ${base}/canvas -H '${h}' ${J}`), false, `header ${JSON.stringify(h)}`)
+assert.equal(isOwnApiCurl(`curl ${base}/canvas -H 'content-type:\tapplication/json' ${J}`), true)
+
 // Every own-route curl the meetings skill shows (joined across line continuations) still passes.
 const skill = readFileSync(new URL('../.claude/skills/meetings/SKILL.md', import.meta.url), 'utf8')
 const own = [...skill.matchAll(/^curl [^\n]*localhost:8741\/(?:canvas|tts|noise-cancel)[^\n\\]*(?:\\\n[^\n]*)?/gm)].map(m => m[0])
