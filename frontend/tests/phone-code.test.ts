@@ -418,7 +418,7 @@ async function main() {
   })
 
   // ── routeCall's code step ──
-  const lines = () => st.ingresses.map((o: any) => decodeURIComponent(String(o.url).split('text=')[1] ?? ''))
+  const lines = () => st.ingresses.map((o: any) => new URL(String(o.url)).searchParams.get('text') ?? '')
   const call = { roomName: ROOM, callerE164: '+15551230000' }
   const admin2: any = { ...admin, rpc: async () => ({ data: USER, error: null }) }
   admin2.from = (name: string) => name === 'instances'
