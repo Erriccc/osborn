@@ -8,27 +8,33 @@ import { EventEmitter } from 'node:events'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 // @ts-ignore plain JS module
-import { exitCodeFor, superviseChild } from '../bin/child-exit.js'
-
-assert.equal(exitCodeFor(0, null), 0)
-assert.equal(exitCodeFor(3, null), 3)
-assert.equal(exitCodeFor(null, 'SIGABRT'), 134)
-assert.equal(exitCodeFor(null, 'SIGKILL'), 137)
-assert.equal(exitCodeFor(null, 'SIGTERM'), 143)
-assert.equal(exitCodeFor(null, null), 1, 'no code and no signal is never a clean exit')
+import { superviseChild } from '../bin/child-exit.js'
 
 // Wiring with fakes: exit is mapped, SIGINT/SIGTERM are forwarded.
-const child: any = new EventEmitter(); const killed: string[] = []
-child.kill = (s: string) => { killed.push(s) }
-const proc: any = new EventEmitter(); let exited: number | undefined
-proc.exit = (c: number) => { exited = c }
-superviseChild(child, { proc })
-proc.emit('SIGINT'); proc.emit('SIGTERM')
-assert.deepEqual(killed, ['SIGINT', 'SIGTERM'])
-child.emit('exit', null, 'SIGABRT')
-assert.equal(exited, 134)
-child.emit('error', new Error('boom'))
-assert.equal(exited, 1)
+const supervise = () => {
+  const child: any = new EventEmitter(); const killed: string[] = []
+  child.kill = (s: string) => { killed.push(s) }
+  const proc: any = new EventEmitter(); const out = { child, proc, killed, exited: undefined as number | undefined }
+  proc.exit = (c: number) => { out.exited = c }
+  superviseChild(child, { proc })
+  return out
+}
+const exitFor = (code: number | null, signal: string | null) => {
+  const s = supervise(); s.child.emit('exit', code, signal); return s.exited
+}
+assert.equal(exitFor(0, null), 0)
+assert.equal(exitFor(3, null), 3)
+assert.equal(exitFor(null, 'SIGKILL'), 137)
+assert.equal(exitFor(null, 'SIGTERM'), 143)
+assert.equal(exitFor(null, null), 1, 'no code and no signal is never a clean exit')
+
+const s = supervise()
+s.proc.emit('SIGINT'); s.proc.emit('SIGTERM')
+assert.deepEqual(s.killed, ['SIGINT', 'SIGTERM'])
+s.child.emit('exit', null, 'SIGABRT')
+assert.equal(s.exited, 134)
+s.child.emit('error', new Error('boom'))
+assert.equal(s.exited, 1)
 
 // Real processes: a wrapper whose child aborts itself must exit 137, not 0.
 const dir = dirname(fileURLToPath(import.meta.url))

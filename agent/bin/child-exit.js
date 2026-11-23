@@ -3,7 +3,7 @@
 import os from 'os'
 
 // A child killed by a signal has code null: exit 128+signo so Fly's on-failure restart fires.
-export function exitCodeFor(code, signal) {
+function exitCodeFor(code, signal) {
   if (typeof code === 'number') return code
   if (signal) return 128 + (os.constants.signals[signal] || 1)
   return 1
