@@ -31,7 +31,7 @@ export async function installReactiveMic(page: Page) {
     const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices)
     navigator.mediaDevices.getUserMedia = async (constraints?: MediaStreamConstraints) => {
       if (!constraints?.audio) return real(constraints)
-      if (!w.__mic.ready) {
+      if (!w.__mic.ctx || !w.__mic.dest) {  // a page that only set `ready` gets a real feed (#468)
         const ctx = new AudioContext({ sampleRate: 48000 })
         const dest = ctx.createMediaStreamDestination()
         // Perpetual comfort noise at ~-68dBFS. A digitally-silent track trips
