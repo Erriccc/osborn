@@ -694,6 +694,8 @@ interface PreviewAcc {
 
 const PREVIEW_LAST_CHARS = 100
 const PREVIEW_TITLE_CHARS = 120
+/** How far a large-file preview reads past its head/tail samples when they hold no user turn. */
+const PREVIEW_WIDEN = 4 * 1024 * 1024
 
 /** User-entry text: string content, or the text parts of an array that is not a tool_result. */
 function previewUserText(content: unknown): string | null {
@@ -812,12 +814,20 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
       const tn = readSync(fd, tailBuf, 0, TAIL, Math.max(0, size - TAIL))
       const head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
       const tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
-      const lastMessage = tail.lastUser ?? head.lastUser
+      // Samples with no user turn (a cut-off huge line, a tail of tool calls) widen once.
+      let widened: PreviewAcc | undefined
+      if (!tail.lastUser || !(tail.aiTitle ?? head.aiTitle ?? head.firstUser)) {
+        const start = Math.max(0, size - TAIL - PREVIEW_WIDEN)
+        const buf = Buffer.alloc(size - start)
+        const n = readSync(fd, buf, 0, size - start, start)
+        widened = scanPreviewLines(buf.toString('utf8', 0, n), start > 0)
+      }
+      const lastMessage = tail.lastUser ?? widened?.lastUser ?? head.lastUser
       // A lower bound: the turns in both samples, floored at 3 to clear the list gate.
       const messageCount = Math.max(3, head.count + tail.count)
       return {
         lastMessage,
-        title: tail.aiTitle ?? head.aiTitle ?? head.firstUser,
+        title: tail.aiTitle ?? head.aiTitle ?? head.firstUser ?? widened?.aiTitle ?? widened?.firstUser,
         messageCount,
         firstTs: head.firstTs,
         // No dated turn in the tail sample: any dated record there (a tool result), else unset
@@ -974,7 +984,8 @@ interface SessionManifest { v: number; entries: Record<string, SessionManifestEn
 // Older manifests are discarded on load. v2: sanitized preview fields. v3: the
 // large-file messageCount estimate changed, and unchanged files are never re-read.
 // v4: the large-file count is the sampled lower bound. v5: no head fallback for last activity.
-const SESSION_MANIFEST_VERSION = 5
+// v6: large-file previews widen the window when the samples hold no user turn.
+const SESSION_MANIFEST_VERSION = 6
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')
 }
