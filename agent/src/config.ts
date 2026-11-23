@@ -678,6 +678,8 @@ export interface SessionPreview {
   firstTs?: string
   /** Timestamp of the last REAL user/assistant turn (not file mtime). */
   lastActivityAt?: string
+  /** messageCount counts the whole file (a small file); otherwise it is a sampled lower bound. */
+  exact?: boolean
 }
 
 interface PreviewAcc {
@@ -692,6 +694,9 @@ interface PreviewAcc {
   lastAsstId?: string
 }
 
+/** A large session's list preview reads this much from the start and from the end of the file. */
+const PREVIEW_HEAD = 64 * 1024
+const PREVIEW_TAIL = 128 * 1024
 const PREVIEW_LAST_CHARS = 100
 const PREVIEW_TITLE_CHARS = 120
 /** How far a large-file preview reads past its head/tail samples when they hold no user turn. */
@@ -765,6 +770,20 @@ function scanPreviewLines(text: string, skipFirstPartial: boolean): PreviewAcc {
   return acc
 }
 
+/** Fold every record of a session file into a preview accumulator (exact counts; streams, never loads the file). */
+function scanWholeFile(filePath: string): Promise<PreviewAcc | null> {
+  return new Promise<PreviewAcc | null>((resolve) => {
+    const acc: PreviewAcc = { count: 0 }
+    const rl = readline.createInterface({ input: createReadStream(filePath), crlfDelay: Infinity })
+    rl.on('line', (line) => {
+      if (!line.trim()) return
+      try { accumulatePreviewEntry(acc, JSON.parse(line)) } catch { /* skip */ }
+    })
+    rl.on('close', () => resolve(acc))
+    rl.on('error', () => resolve(null))  // an unreadable file is not a count of 0
+  })
+}
+
 /**
  * Get a preview of a session (title, last message, turn count, first/last activity).
  *
@@ -780,28 +799,20 @@ function scanPreviewLines(text: string, skipFirstPartial: boolean): PreviewAcc {
  * compacted transcript can have no countable turn in the head at all.
  */
 async function getSessionPreview(filePath: string, fileSize?: number): Promise<SessionPreview> {
-  const HEAD = 64 * 1024
-  const TAIL = 128 * 1024
+  const HEAD = PREVIEW_HEAD
+  const TAIL = PREVIEW_TAIL
   try {
     const size = fileSize ?? statSync(filePath).size
     if (size <= HEAD + TAIL) {
       // Small enough to read whole — exact count + last message (cheap).
-      const whole = await new Promise<PreviewAcc>((resolve) => {
-        const acc: PreviewAcc = { count: 0 }
-        const rl = readline.createInterface({ input: createReadStream(filePath), crlfDelay: Infinity })
-        rl.on('line', (line) => {
-          if (!line.trim()) return
-          try { accumulatePreviewEntry(acc, JSON.parse(line)) } catch { /* skip */ }
-        })
-        rl.on('close', () => resolve(acc))
-        rl.on('error', () => resolve({ count: 0 }))
-      })
+      const whole = (await scanWholeFile(filePath)) ?? { count: 0 }
       return {
         lastMessage: whole.lastUser,
         title: whole.aiTitle ?? whole.firstUser,
         messageCount: whole.count,
         firstTs: whole.firstTs,
         lastActivityAt: whole.lastTs,
+        exact: true,
       }
     }
 
@@ -966,6 +977,7 @@ const SESSION_LIST_TTL_MS = 300_000
 
 export function invalidateSessionListCache(): void {
   _sessionListCache = null
+  _sessionManifest = null  // re-read from disk, as after a restart
 }
 
 // ── Persisted session-list manifest (cold-boot dashboard fix) ──
@@ -979,6 +991,8 @@ export function invalidateSessionListCache(): void {
 interface SessionManifestEntry {
   mtimeMs: number; size: number; lastMessage?: string; messageCount: number; cwd: string
   title?: string; firstTs?: string; lastActivityAt?: string
+  /** messageCount counts the whole file (read whole, or counted in the background); valid while mtime+size match. */
+  exact?: boolean
 }
 interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
 // Older manifests are discarded on load. v2: sanitized preview fields. v3: the
@@ -989,21 +1003,64 @@ const SESSION_MANIFEST_VERSION = 6
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')
 }
+// One loaded copy, shared by the listing and the background count so neither saves over the other's entries.
+let _sessionManifest: SessionManifest | null = null
 function loadSessionManifest(): SessionManifest {
+  if (_sessionManifest) return _sessionManifest
   try {
     const raw = readFileSync(sessionManifestPath(), 'utf-8')
     const m = JSON.parse(raw) as SessionManifest
-    if (m && m.v === SESSION_MANIFEST_VERSION && m.entries && typeof m.entries === 'object') return m
+    if (m && m.v === SESSION_MANIFEST_VERSION && m.entries && typeof m.entries === 'object') return (_sessionManifest = m)
   } catch { /* missing / corrupt → start fresh */ }
-  return { v: SESSION_MANIFEST_VERSION, entries: {} }
+  return (_sessionManifest = { v: SESSION_MANIFEST_VERSION, entries: {} })
 }
 function saveSessionManifest(m: SessionManifest): void {
   try {
     const p = sessionManifestPath()
-    const tmp = `${p}.tmp`
+    const tmp = `${p}.${process.pid}.tmp`
     writeFileSync(tmp, JSON.stringify(m))
     renameSync(tmp, p)  // atomic swap — a reader never sees a half-written file
   } catch { /* best-effort — a failed manifest write just means the next cold boot re-reads */ }
+}
+
+// A large session's list entry is sampled (head + tail), so a 400 MB session reads "9 msgs". A
+// background pass counts each such file whole, one at a time, and the next listing serves the real
+// number from the manifest. Only the dashboard's /sessions list starts it (never the voice-connect
+// sweep), and a file written in the last few minutes is a live session and waits until idle.
+const EXACT_COUNT_MAX_BYTES = 1024 * 1024 * 1024
+const EXACT_COUNT_QUIET_MS = 5 * 60_000
+const EXACT_COUNT_SAVE_MS = 10_000
+const exactCountQueue: { filePath: string; mtimeMs: number; size: number }[] = []
+async function drainExactCounts(): Promise<void> {
+  // The file being counted stays at the head of the queue, so a listing meanwhile cannot queue it again.
+  let lastSave = 0, unsaved = false
+  for (let job = exactCountQueue[0]; job; job = exactCountQueue[0]) {
+    const started = Date.now()
+    try {
+      const acc = await scanWholeFile(job.filePath)
+      const manifest = loadSessionManifest()
+      const hit = manifest.entries[job.filePath]
+      if (acc && hit && hit.mtimeMs === job.mtimeMs && hit.size === job.size) {
+        hit.messageCount = Math.max(acc.count, hit.messageCount)  // the sampled floor keeps a large session listed
+        hit.exact = true
+        unsaved = true
+      }
+      // Checked even when this file was skipped, so the last file never strands earlier unsaved counts.
+      if (unsaved && (exactCountQueue.length === 1 || Date.now() - lastSave > EXACT_COUNT_SAVE_MS)) {
+        saveSessionManifest(manifest)
+        lastSave = Date.now()
+        unsaved = false
+        _sessionListCache = null  // the next listing reads the real counts
+      }
+      // Pause as long as the pass took before the next file.
+      await new Promise((r) => setTimeout(r, Date.now() - started))
+    } finally { exactCountQueue.shift() }
+  }
+}
+function queueExactCount(filePath: string, mtimeMs: number, size: number): void {
+  if (size <= PREVIEW_HEAD + PREVIEW_TAIL || size > EXACT_COUNT_MAX_BYTES || Date.now() - mtimeMs < EXACT_COUNT_QUIET_MS) return
+  if (exactCountQueue.some((j) => j.filePath === filePath)) return
+  if (exactCountQueue.push({ filePath, mtimeMs, size }) === 1) void drainExactCounts()
 }
 
 /**
@@ -1013,7 +1070,7 @@ function saveSessionManifest(m: SessionManifest): void {
  *
  * @param limit - Max sessions to return (default 100, sorted by recency)
  */
-export async function listAllClaudeSessions(limit = 1000, includeSubagents = false): Promise<ClaudeSessionEntry[]> {
+export async function listAllClaudeSessions(limit = 1000, includeSubagents = false, opts: { countInBackground?: boolean } = {}): Promise<ClaudeSessionEntry[]> {
   if (_sessionListCache && Date.now() < _sessionListCache.expiresAt
     && _sessionListCache.scanned >= limit
     && (_sessionListCache.subagents === includeSubagents || (_sessionListCache.scanned === Infinity && !includeSubagents))) {
@@ -1083,16 +1140,20 @@ export async function listAllClaudeSessions(limit = 1000, includeSubagents = fal
           lastMessage: hit.lastMessage, title: hit.title, messageCount: hit.messageCount,
           firstTs: hit.firstTs, lastActivityAt: hit.lastActivityAt,
         }
+        if (opts.countInBackground && !hit.exact) queueExactCount(c.filePath, c.mtime.getTime(), c.size)
         return { c, preview, cwd: hit.cwd }
       }
       try {
         const [preview, cwd] = await Promise.all([getSessionPreview(c.filePath, c.size), extractCwd(c.filePath)])
+        // Session files only grow: any earlier count stays a floor, however many times the file grows.
+        if (hit && c.size >= hit.size) preview.messageCount = Math.max(preview.messageCount, hit.messageCount)
         manifest.entries[c.filePath] = {
           mtimeMs: c.mtime.getTime(), size: c.size,
           lastMessage: preview.lastMessage, messageCount: preview.messageCount, cwd,
-          title: preview.title, firstTs: preview.firstTs, lastActivityAt: preview.lastActivityAt,
+          title: preview.title, firstTs: preview.firstTs, lastActivityAt: preview.lastActivityAt, exact: preview.exact,
         }
         manifestDirty = true
+        if (opts.countInBackground && !preview.exact) queueExactCount(c.filePath, c.mtime.getTime(), c.size)
         return { c, preview, cwd }
       } catch { return null }
     })
@@ -1105,7 +1166,8 @@ export async function listAllClaudeSessions(limit = 1000, includeSubagents = fal
   for (const key of Object.keys(manifest.entries)) {
     if (!liveKeys.has(key)) { delete manifest.entries[key]; manifestDirty = true }
   }
-  if (manifestDirty) saveSessionManifest(manifest)
+  // An invalidation mid-listing swaps the shared copy: saving this stale one would erase a count the drain just wrote.
+  if (manifestDirty && _sessionManifest === manifest) saveSessionManifest(manifest)
 
   for (const r of results) {
     if (!r) continue
