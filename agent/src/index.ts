@@ -51,7 +51,7 @@ import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds, findUpdates } from './store-catalog.js'
 import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, skillHeading, storeName, type AgentDef, type Role } from './agent-store.js'
-import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
+import { clearPipelineFastBrainSession, prewarmBM25Index, probeFastBrain, fastBrainModelStatus } from './pipeline-fastbrain.js'
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
@@ -986,7 +986,7 @@ function startApiServer(workingDir: string, port: number): void {
         status: 'ok',
         workingDir,
         version,
-        fastBrain: { errors: fastBrainErrors.count, lastErrorAt: fastBrainErrors.lastAt },
+        fastBrain: { errors: fastBrainErrors.count, lastErrorAt: fastBrainErrors.lastAt, ...fastBrainModelStatus() },
         // Library: is it on, can it call the model, does it reach /library. Public: counts, times and codes only.
         library: {
           enabled: isContentLensEnabled(),
@@ -2286,6 +2286,9 @@ async function main() {
     console.error('\nSet these in your .env file or environment.')
     process.exit(1)
   }
+
+  // A retired fast-brain model is found now, not on the first turn.
+  void probeFastBrain()
 
   // Parse CLI args
   const cliArgs = parseArgs()

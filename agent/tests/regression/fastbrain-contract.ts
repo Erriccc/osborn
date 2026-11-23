@@ -25,6 +25,9 @@ sandboxHome()
 // Module-level consts read env at import time — pin the default model path.
 delete process.env.OSBORN_FAST_BRAIN_MODEL
 delete process.env.OPENROUTER_API_KEY
+delete process.env.FIREWORKS_API_KEY
+delete process.env.Z_AI_PERSONAL_API_KEY
+delete process.env.ZAI_API_KEY
 const fb = await import('../../src/pipeline-fastbrain.js')
 
 const workingDir = mkdtempSync(join(tmpdir(), 'osborn-regress-fb-'))
