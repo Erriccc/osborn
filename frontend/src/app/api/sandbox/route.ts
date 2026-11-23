@@ -8,7 +8,6 @@ import {
   createSandbox,
   startSandbox,
   stopSandbox,
-  keepAliveSandbox,
   deleteSandbox,
   assignFromPoolOrCreate,
   restartService,
@@ -23,16 +22,12 @@ import {
 } from '@/lib/cloud'
 import { checkSandboxClaim, claimSandboxForUser, knownSandboxClaim } from '@/lib/sandbox-claims'
 import { connectUserAgent, lookupSandbox } from '@/lib/connect-agent'
+import { touchLastSeen } from '@/lib/last-seen'
 import { volumeSyncProblem } from '@/lib/volume-sync'
 
 // lookupSandbox's undefined is "unknown": answered with lookupFailed(), never
 // "no sandbox" (which clears the record or provisions another).
 const lookupFailed = () => NextResponse.json({ error: 'Sandbox lookup failed, try again' }, { status: 503 })
-
-/** Record that the user connected to their machine (the admin "Last active" reads it). Never awaited: a failed write must not slow or fail the request. */
-function touchLastSeen(supabase: Awaited<ReturnType<typeof createSupabaseServer>>, userId: string): void {
-  supabase.from('instances').update({ last_seen: new Date().toISOString() }).eq('user_id', userId).then(({ error }) => { if (error) console.warn(`[sandbox] last_seen write failed for ${userId}: ${error.message}`) }, () => {})
-}
 
 /**
  * GET /api/sandbox — get current user's sandbox status
@@ -150,9 +145,9 @@ const CREATE_COOLDOWN_MS = 30_000
 const createCooldownUntil = new Map<string, number>()
 
 /**
- * POST /api/sandbox — create, start, stop, or keepalive a sandbox
+ * POST /api/sandbox — create, start, or stop a sandbox
  *
- * Body: { action: 'create' | 'start' | 'stop' | 'keepalive', sandboxId?: string }
+ * Body: { action: 'create' | 'start' | 'stop', sandboxId?: string }
  */
 export async function POST(request: Request) {
   if (!isSpritesConfigured()) {
@@ -413,16 +408,6 @@ export async function POST(request: Request) {
           status: 'stopped',
         }).eq('user_id', user.id)
       }
-      return NextResponse.json({ success: ok })
-    }
-
-    case 'keepalive': {
-      if (!sandboxId) {
-        return NextResponse.json({ error: 'sandboxId required' }, { status: 400 })
-      }
-      const keepaliveDenied = await rejectIfNotOwned(sandboxId)
-      if (keepaliveDenied) return keepaliveDenied
-      const ok = await keepAliveSandbox(sandboxId)
       return NextResponse.json({ success: ok })
     }
 

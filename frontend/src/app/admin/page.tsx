@@ -251,7 +251,7 @@ export default function AdminPage() {
               ))}
             </div>
             <p className="px-4 py-3 border-t border-[var(--border-subtle)] text-[var(--text-secondary)] text-xs leading-relaxed">
-              Last sign-in moves only when someone signs in again, so a saved session never updates it. Last active is the newest of when someone last connected or the app last started the machine, and the machine&apos;s last start or stop (an idle machine stops about 15 minutes after use). Status is read from Fly when this page loads; &quot;(stored)&quot; means Fly could not be read and the last saved value is shown.
+              Last sign-in moves only when someone signs in again, so a saved session never updates it. Last active is the newest of when someone last connected (in the app or by phone), or the app last provisioned, started or synced the machine (/api/instance), and the machine&apos;s last start or stop (an idle machine stops about 15 minutes after use). Status is read from Fly when this page loads; &quot;(stored)&quot; means Fly could not be read and the last saved value is shown.
             </p>
           </div>
         )}

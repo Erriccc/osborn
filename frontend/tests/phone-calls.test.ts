@@ -33,6 +33,7 @@ const reset = () => {
   st.cloud = [] as string[]
   st.fetches = [] as { url: string; init: any }[]
   st.fetchReply = (_url: string) => ({ status: 200, body: { ok: true, roomName: ROOM } })
+  st.updates = [] as any[]
   st.findThrows = false
   st.healthThrows = false
 }
@@ -101,6 +102,7 @@ async function main() {
       let cols = ''
       const b: any = {
         select: (c: string) => { cols = c; return b }, eq: () => b,
+        update: (v: any) => { st.updates.push(v); return b },
         single: async () => ({ data: st.instance, error: null }),
         then: (res: any) => res({ data: cols === 'user_id' ? st.claims : st.instance, error: null }),
       }
@@ -309,6 +311,8 @@ async function main() {
     const f = st.fetches.find((x: any) => x.url === 'https://agent.example/connect-room')
     eq(JSON.parse(f.init.body).roomName, ROOM, 'caller room')
     eq(st.deleted, [], 'no hang-up')
+    eq(st.updates.length, 1, 'one last_seen write')
+    ok(!Number.isNaN(Date.parse(st.updates[0].last_seen)), 'last_seen is a timestamp')
   })
   await t('routeCall: unknown number is hung up and no machine is touched', async () => {
     reset(); st.rpc = { data: null, error: null }
@@ -342,6 +346,7 @@ async function main() {
   await t('routeCall: browser session live -> busy line from the agent /tts, then hang up', async () => {
     reset(); st.fetchReply = () => ({ status: 409, body: { ok: false, error: 'busy' } })
     eq(await calls.routeCall(call), 'busy', 'outcome')
+    eq(st.updates, [], 'a busy call is not activity')
     eq(st.ingresses.length, 1, 'one ingress')
     ok(st.ingresses[0].opts.url.startsWith('https://agent.example/tts?text='), `ingress url ${st.ingresses[0].opts.url}`)
     eq(createHmac('sha256', 'tok-123').update('tts:hi').digest('base64url'), '3CbAFahcW54n_pvLyHf2TuUPPCfh8eMy8rd-iVnTRuE', 'the formula the agent verifies (agent canvas-key.test.ts pins the same value)')
@@ -390,6 +395,7 @@ async function main() {
   await t('hold (#365): agent unreachable after waking -> could-not-reach line', async () => {
     reset(); st.fetchReply = () => ({ status: 500, body: {} })
     eq(await calls.routeCall(call, FRONT), 'rejected', 'outcome')
+    eq(st.updates, [], 'a failed connect is not activity')
     eq(st.ingresses.map((x: any) => x.opts.url), [`${FRONT}${calls.FAILED_AUDIO_PATH}`], 'failed line')
     eq(st.deleted, [ROOM], 'hung up')
   })

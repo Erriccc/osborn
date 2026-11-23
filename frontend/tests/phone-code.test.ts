@@ -20,6 +20,7 @@ const TOKEN = 'sync-token-0123456789abcdef'
 // ── A small in-memory Supabase: the two tables and the auth calls phone-code.ts uses ──
 const st: any = {}
 const reset = () => {
+  st.updates = [] as any[]
   st.db = { phone_call_codes: [] as any[], instances: [{ user_id: USER, sync_token: TOKEN }] }
   st.email = 'owner@example.com'
   st.code = '482913'
@@ -422,13 +423,14 @@ async function main() {
   const call = { roomName: ROOM, callerE164: '+15551230000' }
   const admin2: any = { ...admin, rpc: async () => ({ data: USER, error: null }) }
   admin2.from = (name: string) => name === 'instances'
-    ? { select: () => ({ eq: () => ({ single: async () => ({ data: { sandbox_id: 'osborn-mine', sync_token: TOKEN } }) }) }) }
+    ? { update: (v: any) => ({ eq: () => ({ then: (r: any) => { st.updates.push(v); return r({ error: null }) } }) }), select: () => ({ eq: () => ({ single: async () => ({ data: { sandbox_id: 'osborn-mine', sync_token: TOKEN } }) }) }) }
     : table(name)
   mocks['@/lib/sandbox-claims'].serviceClient = () => admin2
 
   await t('routeCall without callCode: connected, no email (flag off on the agent)', async () => {
     reset(); st.callCode = undefined
     eq(await calls.routeCall(call), 'connected', 'connected')
+    eq(st.updates.length, 1, 'no code step: recorded once')
     eq(st.sent.length, 0, 'no email')
     eq(st.ingresses.length, 0, 'no line')
   })
@@ -445,6 +447,7 @@ async function main() {
     try {
       eq(await calls.routeCall(call), 'connected', 'connected')
     } finally { admin2.from = realFrom }
+    eq(st.updates.length, 1, 'a verified code records activity once')
     eq(st.sent.length, 1, 'one email')
     eq(lines(), [code.CODE_PROMPT_LINE], 'prompt only')
     ok(String(st.ingresses[0].url).startsWith('https://agent.example/tts?text='), 'spoken by the agent\'s /tts')
@@ -465,6 +468,7 @@ async function main() {
     }
     try {
       eq(await calls.routeCall(call), 'rejected', 'rejected')
+      eq(st.updates, [], 'three misses is not activity')
     } finally { admin2.from = realFrom }
     eq(lines(), [code.CODE_PROMPT_LINE, code.CODE_RETRY_LINE, code.CODE_RETRY_LINE, code.CODE_LOCKED_LINE], 'lines')
     eq(st.deleted, [ROOM], 'hung up')
@@ -480,6 +484,7 @@ async function main() {
     reset(); st.callCode = true
     st.db.phone_call_codes.push(today({ room_name: 'call-a', misses: 3, attempts: 3 }), today({ room_name: 'call-b', misses: 3, attempts: 3 }))
     eq(await calls.routeCall(call), 'rejected', 'rejected')
+    eq(st.updates, [], 'a locked or refused call is not activity')
     eq(st.sent.length, 0, 'no email')
     eq(lines(), [code.CODE_DAILY_LIMIT_LINE], 'line')
     eq(st.deleted, [ROOM], 'hung up')
@@ -522,6 +527,7 @@ async function main() {
     reset(); st.callCode = true; st.sendError = { message: 'over_email_send_rate_limit' }
     eq(await calls.routeCall(call), 'rejected', 'rejected')
     eq(lines(), [code.CODE_SEND_FAILED_LINE], 'line')
+    eq(st.updates, [], 'a refused code step is not activity')
     eq(st.deleted, [ROOM], 'hung up')
   })
   await t('routeCall with callCode: no code before expiry -> goodbye and hang-up', async () => {
@@ -534,6 +540,7 @@ async function main() {
     }
     try { eq(await calls.routeCall(call), 'rejected', 'rejected') } finally { admin2.from = realFrom }
     eq(lines(), [code.CODE_PROMPT_LINE, code.CODE_EXPIRED_LINE], 'lines')
+    eq(st.updates, [], 'a refused code step is not activity')
     eq(st.deleted, [ROOM], 'hung up')
   })
   await t('routeCall with callCode: the caller hung up -> no goodbye into a gone room', async () => {

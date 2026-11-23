@@ -127,7 +127,7 @@ The fast brain (`fast-brain.ts`) maintains `spec.md` — reading FULL untruncate
 - `frontend/src/lib/supabase.ts` / `supabase-browser.ts` / `supabase-server.ts` — Supabase client factories for browser, server, and middleware contexts.
 - `frontend/src/app/api/token/route.ts` — LiveKit JWT token generation with metadata (provider, voiceArch, sessionId, workingDirectory).
 - `frontend/src/app/api/instance/route.ts` — User instance CRUD (Supabase-backed).
-- `frontend/src/app/api/sandbox/route.ts` — Daytona sandbox CRUD + keepalive PATCH.
+- `frontend/src/app/api/sandbox/route.ts` — sandbox CRUD (Sprites or Fly Machines, via `lib/cloud`).
 - `frontend/src/app/page.tsx` — Landing page: Google/GitHub OAuth + guest connect.
 - `frontend/src/app/dashboard/page.tsx` — Dashboard: recent chats, settings (`connectionMode` local/cloud), agent health, profile.
 - `frontend/src/app/chat/page.tsx` — Voice chat wrapper that auto-resolves the agent URL (cloud sandbox or local) and mounts `VoiceRoom`.
@@ -150,7 +150,7 @@ Frontend ↔ Agent communication uses LiveKit data channels:
 Each user can be provisioned an isolated Linux sandbox running their own osborn agent + Codex CLI, instead of running the agent locally. Provisioning is handled by `frontend/src/lib/daytona.ts` against a self-hosted Daytona instance at `daytona.voice-native.com` (Hostinger VPS, Caddy + Let's Encrypt). Full deployment notes are in `DAYTONA-SETUP.md`.
 
 **Key files:**
-- `frontend/src/lib/daytona.ts` — Server-only sandbox library. Raw HTTP (the `@daytonaio/sdk` is buggy with self-hosted). Functions: `createSandbox`, `findUserSandbox`, `startSandbox`, `stopSandbox`, `keepAliveSandbox`, `deleteSandbox`. `getPlatformEnvVars()` injects platform infra keys (LiveKit, Deepgram, OpenAI, Google, Recall, Smithery) — NOT user auth
+- `frontend/src/lib/daytona.ts` — Server-only sandbox library. Raw HTTP (the `@daytonaio/sdk` is buggy with self-hosted). Functions: `createSandbox`, `findUserSandbox`, `startSandbox`, `stopSandbox`, `deleteSandbox`. `getPlatformEnvVars()` injects platform infra keys (LiveKit, Deepgram, OpenAI, Google, Recall, Smithery) — NOT user auth
 - `frontend/src/app/api/sandbox/route.ts` — Next.js endpoint for sandbox CRUD. Backed by Supabase auth — each user gets exactly one sandbox labeled `{ userId, app: 'osborn' }`
 - `frontend/supabase/migrations/002_sandbox_support.sql` — Adds `sandbox_id` + `sandbox_url` columns to `instances` table
 
@@ -174,7 +174,7 @@ Each user can be provisioned an isolated Linux sandbox running their own osborn 
 - **`sudo` strips PATH** — every install/start command must explicitly preserve PATH via `sudo env PATH=/usr/local/nvm/versions/node/v22.14.0/bin:$PATH ...`. nvm's bin dir isn't in root's default PATH.
 - **Background process detachment** — `nohup ... &` alone doesn't survive the toolbox `executeCommand` returning. Need `setsid` (detach from controlling terminal) AND `disown` (detach from parent shell).
 - **Per-user Codex OAuth** — first user message in a fresh sandbox triggers `Codex setup-token` via pty inside the sandbox. The OAuth URL surfaces via the `claude_auth_url` data channel message. User opens it, pastes the code back via the auth modal, token persists at `/home/daytona/.Codex/.credentials.json`. Survives `autoStopInterval` (15min idle → stop, fs preserved).
-- **`/api/sandbox` PATCH (keepalive)** — chat page pings every 5min while connected to reset Daytona's idle timer. Auto-disconnects after 20min of no user activity (mouse/key/click events).
+- **No keepalive ping** — nothing resets Daytona's idle timer from the chat page. The chat page stops the machine and shows an idle overlay after 15min with no voice activity.
 
 **`@daytonaio/sdk` workarounds (raw HTTP only):**
 | Bug | Workaround |

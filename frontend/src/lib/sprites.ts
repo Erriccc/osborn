@@ -1319,32 +1319,6 @@ export async function stopSandbox(_sandboxId: string): Promise<boolean> {
 }
 
 /**
- * Send a keepalive ping to prevent the sprite from hibernating.
- *
- * IMPORTANT: Sprites auto-hibernate after approximately 30 seconds of inactivity.
- * Callers MUST ping at least every 20 seconds to reliably prevent hibernation.
- * The chat page currently pings every 5 minutes — this is sufficient only because
- * active HTTP requests to the agent also reset the idle timer. If the user is idle,
- * increase the ping frequency to every 20 seconds.
- *
- * @param sandboxId - the sprite name
- */
-export async function keepAliveSandbox(sandboxId: string): Promise<boolean> {
-  try {
-    // Fetching the sprite metadata wakes it if hibernating
-    const sprite = await api<SpritesSprite>('GET', `/v1/sprites/${sandboxId}`)
-
-    // Ping the agent health endpoint to confirm it's responding
-    const res = await fetch(`${sprite.url}/health`, {
-      signal: AbortSignal.timeout(4000),
-    })
-    return res.ok
-  } catch {
-    return false
-  }
-}
-
-/**
  * Upgrade osborn on a sprite to a target version.
  *
  * Why this is structured the way it is:

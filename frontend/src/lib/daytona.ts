@@ -476,20 +476,6 @@ export async function stopSandbox(sandboxId: string): Promise<boolean> {
 }
 
 /**
- * Send keepalive to prevent auto-stop while user is connected.
- * Updates the sandbox's "last activity" timestamp.
- */
-export async function keepAliveSandbox(sandboxId: string): Promise<boolean> {
-  try {
-    // Just touching any endpoint resets the activity timer
-    await api('GET', `/api/sandbox/${sandboxId}`)
-    return true
-  } catch {
-    return false
-  }
-}
-
-/**
  * Delete a sandbox permanently.
  */
 export async function deleteSandbox(sandboxId: string): Promise<boolean> {

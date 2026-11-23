@@ -538,7 +538,7 @@ The frontend code (`frontend/src/lib/daytona.ts`) reads these and uses raw HTTP 
 7. **Caddy** auto-provisions a Let's Encrypt cert for the new subdomain on first request via on-demand TLS (~2s extra on first hit, cached after).
 8. **Inside the sandbox**: osborn connects to LiveKit Cloud, runs `claude setup-token` pty on first user message → surfaces auth URL via `claude_auth_url` data channel → user pastes code in modal → token persists at `/home/daytona/.claude/.credentials.json`.
 9. **Token persistence**: The `.credentials.json` file lives on the sandbox filesystem. It survives auto-stop, auto-resume, and auto-archive — only re-auth needed if the file is deleted or expires.
-10. **Keepalive**: While the user is connected, frontend pings `POST /api/sandbox { action: 'keepalive' }` every 5min to reset Daytona's idle timer. Chat page also auto-disconnects after 20min of no user activity (mouse/keyboard/click) to preserve usage.
+10. **Keepalive**: The chat page no longer pings `/api/sandbox` (the `keepalive` action was removed); it stops the machine after 15min with no voice activity.
 11. **Idle**: After 15 min of no Daytona API activity, sandbox auto-stops (filesystem persists, $0 compute).
 12. **Resume**: User comes back → frontend calls `start` action → sandbox resumes in <90s → agent restarts via the same `cd /home/daytona/workspace && sudo -E setsid nohup ... osborn ...` command (npm packages + OAuth token still on disk).
 13. **Auto-archive**: After 7 days stopped, sandbox auto-archives to MinIO object storage (persists indefinitely, very cheap).

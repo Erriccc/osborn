@@ -752,21 +752,6 @@ export async function stopMachineCold(sandboxId: string): Promise<boolean> {
 }
 
 /**
- * Ping the sandbox to keep it alive and prevent auto-suspend.
- */
-export async function keepAliveSandbox(sandboxId: string): Promise<boolean> {
-  const appName = sandboxId
-  try {
-    const res = await fetch(`https://${appName}.fly.dev/health`, {
-      signal: AbortSignal.timeout(4000),
-    })
-    return res.ok
-  } catch {
-    return false
-  }
-}
-
-/**
  * Permanently delete a sandbox: destroy the machine, delete volumes, delete app.
  */
 export async function deleteSandbox(sandboxId: string): Promise<boolean> {

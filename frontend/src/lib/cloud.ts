@@ -1,7 +1,7 @@
 /**
  * cloud.ts — Provider switch between Sprites and Fly Machines.
  *
- * Re-exports the 16 shared functions from either lib/sprites or lib/machines
+ * Re-exports the 14 shared functions from either lib/sprites or lib/machines
  * based on the `CLOUD_PROVIDER` env var:
  *
  *   CLOUD_PROVIDER=sprites   (default, current production)
@@ -48,7 +48,6 @@ export const deleteSandbox = provider.deleteSandbox
 export const execInSprite = provider.execInSprite
 export const findUserSandbox = provider.findUserSandbox
 export const isSpritesConfigured = provider.isSpritesConfigured
-export const keepAliveSandbox = provider.keepAliveSandbox
 export const resolveOsbornLatest = provider.resolveOsbornLatest
 export const restartService = provider.restartService
 export const startSandbox = provider.startSandbox
