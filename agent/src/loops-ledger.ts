@@ -171,7 +171,7 @@ export function foldLoops(records: LoopRecord[]): Map<string, LoopItem> {
     if (!r || !r.id) continue
     if (r.kind === 'filed') {
       const it = items.get(r.id)
-      if (it) { it.filedUrl = r.url; it.filedAt = r.at }
+      if (it) { it.filedUrl = r.url; it.filedAt = r.at; it.recapped = false }
       continue
     }
     if (r.kind === 'recapped') {
@@ -179,7 +179,7 @@ export function foldLoops(records: LoopRecord[]): Map<string, LoopItem> {
       if (it) it.recapped = true
       continue
     }
-    const opens = OPENS[r.kind]
+    const opens = Object.hasOwn(OPENS, r.kind) ? OPENS[r.kind] : undefined
     if (!opens) continue
     const prev = items.get(r.id)
     const origin: LoopOrigin = r.origin ?? prev?.origin ?? 'tool'
@@ -344,22 +344,35 @@ export function listLedgers(): Array<{ sessionId: string; path: string; cwd?: st
 
 // ── Recap (tier b): at most RECAP_MAX lines, each item once ─────────────────
 
+/** Unfiled open items come back in this order: refused-at-capacity work, unanswered questions, the rest. */
+const UNFILED_RANK: Partial<Record<LoopKind, number>> = { queued: 0, question: 1 }
+
+export interface RecapItem { text: string; url?: string }
+
 /**
- * Filed-but-not-recapped items across this project's sessions, newest first, at most
- * RECAP_MAX. Appends `recapped` for the ones returned, so each is recapped once.
+ * Not-yet-recapped foreground items across this project's sessions, at most `max` in all: filed ones first (newest
+ * first), then the still-open unfiled ones (queued, questions, other loops; newest first within a rank).
+ * `skipSession` is the live session: what it just recorded is not "earlier". Appends `recapped` for each
+ * item returned, so each is recapped once. Ledger text is untrusted: the caller quotes it as data.
  */
-export function takeLoopsRecap(workingDir: string, max = RECAP_MAX): Array<{ text: string; url: string }> {
+export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?: string): RecapItem[] {
   try {
-    const found: Array<{ sessionId: string; item: LoopItem }> = []
+    const filed: Array<{ sessionId: string; item: LoopItem }> = []
+    const unfiled: Array<{ sessionId: string; item: LoopItem }> = []
     for (const { sessionId, path } of ledgersIn(projectOsbDir(workingDir))) {
       for (const item of foldLoops(readLoopRecordsAt(path)).values()) {
-        if (item.filedUrl && !item.recapped) found.push({ sessionId, item })
+        // Foreground items only, as for filing: a background slot keeps its ledger local.
+        if (item.recapped || !item.fg) continue
+        if (item.filedUrl) filed.push({ sessionId, item })
+        else if (item.open && item.text && sessionId !== skipSession) unfiled.push({ sessionId, item })
       }
     }
-    found.sort((a, b) => (b.item.filedAt ?? '').localeCompare(a.item.filedAt ?? ''))
-    const picked = found.slice(0, max)
+    filed.sort((a, b) => (b.item.filedAt ?? '').localeCompare(a.item.filedAt ?? ''))
+    const rank = (k: LoopKind) => UNFILED_RANK[k] ?? 2
+    unfiled.sort((a, b) => rank(a.item.kind) - rank(b.item.kind) || b.item.at.localeCompare(a.item.at))
+    const picked = [...filed, ...unfiled].slice(0, max)
     for (const p of picked) appendLoopRecord(p.sessionId, workingDir, { kind: 'recapped', id: p.item.id })
-    return picked.map((p) => ({ text: p.item.text, url: p.item.filedUrl! }))
+    return picked.map((p) => ({ text: p.item.text, ...(p.item.filedUrl ? { url: p.item.filedUrl } : {}) }))
   } catch {
     return []
   }
