@@ -44,7 +44,7 @@ interface FlyMachine {
   image_ref?: { registry: string; repository: string; tag: string }
   created_at: string
   updated_at: string
-  events?: { type: string; timestamp: number }[]
+  events?: { type: string; status?: string; timestamp: number }[]
   config?: { env?: Record<string, string>; image?: string; services?: unknown[]; [key: string]: unknown }
 }
 
@@ -313,6 +313,52 @@ async function waitForReplacementComplete(
   }
   console.warn(`[machines] waitForReplacementComplete timed out after ${timeoutSec}s`)
   return null
+}
+
+export interface RecheckDeps {
+  getMachine: (appName: string) => Promise<FlyMachine | null>
+  readHealth: (sandboxId: string) => Promise<{ version: string | null }>
+  sleep: (ms: number) => Promise<void>
+  now: () => number
+}
+
+/**
+ * Poll a machine that was not running right after an update until it is
+ * started and /health reports the target version. Reports the last machine
+ * state and Fly event type/status when it never gets there.
+ */
+export async function recheckAfterUpdate(
+  appName: string,
+  sandboxId: string,
+  targetVersion: string,
+  opts: { timeoutMs?: number; intervalMs?: number; deps?: Partial<RecheckDeps> } = {},
+): Promise<{ ok: boolean; state: string | null; event: string | null }> {
+  const d: RecheckDeps = {
+    getMachine: getFirstMachine,
+    readHealth: readOsbornHealth,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    now: Date.now,
+    ...opts.deps,
+  }
+  const deadline = d.now() + (opts.timeoutMs ?? 90_000)
+  let state: string | null = null
+  let event: string | null = null
+  for (;;) {
+    try {
+      const m = await d.getMachine(appName)
+      state = m?.state ?? null
+      const last = m?.events?.[0] as { type?: string; status?: string } | undefined
+      event = last?.type ? `${last.type}${last.status ? `/${last.status}` : ''}` : event
+      if (state === 'started') {
+        const { version } = await d.readHealth(sandboxId)
+        if (version === targetVersion) return { ok: true, state, event }
+      }
+    } catch (err) {
+      console.warn(`[machines] recheckAfterUpdate poll failed: ${(err as Error).message}`)
+    }
+    if (d.now() >= deadline) return { ok: false, state, event }
+    await d.sleep(opts.intervalMs ?? 4000)
+  }
 }
 
 /**
@@ -1340,10 +1386,19 @@ async function updateOsbornImpl(
   }
 
   if (!info || info.status !== 'running') {
-    return finish(
-      { success: false, version: null, log: 'Machine did not come back healthy after image update' },
-      targetVersion,
-    )
+    // The start or health read can run before Fly reports the replacement as
+    // started (issue #525): keep looking for a bounded time before failing.
+    const recheck = await recheckAfterUpdate(appName, sandboxId, targetVersion)
+    if (!recheck.ok) {
+      return finish(
+        {
+          success: false,
+          version: null,
+          log: `Machine did not come back healthy after image update (last state ${recheck.state ?? 'unknown'}, last event ${recheck.event ?? 'none'}${info?.error ? `, ${info.error}` : ''})`,
+        },
+        targetVersion,
+      )
+    }
   }
 
   // Step 5: Read the installed version. NOTE: this is signal #2 — even if
