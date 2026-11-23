@@ -315,52 +315,6 @@ async function waitForReplacementComplete(
   return null
 }
 
-export interface RecheckDeps {
-  getMachine: (appName: string) => Promise<FlyMachine | null>
-  readHealth: (sandboxId: string) => Promise<{ version: string | null }>
-  sleep: (ms: number) => Promise<void>
-  now: () => number
-}
-
-/**
- * Poll a machine that was not running right after an update until it is
- * started and /health reports the target version. Reports the last machine
- * state and Fly event type/status when it never gets there.
- */
-export async function recheckAfterUpdate(
-  appName: string,
-  sandboxId: string,
-  targetVersion: string,
-  opts: { timeoutMs?: number; intervalMs?: number; deps?: Partial<RecheckDeps> } = {},
-): Promise<{ ok: boolean; state: string | null; event: string | null }> {
-  const d: RecheckDeps = {
-    getMachine: getFirstMachine,
-    readHealth: readOsbornHealth,
-    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
-    now: Date.now,
-    ...opts.deps,
-  }
-  const deadline = d.now() + (opts.timeoutMs ?? 90_000)
-  let state: string | null = null
-  let event: string | null = null
-  for (;;) {
-    try {
-      const m = await d.getMachine(appName)
-      state = m?.state ?? null
-      const last = m?.events?.[0] as { type?: string; status?: string } | undefined
-      event = last?.type ? `${last.type}${last.status ? `/${last.status}` : ''}` : event
-      if (state === 'started') {
-        const { version } = await d.readHealth(sandboxId)
-        if (version === targetVersion) return { ok: true, state, event }
-      }
-    } catch (err) {
-      console.warn(`[machines] recheckAfterUpdate poll failed: ${(err as Error).message}`)
-    }
-    if (d.now() >= deadline) return { ok: false, state, event }
-    await d.sleep(opts.intervalMs ?? 4000)
-  }
-}
-
 /**
  * After a config POST: wait up to 300s for the replacement to settle, then
  * start the machine (or, when it came back started, wait for /health).
@@ -386,6 +340,11 @@ async function startAfterReplace(
     createdAt: machine.created_at,
     ...(healthy ? {} : { error: `Agent did not pass health check after ${what}` }),
   }
+}
+
+/** Up after startAfterReplace: a failed start (null) or a slow boot can still answer /health later. */
+async function cameUpAfterReplace(appName: string, info: SandboxInfo | null): Promise<boolean> {
+  return info?.status === 'running' || waitForHealth(`https://${appName}.fly.dev`, 60)
 }
 
 /**
@@ -1385,20 +1344,15 @@ async function updateOsbornImpl(
     )
   }
 
-  if (!info || info.status !== 'running') {
-    // The start or health read can run before Fly reports the replacement as
-    // started (issue #525): keep looking for a bounded time before failing.
-    const recheck = await recheckAfterUpdate(appName, sandboxId, targetVersion)
-    if (!recheck.ok) {
-      return finish(
-        {
-          success: false,
-          version: null,
-          log: `Machine did not come back healthy after image update (last state ${recheck.state ?? 'unknown'}, last event ${recheck.event ?? 'none'}${info?.error ? `, ${info.error}` : ''})`,
-        },
-        targetVersion,
-      )
-    }
+  if (!(await cameUpAfterReplace(appName, info))) {
+    // Say what Fly reports, so a real failure names its cause (#525).
+    const m = await getFirstMachine(appName)
+    const last = [...(m?.events ?? [])].sort((a, b) => b.timestamp - a.timestamp)[0]
+    const event = last ? `${last.type}${last.status ? `/${last.status}` : ''}` : 'none'
+    return finish(
+      { success: false, version: null, log: `Machine did not come back healthy after image update (state ${m?.state ?? 'unknown'}, last event ${event})` },
+      targetVersion,
+    )
   }
 
   // Step 5: Read the installed version. NOTE: this is signal #2 — even if
@@ -1475,9 +1429,7 @@ async function bootWithConfig(
   try {
     const info = await startAfterReplace(appName, machine, userId, label)
     if (info === 'unsettled') return { applied: true, healthy: false }
-    // null: the start call failed, but the machine may still be coming up.
-    const healthy = info?.status === 'running' || (await waitForHealth(`https://${appName}.fly.dev`, 60))
-    return { applied: true, healthy }
+    return { applied: true, healthy: await cameUpAfterReplace(appName, info) }
   } catch (err) {
     return { applied: true, healthy: false, error: (err as Error).message }
   }
