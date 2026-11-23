@@ -7,7 +7,7 @@ description: Sync osborn sessions between the local Mac and cloud machines, star
 
 ## SKILL IDENTITY
 Name: voice-native-sync
-Version: 4
+Version: 5
 Install path: ~/.claude/skills/voice-native-sync/SKILL.md
 
 ## MANDATORY VERSION CHECK — run this FIRST, before ANY upload or download
@@ -91,11 +91,20 @@ CLOUD_URL=https://osborn-XXXX.fly.dev
 TOKEN=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 ```
 
-If the config file doesn't exist:
+If the config file doesn't exist, use Option A or Option B.
+
+### Option A: paste from Settings
 1. Tell the user: "I need your Voice Native sync credentials. Go to voice-native.com → Settings → Copy sync info, then paste it here."
 2. Parse the pasted block for CLOUD_URL (the "Server:" line) and TOKEN (the "Token:" line)
 3. Save to ~/.claude/skills/voice-native-sync/config
 4. Proceed with the requested operation
+
+### Option B: sign in with an email code (no browser needed)
+Use this when the user does not want to open Settings. The email-code steps
+(Supabase URL and public key included) are in the served copy of this skill,
+which this packaged seed does not carry. Run the MANDATORY VERSION CHECK first:
+it replaces this file with the served copy, then re-read the new file and follow
+its "Option B" section. If the served copy cannot be reached, use Option A.
 
 ---
 

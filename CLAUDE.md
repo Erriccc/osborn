@@ -224,7 +224,7 @@ Sprites are persistent Linux sandboxes (Ubuntu, Node 22, 100GB NVMe) managed by 
 - **Sandbox log capture**: `agent/Dockerfile.sandbox` entrypoint tees stdout/stderr to `/workspace/osborn.log` (volume-backed, 100 MB cap, 50 MB tail rotation on boot). `frontend/src/lib/machines.ts execInSprite()` reads this via the documented `/exec` API with `tail -n 500`. Fly Machines does NOT expose a REST `/logs` endpoint — the previous implementation returned the 404 error string as "the log content" for every disconnect-time upload to Supabase Storage.
 
 ### Frontend Routes
-- `/` — Landing/login (Google/GitHub OAuth + guest connect). Authenticated users redirect to `/dashboard`.
+- `/` — Landing page. `/login` is email-code sign-in only (`EmailOtpLogin`). Authenticated users redirect to `/dashboard`.
 - `/dashboard` — Recent conversations, agent health, settings, user profile. Click chat → `/chat`.
 - `/chat` — Auto-connects to agent, wraps VoiceRoom. Disconnect → back to `/dashboard`.
 - `/auth/callback` — Supabase OAuth code exchange.
