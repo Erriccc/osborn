@@ -56,7 +56,7 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   engine has no token configured; 503 `engine_booting` until the control
   server is listening.
 - **`/act` response**: `effect {changed, noop, urlBefore, urlAfter, titleAfter,
-  scrollBefore, scrollAfter}`, `warning`, `result.did`, `brainModel`. Failures:
+  scrollBefore, scrollAfter}`, `warning`, `result.did`, `brainModel`, `tokens {prompt, completion, reasoning, total}` and `modelMs` (model use of this act, also on the task in `manifest.json`; a cached replay normally reports 0, more than 0 means Stagehand re-asked the model to heal it; an engine scroll reports 0). Failures (the first three carry `tokens` and `modelMs` too):
   `noop` (`ok:false`, nothing on the page matched), `brain_error` (502, provider
   message), `brain_unavailable` (503), `bad_request` (400), `too_large` (413).
 - **Async**: `POST /act|/say {"async":true}` → 202 `{job, resultUrl}`;
