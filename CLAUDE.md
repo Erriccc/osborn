@@ -32,7 +32,7 @@ Frontend deploys to Railway (nixpacks, Node 24). Build: `cd frontend && npm inst
 
 ### Required Environment
 
-Agent needs: `agent/.env` with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, `SONIOX_API_KEY` (default STT and TTS, `config.ts` `DEFAULT_CONFIG`), and at least one of `OPENAI_API_KEY` / `GOOGLE_API_KEY`. Optional: `DEEPGRAM_API_KEY` only when `OSBORN_STT_PROVIDER`/`OSBORN_TTS_PROVIDER` selects Deepgram. Optional: `SMITHERY_API_KEY` for cloud-hosted MCP servers (YouTube, GitHub via Smithery). Optional: `RECALL_API_KEY` for Zoom/Google Meet bot integration via Recall.ai.
+Agent needs: `agent/.env` with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, `SONIOX_API_KEY` (default STT and TTS, `config.ts` `DEFAULT_CONFIG`), and at least one of `OPENAI_API_KEY` / `GOOGLE_API_KEY`. Optional: `DEEPGRAM_API_KEY` only when `OSBORN_STT_PROVIDER`/`OSBORN_TTS_PROVIDER` selects Deepgram. Optional: `SMITHERY_API_KEY` for cloud-hosted MCP servers (YouTube, GitHub via Smithery; not connected to sessions yet, #501). Optional: `RECALL_API_KEY` for Zoom/Google Meet bot integration via Recall.ai.
 
 Frontend needs: `frontend/.env.local` with `NEXT_PUBLIC_LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`. For cloud sandbox provisioning (optional): `DAYTONA_API_KEY`, `DAYTONA_API_URL`, `DAYTONA_PROXY_DOMAIN`, `DAYTONA_REGION`, plus the platform infra keys forwarded into sandboxes (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, `SONIOX_API_KEY`, `DEEPGRAM_API_KEY`, `RECALL_API_KEY`, `SMITHERY_API_KEY`).
 
@@ -248,7 +248,7 @@ Sprites are persistent Linux sandboxes (Ubuntu, Node 22, 100GB NVMe) managed by 
 
 ### MCP Server System
 
-**Status (#501): configured MCP servers are NOT connected to sessions.** `ClaudeLLMStream.run` builds the SDK `Options` without the stored `mcpServers` (only the hub's `hubTools`, i.e. dispatch, is passed since b7f94e53), so the toggles do nothing; the UI shows "MCP servers are not connected to sessions yet" instead of toggles. The backend (`mcp_toggle`, `smithery-proxy.ts`, catalog) is kept but inert. Re-enabling is a behaviour/risk decision. What follows describes that inert design. MCP servers would extend Claude with external tools (GitHub, YouTube, etc.). Three transport types:
+**Status (#501): configured MCP servers are NOT connected to sessions.** `ClaudeLLMStream.run` builds the SDK `Options` without the stored `mcpServers` (only the hub's `hubTools`, i.e. dispatch, is passed since b7f94e53), so the UI shows "MCP servers are not connected to sessions yet" instead of toggles and no client sends `mcp_toggle`/`get_mcp_status`. The backend (those handlers, `smithery-proxy.ts`, catalog) is kept but inert. Re-enabling is a behaviour/risk decision. What follows describes that inert design. MCP servers would extend Claude with external tools (GitHub, YouTube, etc.). Three transport types:
 - **stdio** (local): Spawns a local process (`npx -y @modelcontextprotocol/server-...`). No auth needed.
 - **http** (cloud): Standard Streamable HTTP MCP endpoints. **Note:** Claude Agent SDK has a known bug (#18296, #7290) where `type: 'http'` forces OAuth discovery on all HTTP servers, ignoring configured auth headers. As a workaround, Smithery servers use the `sdk` proxy (see below).
 - **sdk** (in-process proxy): Used for Smithery cloud servers via `smithery-proxy.ts`. Uses `@smithery/api/mcp` `createConnection()` to get a working `StreamableHTTPClientTransport`, connects an MCP `Client`, lists remote tools, then wraps them in a local `McpServer` passed as `{ type: 'sdk', name, instance }` to the Claude SDK.
@@ -266,7 +266,7 @@ Sprites are persistent Linux sandboxes (Ubuntu, Node 22, 100GB NVMe) managed by 
 - `parseSmitheryUrl(url)` — Extracts `{namespace, connectionId}` from `api.smithery.ai/connect/.../mcp` URLs
 - `isSmitheryUrl(url)` — Checks if a URL is a Smithery Connect endpoint
 
-**Toggle flow**: Frontend sends `mcp_toggle` → `index.ts` checks if Smithery URL → if yes, `createSmitheryProxy()` builds `type: 'sdk'` config → `currentLLM.enableMcpServer(key, config)` → stored on the `ClaudeLLM`, but not currently passed to any `query()` (#501)
+**Toggle flow** (no client sends it): `mcp_toggle` → `index.ts` checks if Smithery URL → if yes, `createSmitheryProxy()` builds `type: 'sdk'` config → `currentLLM.enableMcpServer(key, config)` → stored on the `ClaudeLLM`, but not currently passed to any `query()` (#501)
 
 **Init logging**: `ClaudeLLMStream.run()` logs `✅ MCP server <name>: connected` or `❌ MCP server <name>: <status>` from the SDK's system init message.
 

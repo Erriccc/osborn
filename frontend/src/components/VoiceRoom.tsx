@@ -28,7 +28,7 @@ import { agentReadUrl } from '@/lib/agent-read'
 import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession, type ChatHandle } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
-import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, toolMetaFromEvent, toolTarget, completeToolRow, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type StewardGateRecord, type SidecarRecord, agentResultRow, stewardGateLine, stewardGateRow, type SpeakingChunk, type SessionInfo, type SlotInfo, type McpServerStatus, type GeneratedFile } from './voice/shared'
+import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, toolMetaFromEvent, toolTarget, completeToolRow, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type StewardGateRecord, type SidecarRecord, agentResultRow, stewardGateLine, stewardGateRow, type SpeakingChunk, type SessionInfo, type SlotInfo, type GeneratedFile } from './voice/shared'
 import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
@@ -741,8 +741,6 @@ function VoiceRoomInner({
   const outputsVisibleRef = useRef(outputsVisible)
   useEffect(() => { outputsVisibleRef.current = outputsVisible }, [outputsVisible])
   const [outputsPreviewPath, setOutputsPreviewPath] = useState<string | null>(null)
-  // MCP server state
-  const [mcpServers, setMcpServers] = useState<McpServerStatus[]>([])
   // Named agents (skills: skillStore, below sendJson)
   // null until the machine sends its list (agent_ready); [] when it sent none.
   const [namedAgents, setNamedAgents] = useState<NamedAgent[] | null>(null)
@@ -2004,16 +2002,6 @@ function VoiceRoomInner({
         if (data.sessions && Array.isArray(data.sessions)) {
           setSessions(data.sessions)
         }
-        // Store MCP server status from agent_ready
-        if (data.mcpServers && Array.isArray(data.mcpServers)) {
-          // Merge runtime enabled state with status list
-          const enabledKeys: string[] = data.enabledMcpServers || []
-          const merged = data.mcpServers.map((s: McpServerStatus) => ({
-            ...s,
-            enabled: enabledKeys.includes(s.serverKey),
-          }))
-          setMcpServers(merged)
-        }
         // Store skills from agent_ready
         if (data.skills && Array.isArray(data.skills)) {
           setSkills(data.skills)
@@ -2610,28 +2598,6 @@ function VoiceRoomInner({
           const label = `${fastBrainLabel({ provider: data.provider, agentRole: data.agentRole })} (provisional \u2014 the full answer follows)`
           console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
           addMessageRef.current?.('assistant', `${label}\n${data.text}`, 'fast-brain', 'chat')
-        }
-      } else if (data.type === 'mcp_status' || data.type === 'mcp_servers_changed') {
-        // MCP server status update
-        console.log('🔌 MCP status update:', data.enabledKeys)
-        if (data.mcpServers && Array.isArray(data.mcpServers)) {
-          const enabledKeys: string[] = data.enabledKeys || []
-          const merged = data.mcpServers.map((s: McpServerStatus) => ({
-            ...s,
-            enabled: enabledKeys.includes(s.serverKey),
-          }))
-          setMcpServers(merged)
-        }
-      } else if (data.type === 'mcp_toggle_result') {
-        // MCP toggle confirmation from backend
-        console.log('🔌 MCP toggle result:', data.serverKey, data.success)
-        if (data.success && data.mcpServers && Array.isArray(data.mcpServers)) {
-          const enabledKeys: string[] = data.enabledKeys || []
-          const merged = data.mcpServers.map((s: McpServerStatus) => ({
-            ...s,
-            enabled: enabledKeys.includes(s.serverKey),
-          }))
-          setMcpServers(merged)
         }
       } else if (data.type === 'skills_status') {
         if (data.skills && Array.isArray(data.skills)) {
@@ -3438,30 +3404,6 @@ function VoiceRoomInner({
     }))
     sendToAgent(payload, { reliable: true })
   }, [sendToAgent, pendingPermission])
-
-  // MCP server toggle handler
-  const handleMcpToggle = useCallback((serverKey: string, enabled: boolean) => {
-    // Optimistic update
-    setMcpServers((prev) => prev.map(s =>
-      s.serverKey === serverKey ? { ...s, enabled } : s
-    ))
-    const encoder = new TextEncoder()
-    const payload = encoder.encode(JSON.stringify({
-      type: 'mcp_toggle',
-      serverKey,
-      enabled,
-    }))
-    sendToAgent(payload, { reliable: true })
-  }, [sendToAgent])
-
-  // Request current MCP status
-  const handleLoadMcpStatus = useCallback(() => {
-    const encoder = new TextEncoder()
-    const payload = encoder.encode(JSON.stringify({
-      type: 'get_mcp_status',
-    }))
-    sendToAgent(payload, { reliable: true })
-  }, [sendToAgent])
 
   // Spawn a second Claude instance (background slot). With no args the agent auto-picks the
   // most-recent non-focused session; passing sessionId (+ its cwd as workingDir) targets a
@@ -4281,9 +4223,6 @@ function VoiceRoomInner({
               onContinueSession={handleContinueSession}
               isLoadingSessions={isLoadingSessions}
               disabled={!agentConnected}
-              mcpServers={mcpServers}
-              onMcpToggle={handleMcpToggle}
-              onLoadMcpStatus={handleLoadMcpStatus}
               skillStore={skillStore}
               showAddSkill={showAddSkill}
               setShowAddSkill={setShowAddSkill}

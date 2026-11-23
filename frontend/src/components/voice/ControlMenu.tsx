@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { formatTime, deriveSessionTitle } from '@/lib/sessions'
-import { usePanelExclusive, useViewportClamp, type SessionInfo, type McpServerStatus } from './shared'
+import { usePanelExclusive, useViewportClamp, type SessionInfo } from './shared'
 import { SkillsPanel } from './SkillsPanel'
 import type { SkillStoreApi } from '@/lib/skill-store'
 import { useMenuDismiss } from '@/lib/use-menu-dismiss'
@@ -17,9 +17,6 @@ export function ControlMenu({
   onContinueSession,
   isLoadingSessions,
   disabled,
-  mcpServers,
-  onMcpToggle,
-  onLoadMcpStatus,
   skillStore,
   showAddSkill,
   setShowAddSkill,
@@ -35,9 +32,6 @@ export function ControlMenu({
   onContinueSession: () => void
   isLoadingSessions?: boolean
   disabled?: boolean
-  mcpServers?: McpServerStatus[]
-  onMcpToggle?: (serverKey: string, enabled: boolean) => void
-  onLoadMcpStatus?: () => void
   skillStore?: SkillStoreApi
   showAddSkill?: boolean
   setShowAddSkill?: (show: boolean) => void
@@ -66,17 +60,13 @@ export function ControlMenu({
   }, [showSwitchConfirm])
   useMenuDismiss(isOpen, onDismiss, [wrapRef], toggleRef)
 
-  const skillCount = skillStore?.skills.length ?? 0
-  const toolsBadgeCount = skillCount
+  const toolsBadgeCount = skillStore?.skills.length ?? 0
 
   // Load data when tabs are opened
   const handleTabChange = (tab: 'history' | 'tools') => {
     setActiveTab(tab)
     if (tab === 'history' && sessions.length === 0) {
       onLoadSessions()
-    }
-    if (tab === 'tools') {
-      onLoadMcpStatus?.()
     }
   }
 
