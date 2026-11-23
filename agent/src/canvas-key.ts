@@ -30,7 +30,7 @@ export function secretMatches(expected: string | null, got: string | null | unde
  *  with the machine's sync token (phone-calls.ts has the same HMAC), so a signature only speaks that text. */
 export const ttsLineSig = (secret: string, text: string): string => createHmac('sha256', secret).update(`tts:${text}`).digest('base64url')
 
-/** Who may use the meeting-canvas routes (/canvas, /canvas-stream, /tts) and /report-bug: the owner's
+/** Who may use the meeting-canvas routes (/canvas, /canvas-stream, /tts, /noise-cancel) and /report-bug: the owner's
  *  Bearer token, the live meeting's key (the canvas page runs in Recall's browser and sends it as `k`),
  *  a signed /tts line (`lineOk`), or this machine itself (the agent's own curl, from no browser origin).
  *  Anyone else is refused. */
