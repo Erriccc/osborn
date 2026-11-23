@@ -8,6 +8,7 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { existsSync, lstatSync, symlinkSync } from 'fs'
 import os from 'os'
+import { superviseChild } from './child-exit.js'
 
 // Same /workspace/.claude symlink guard as cli.js so stores resolve on Fly machines.
 try {
@@ -38,5 +39,4 @@ if (existsSync(srcPath)) {
   process.exit(1)
 }
 
-child.on('error', (err) => { console.error('Failed to start osborn-recall:', err.message); process.exit(1) })
-child.on('exit', (code) => process.exit(code || 0))
+superviseChild(child, { name: 'osborn-recall' })
