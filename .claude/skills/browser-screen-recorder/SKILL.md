@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 64
+Version: 65
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v65
+- A `/say` on a page whose `__mic.ready` is set but which has no synthetic mic behind it (for example a flag set by `/eval`) now fails with `no_mic` (422) instead of `speak_failed` with a `TypeError` reading `resume`. Open the mic with the page's own `getUserMedia` (or `/eval` `navigator.mediaDevices.getUserMedia({audio:true})`), never by setting the flag; that call now builds the mic even when the flag was set, and `/say` works after it.
 
 ## What's new in v64
 - A `/say` on a page with no microphone now fails after a short wait for the mic (up to about 2 s), before any speech synthesis runs, so it no longer waits on a text-to-speech call first. `no_mic` is reported by an explicit error code rather than by matching the word "mic" in the message.
