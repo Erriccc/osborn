@@ -198,10 +198,10 @@ export default function AdminPage() {
                   <tr className="text-[var(--text-secondary)] text-[11px] uppercase tracking-wider">
                     <th className="px-4 py-3 font-medium">Email</th>
                     <th className="px-4 py-3 font-medium">Signed up</th>
-                    <th className="px-4 py-3 font-medium" title="Recorded only when the person signs in again; a saved session never updates it">Last sign-in</th>
+                    <th className="px-4 py-3 font-medium">Last sign-in</th>
                     <th className="px-4 py-3 font-medium">Machine</th>
                     <th className="px-4 py-3 font-medium">Status</th>
-                    <th className="px-4 py-3 font-medium" title="Newest of the app's last visit and the machine's last start or stop">Last active</th>
+                    <th className="px-4 py-3 font-medium">Last active</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -251,6 +251,11 @@ export default function AdminPage() {
               ))}
             </div>
           </div>
+        )}
+        {users && users.length > 0 && (
+          <p className="mt-3 text-[var(--text-muted)] text-xs leading-relaxed">
+            Last sign-in moves only when someone signs in again, so a saved session never updates it. Last active is the newest of the app&apos;s last visit and the machine&apos;s last start or stop. Status is read from Fly when this page loads.
+          </p>
         )}
       </div>
     </main>
