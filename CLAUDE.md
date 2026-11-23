@@ -122,7 +122,7 @@ The fast brain (`fast-brain.ts`) maintains `spec.md` — reading FULL untruncate
 - `agent/src/claude-handler.ts` — Standalone `ClaudeHandler` class wrapping the Agent SDK with permission interception. Predates the persistent-session `ClaudeLLM`; kept around but not used by the default voice flow.
 
 **Frontend:**
-- `frontend/src/components/VoiceRoom.tsx` — Main UI component (~2000 lines): voice visualization, chat (with `MessageContent` for inline images and download cards), permission UI, session management, MCP toggles, always-visible files panel with session artifact persistence, Claude OAuth modal, meeting join controls.
+- `frontend/src/components/VoiceRoom.tsx` — Main UI component (~2000 lines): voice visualization, chat (with `MessageContent` for inline images and download cards), permission UI, session management, always-visible files panel with session artifact persistence, Claude OAuth modal, meeting join controls.
 - `frontend/src/components/MarkdownMessage.tsx` — Markdown renderer with syntax highlighting (highlight.js + rehype). `CodeBlock` accepts `React.ReactNode` children (not `String()`) to preserve rehype-highlight spans. `extractText()` walks React tree for copy button. Exports `MermaidBlock` for inline mermaid diagrams.
 - `frontend/src/components/SessionBrowser.tsx` — Past session browser, scans across all Claude projects.
 - `frontend/src/components/FilesExplorerModal.tsx` — Full-screen files explorer modal with type badges, copy/copy-all, and inline rendering of plans/diagrams/notes/HTML.
@@ -248,7 +248,7 @@ Sprites are persistent Linux sandboxes (Ubuntu, Node 22, 100GB NVMe) managed by 
 
 ### MCP Server System
 
-MCP servers extend Claude with external tools (GitHub, YouTube, etc.). Three transport types:
+**Status (#501): configured MCP servers are NOT connected to sessions.** `ClaudeLLMStream.run` builds the SDK `Options` without the stored `mcpServers` (only the hub's `hubTools`, i.e. dispatch, is passed since b7f94e53), so the toggles do nothing; the UI shows "MCP servers are not connected to sessions yet" instead of toggles. The backend (`mcp_toggle`, `smithery-proxy.ts`, catalog) is kept but inert. Re-enabling is a behaviour/risk decision. What follows describes that inert design. MCP servers would extend Claude with external tools (GitHub, YouTube, etc.). Three transport types:
 - **stdio** (local): Spawns a local process (`npx -y @modelcontextprotocol/server-...`). No auth needed.
 - **http** (cloud): Standard Streamable HTTP MCP endpoints. **Note:** Claude Agent SDK has a known bug (#18296, #7290) where `type: 'http'` forces OAuth discovery on all HTTP servers, ignoring configured auth headers. As a workaround, Smithery servers use the `sdk` proxy (see below).
 - **sdk** (in-process proxy): Used for Smithery cloud servers via `smithery-proxy.ts`. Uses `@smithery/api/mcp` `createConnection()` to get a working `StreamableHTTPClientTransport`, connects an MCP `Client`, lists remote tools, then wraps them in a local `McpServer` passed as `{ type: 'sdk', name, instance }` to the Claude SDK.
@@ -266,7 +266,7 @@ MCP servers extend Claude with external tools (GitHub, YouTube, etc.). Three tra
 - `parseSmitheryUrl(url)` — Extracts `{namespace, connectionId}` from `api.smithery.ai/connect/.../mcp` URLs
 - `isSmitheryUrl(url)` — Checks if a URL is a Smithery Connect endpoint
 
-**Toggle flow**: Frontend sends `mcp_toggle` → `index.ts` checks if Smithery URL → if yes, `createSmitheryProxy()` builds `type: 'sdk'` config → `currentLLM.enableMcpServer(key, config)` → next `query()` call includes the server
+**Toggle flow**: Frontend sends `mcp_toggle` → `index.ts` checks if Smithery URL → if yes, `createSmitheryProxy()` builds `type: 'sdk'` config → `currentLLM.enableMcpServer(key, config)` → stored on the `ClaudeLLM`, but not currently passed to any `query()` (#501)
 
 **Init logging**: `ClaudeLLMStream.run()` logs `✅ MCP server <name>: connected` or `❌ MCP server <name>: <status>` from the SDK's system init message.
 
