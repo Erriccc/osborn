@@ -1,5 +1,5 @@
 /**
- * Sliding-window per-key limiter for /api/demo-access. Bounded: past maxKeys the least recently
+ * Sliding-window per-key limiter for follow-through. Bounded: past maxKeys the least recently
  * used keys go first, so rotating keys cannot
  * grow the map without limit.
  */
