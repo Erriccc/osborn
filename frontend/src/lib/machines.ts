@@ -44,7 +44,7 @@ interface FlyMachine {
   image_ref?: { registry: string; repository: string; tag: string }
   created_at: string
   updated_at: string
-  events?: { type: string; timestamp: number }[]
+  events?: { type: string; status?: string; timestamp: number }[]
   config?: { env?: Record<string, string>; image?: string; services?: unknown[]; [key: string]: unknown }
 }
 
@@ -340,6 +340,11 @@ async function startAfterReplace(
     createdAt: machine.created_at,
     ...(healthy ? {} : { error: `Agent did not pass health check after ${what}` }),
   }
+}
+
+/** Up after startAfterReplace: a failed start (null) or a slow boot can still answer /health later. */
+async function cameUpAfterReplace(appName: string, info: SandboxInfo | null): Promise<boolean> {
+  return info?.status === 'running' || waitForHealth(`https://${appName}.fly.dev`, 60)
 }
 
 /**
@@ -1339,9 +1344,13 @@ async function updateOsbornImpl(
     )
   }
 
-  if (!info || info.status !== 'running') {
+  if (!(await cameUpAfterReplace(appName, info))) {
+    // Say what Fly reports, so a real failure names its cause (#525).
+    const m = await getFirstMachine(appName)
+    const last = [...(m?.events ?? [])].sort((a, b) => b.timestamp - a.timestamp)[0]
+    const event = last ? `${last.type}${last.status ? `/${last.status}` : ''}` : 'none'
     return finish(
-      { success: false, version: null, log: 'Machine did not come back healthy after image update' },
+      { success: false, version: null, log: `Machine did not come back healthy after image update (state ${m?.state ?? 'unknown'}, last event ${event})` },
       targetVersion,
     )
   }
@@ -1420,9 +1429,7 @@ async function bootWithConfig(
   try {
     const info = await startAfterReplace(appName, machine, userId, label)
     if (info === 'unsettled') return { applied: true, healthy: false }
-    // null: the start call failed, but the machine may still be coming up.
-    const healthy = info?.status === 'running' || (await waitForHealth(`https://${appName}.fly.dev`, 60))
-    return { applied: true, healthy }
+    return { applied: true, healthy: await cameUpAfterReplace(appName, info) }
   } catch (err) {
     return { applied: true, healthy: false, error: (err as Error).message }
   }
