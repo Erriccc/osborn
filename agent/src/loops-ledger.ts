@@ -20,6 +20,7 @@ import { dirname, join } from 'node:path'
 import { getSidecarPath } from './session-store.js'
 import { appendJsonlLine, readJsonlLines } from './jsonl-sidecar.js'
 import { claudeDir } from './content/lens-paths.js'
+import { clip } from './content/lens-ingest.js'
 import { githubIssueBase } from './steward-verdict.js'
 
 const LOOPS_FILE = 'loops.jsonl'
@@ -64,8 +65,7 @@ export interface LoopRecord {
   by?: 'user' | 'abort'
   url?: string
   cwd?: string
-  /** `queued`: the project the instruction was meant for, and the instruction itself (`text` is a short title). */
-  project?: string
+  /** `queued`: the instruction itself, kept to start it later (`text` is a short title). */
   instruction?: string
   /** `held`: the repo that held the item back (public or unknown visibility). */
   repo?: string
@@ -243,8 +243,8 @@ export const loopIds = {
   steward: () => 'steward',
 }
 
+// Keeps the record, title included, under MAX_LINE_BYTES (one O_APPEND write) for most text.
 const MAX_QUEUED_INSTRUCTION = 800
-const clipEllipsis = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1) + '…' : s)
 
 /**
  * The record for an instruction refused at slot capacity. `text` is a short title; `instruction` keeps enough
@@ -252,10 +252,10 @@ const clipEllipsis = (s: string, n: number): string => (s.length > n ? s.slice(0
  * themselves (`typed`) is explicit.
  */
 export function queuedLoopRecord(instruction: string, project: string, opts: { typed?: boolean } = {}): LoopRecordInput {
-  const full = clipEllipsis(String(instruction || '').replace(/\s+/g, ' ').trim(), MAX_QUEUED_INSTRUCTION)
+  const full = clip(String(instruction || '').replace(/\s+/g, ' ').trim(), MAX_QUEUED_INSTRUCTION)
   const typed = opts.typed === true
   return {
-    kind: 'queued', id: loopIds.queued(project, full), text: clipEllipsis(`Queued for ${project}: ${full}`, MAX_ITEM_CHARS), instruction: full, project,
+    kind: 'queued', id: loopIds.queued(project, full), text: clip(`Queued for ${project}: ${full}`, MAX_ITEM_CHARS), instruction: full,
     source: typed ? 'explicit' : 'inferred', origin: typed ? 'user_mic' : 'tool',
   }
 }
