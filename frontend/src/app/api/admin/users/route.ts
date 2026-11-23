@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { requireAdmin, AdminAuthError } from '@/lib/admin'
-import { readMachineActivity } from '@/lib/machines'
+import { isMachinesConfigured, readMachineActivity } from '@/lib/machines'
 
 /**
  * GET /api/admin/users — the data behind the /admin users view.
@@ -58,19 +58,24 @@ export async function GET() {
   )
 
   // The stored status is only as fresh as the last write (a machine stopped by Fly's idle exit never updates
-  // it), so ask Fly for the live state; a read that fails or takes over 6 s keeps the stored value.
+  // it), so ask Fly for the live state. A read that fails, times out (6 s) or has no Fly to ask returns no
+  // `machine_state`, and the page then marks the stored value as stored.
+  const flyConfigured = isMachinesConfigured()
   const live = new Map(await Promise.all(
-    Array.from(new Set((instances ?? []).map((row) => row.sandbox_id as string | null).filter((id): id is string => !!id))).map(async (id) =>
-      [id, await Promise.race([readMachineActivity(id), new Promise<null>((r) => setTimeout(() => r(null), 6000))])] as const),
+    (instances ?? []).map(async (row) => {
+      const id = row.sandbox_id as string | null
+      if (!id || !flyConfigured) return [row.user_id as string, null] as const
+      return [row.user_id as string, await Promise.race([readMachineActivity(id), new Promise<null>((r) => setTimeout(() => r(null), 6000))])] as const
+    }),
   ))
 
   const users = (authUsers ?? []).map((u) => {
     const instance = instanceByUser.get(u.id as string)
-    const machine = instance?.sandbox_id ? live.get(instance.sandbox_id as string) : null
-    // Supabase records last_sign_in_at only when someone signs in again, so a saved session never moves it:
-    // "last active" is the newest of the app's own last_seen and the machine's last start or exit, compared as
-    // instants (Postgres writes "+00:00", Fly's time is ISO "Z", so the strings do not sort alike).
-    const activeAt = Math.max(0, ...[instance?.last_seen as string | null, machine?.lastEventAt].map((t) => (t && Date.parse(t)) || 0))
+    const machine = live.get(u.id as string)
+    // Supabase records last_sign_in_at only when someone signs in again, so a saved session never moves it.
+    // "Last active" is the newest of when the app last provisioned or started the machine (last_seen) and the
+    // machine's last start or exit (Fly).
+    const activeAt = Math.max(Date.parse(instance?.last_seen as string) || 0, machine?.lastEventAt ?? 0)
     return {
       id: u.id,
       email: u.email ?? null,

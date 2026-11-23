@@ -379,11 +379,11 @@ async function getFirstMachine(appName: string, throwOnError = false): Promise<F
  * maps it) and the time of its latest start or exit. Null when Fly cannot be read, so the caller
  * keeps the stored value.
  */
-export async function readMachineActivity(appName: string): Promise<{ status: SandboxInfo['status']; lastEventAt: string | null } | null> {
+export async function readMachineActivity(appName: string): Promise<{ status: SandboxInfo['status']; lastEventAt: number } | null> {
   const machine = await getFirstMachine(appName)
   if (!machine) return null
-  const at = Math.max(0, ...(machine.events ?? []).filter((e) => e.type === 'start' || e.type === 'exit').map((e) => e.timestamp))
-  return { status: mapMachineState(machine.state), lastEventAt: at ? new Date(at).toISOString() : null }
+  const lastEventAt = Math.max(0, ...(machine.events ?? []).filter((e) => e.type === 'start' || e.type === 'exit').map((e) => e.timestamp))
+  return { status: mapMachineState(machine.state), lastEventAt }
 }
 
 /**
