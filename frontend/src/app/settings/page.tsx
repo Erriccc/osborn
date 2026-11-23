@@ -19,7 +19,7 @@ import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import { useThemePref } from '@/lib/use-theme'
 import type { ThemePref } from '@/lib/theme'
-import { settledSyncFailure } from '@/lib/volume-sync'
+import { pollVerifyUpdate } from '@/lib/verify-update'
 
 // Fly region code → city, so "Cloud · Chicago" reads human. Unknown codes
 // fall back to the uppercased code (still tells you WHERE-ish).
@@ -488,61 +488,8 @@ export default function SettingsPage() {
       setTimeout(() => setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'snapshotting' } : op), 80000),
     ]
 
-    const verifyUpdate = async (targetVersion: string | null): Promise<
-      { success: true; version: string | null } | { success: false; error: string }
-    > => {
-      const deadline = Date.now() + 3 * 60_000
-      let lastSignals: { machineState?: string | null; installedVersion?: string | null } = {}
-      while (Date.now() < deadline) {
-        try {
-          const r = await fetch('/api/sandbox', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'verify-update', sandboxId }),
-          })
-          if (r.ok) {
-            const data = await r.json()
-            lastSignals = { machineState: data.machineState, installedVersion: data.installedVersion }
-            const lastTargetMatches =
-              data.lastUpdate?.targetVersion && targetVersion
-                ? data.lastUpdate.targetVersion === targetVersion
-                : true
-            if (data.lastUpdate?.status === 'success' && lastTargetMatches) {
-              if (
-                !targetVersion ||
-                (data.installedVersion && data.installedVersion === targetVersion)
-              ) {
-                return { success: true, version: data.lastUpdate.installedVersion ?? null }
-              }
-            }
-            if (data.lastUpdate?.status === 'error' && lastTargetMatches) {
-              return { success: false, error: data.lastUpdate.error ?? 'Update failed' }
-            }
-            // The machine is up but its boot could not install the target (disk full, npm failed).
-            const syncFailure = settledSyncFailure(data, targetVersion)
-            if (syncFailure) return { success: false, error: syncFailure }
-            if (
-              data.machineState === 'running' &&
-              data.installedVersion &&
-              targetVersion &&
-              data.installedVersion === targetVersion
-            ) {
-              return { success: true, version: data.installedVersion }
-            }
-          }
-        } catch {
-          // Network error during poll — keep retrying until the deadline.
-        }
-        await new Promise((resolve) => setTimeout(resolve, 4000))
-      }
-      if (lastSignals.installedVersion === targetVersion) {
-        return { success: true, version: lastSignals.installedVersion ?? null }
-      }
-      const detail = lastSignals.machineState
-        ? ` (machine=${lastSignals.machineState}, installed=${lastSignals.installedVersion ?? 'unknown'})`
-        : ''
-      return { success: false, error: `Verification timed out after 3 min${detail}` }
-    }
+    const verifyUpdate = (targetVersion: string | null) =>
+      pollVerifyUpdate(sandboxId, targetVersion, { fetchFn: fetch })
 
     try {
       const result = await fetch('/api/sandbox', {

@@ -31,7 +31,7 @@ import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
-import { settledSyncFailure } from '@/lib/volume-sync'
+import { pollVerifyUpdate } from '@/lib/verify-update'
 
 interface SessionInfo {
   sessionId: string
@@ -937,83 +937,9 @@ export default function Dashboard() {
     // to distinguish "server gave up partway" from "actually broken"). The
     // server stores its final result in `getLastUpdateResult(sandboxId)`, so
     // we ask for it directly instead of inferring from version probes alone.
-    //
-    // Three exit conditions:
-    //   1. Authoritative: `lastUpdate.status === 'success'` or `'error'` →
-    //      use its installedVersion + error message verbatim
-    //   2. Inferred success: machine `started` AND `installedVersion === target` AND
-    //      `lastUpdate.status` is null/missing (frontend pod restarted) → trust signals
-    //   3. Timeout after 3 minutes → declare error using best-available info
-    const verifyUpdate = async (targetVersion: string | null): Promise<
-      { success: true; version: string | null } | { success: false; error: string }
-    > => {
-      const deadline = Date.now() + 3 * 60_000
-      let lastSignals: { machineState?: string | null; installedVersion?: string | null } = {}
-      while (Date.now() < deadline) {
-        try {
-          const r = await fetch('/api/sandbox', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ action: 'verify-update', sandboxId }),
-          })
-          if (r.ok) {
-            const data = await r.json()
-            lastSignals = { machineState: data.machineState, installedVersion: data.installedVersion }
-            // (1) Authoritative — server-side updateOsborn finished. But only
-            // trust it when the stored outcome is for THIS target version.
-            // Previously we accepted any prior success in lastUpdate, which let
-            // a stale "v0.9.35 update succeeded" entry mask a failed current
-            // attempt to v0.9.36 — dashboard showed "Update complete" while
-            // /health still reported 0.9.35.
-            const lastTargetMatches =
-              data.lastUpdate?.targetVersion && targetVersion
-                ? data.lastUpdate.targetVersion === targetVersion
-                : true
-            if (data.lastUpdate?.status === 'success' && lastTargetMatches) {
-              // Belt-and-suspenders: also require installedVersion to match
-              // the target before declaring success. updateOsborn could have
-              // marked success based on a stale signal; the live probe is
-              // authoritative.
-              if (
-                !targetVersion ||
-                (data.installedVersion && data.installedVersion === targetVersion)
-              ) {
-                return { success: true, version: data.lastUpdate.installedVersion ?? null }
-              }
-            }
-            if (data.lastUpdate?.status === 'error' && lastTargetMatches) {
-              return { success: false, error: data.lastUpdate.error ?? 'Update failed' }
-            }
-            // The machine is up but its boot could not install the target (disk full, npm failed).
-            const syncFailure = settledSyncFailure(data, targetVersion)
-            if (syncFailure) return { success: false, error: syncFailure }
-            // (2) Inferred — pod restarted, lastUpdate gone, but signals agree.
-            if (
-              data.machineState === 'running' &&
-              data.installedVersion &&
-              targetVersion &&
-              data.installedVersion === targetVersion
-            ) {
-              return { success: true, version: data.installedVersion }
-            }
-            // Otherwise still in-progress — keep polling.
-          }
-        } catch {
-          // Network error during poll — keep retrying until the deadline.
-        }
-        await new Promise((resolve) => setTimeout(resolve, 4000))
-      }
-      // (3) Timeout. Build the most informative error we can from the last
-      // signals we saw, so the user knows whether it almost-worked or never
-      // got off the ground.
-      if (lastSignals.installedVersion === targetVersion) {
-        return { success: true, version: lastSignals.installedVersion ?? null }
-      }
-      const detail = lastSignals.machineState
-        ? ` (machine=${lastSignals.machineState}, installed=${lastSignals.installedVersion ?? 'unknown'})`
-        : ''
-      return { success: false, error: `Verification timed out after 3 min${detail}` }
-    }
+    // Exit rules: `pollVerifyUpdate` in lib/verify-update.ts.
+    const verifyUpdate = (targetVersion: string | null) =>
+      pollVerifyUpdate(sandboxId, targetVersion, { fetchFn: fetch })
 
     try {
       // Primary path: hold the POST open. If Safari survives the whole ~90s
@@ -1069,7 +995,7 @@ export default function Dashboard() {
         } else {
           // Prefer the original server error message when present — it has
           // more detail than the verify timeout fallback ("Verification
-          // timed out after 3 min" tells the user nothing useful).
+          // timed out" tells the user nothing useful).
           const errMsg = result.error || verified.error
           setStatusMessage({ text: `Update failed: ${errMsg}`, type: 'error' })
         }
