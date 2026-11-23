@@ -63,7 +63,8 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   canvas, an embedded frame) the engine makes ONE screenshot-based attempt
   (Stagehand `agent({mode:'hybrid'})`, cursor highlight off so nothing is
   injected). It runs under the same action lock with its own timeout fence,
-  capped by what is left of the lock (skipped when under 10s remain), and has a
+  capped by what is left of the lock less 15s for a timeout to settle (skipped
+  when that leaves under 10s), and has a
   2-step budget: take a screenshot, then make one interaction (about three
   model calls with Stagehand's forced final `done`). An interaction made before
   the model saw a screenshot (including one sent in the same step as it), one
@@ -77,8 +78,8 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   `result.did` names the tool, target and coordinates; `effect.changed` is judged
   as usual, and if nothing observable changed the answer stays `ok:false`
   `code:'noop'`. It is never written to `knowledge/<host>/actions.json`.
-  A failed, blind, skipped or empty retry returns the original `noop` with
-  `effect.visionNote` (never a 500; `brain_unavailable` if the retry killed the
+  A failed, blind or empty retry, or one skipped for the tab size or the lock
+  time, returns the original `noop` with `effect.visionNote` (never a 500; `brain_unavailable` if the retry killed the
   brain). Metrics: `modelMs` is the wall time of the whole attempt (nested act
   time may be counted twice); `tokens` are not exact: Stagehand's forced `done`
   call is not counted and an erroring attempt reports 0. Opt out for one call

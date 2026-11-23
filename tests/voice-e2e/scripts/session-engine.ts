@@ -1608,7 +1608,7 @@ async function main() {
           // Nothing observable changed: say so, and never keep the cached
           // recipe for it (a cached no-op was being replayed as a "success").
           let warning: string | null = null
-          if (r?.noop) warning = `the brain found nothing on the page matching this instruction — no action was performed${visionNote ? ` (${visionNote})` : ''}`
+          if (r?.noop) warning = `the brain found nothing on the page matching this instruction${blind ? '' : ' — no action was performed'}${visionNote ? ` (${visionNote})` : ''}`
           else if (changed === false) {
             warning = scrollIntent
               ? `the scroll did not move the page or any scrollable panel ${visionUsed ? '' : '(also tried a mouse-wheel gesture) '}— the page may already be at its limit, or the scrollable area is elsewhere; name the panel to scroll`
