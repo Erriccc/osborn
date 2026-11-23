@@ -30,6 +30,7 @@ import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds
 import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
+import { isOwnApiCurl } from './canvas-key.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -2726,13 +2727,11 @@ class ClaudeLLMStream extends llm.LLMStream {
           loadAllSkills(this.#opts.sessionBaseDir || this.#opts.workingDirectory || process.cwd()),
         ].filter(Boolean).join('\n\n'),
         canUseTool: async (toolName, input, _options) => {
-          // Auto-approve Bash calls to the agent's OWN local API (/canvas,
-          // /tts) — how the agent SPEAKS into a meeting. A spoken reply must
-          // never wait on a permission dialog. Localhost-only, own endpoints
-          // only, no shell chaining — not a general curl allowance.
+          // Auto-approve one plain curl to /canvas, /tts or /noise-cancel on any localhost port (isOwnApiCurl):
+          // a spoken reply must never wait on a permission dialog.
           if ((toolName as string) === 'Bash') {
             const cmd = String((input as any)?.command || '')
-            if (/^\s*curl\b[^;&|]*https?:\/\/(localhost|127\.0\.0\.1):\d+\/(canvas|tts|noise-cancel)\b/.test(cmd) && !/[;&|]/.test(cmd)) {
+            if (isOwnApiCurl(cmd)) {
               console.log(`✅ Auto-approved Bash → own API (canvas/tts/noise-cancel path)`)
               return { behavior: 'allow', updatedInput: input }
             }
