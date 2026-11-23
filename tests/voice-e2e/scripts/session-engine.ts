@@ -69,8 +69,9 @@ import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, AUDIO_DECODE_CAP_MS, decodeBudgetMs, recordingAge, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
+import { shouldRetryWithVision, summarizeVision, VISION_MAX_STEPS, viewportMatches, visionGate, visionInstruction } from '../lib/vision-retry'
 import { metricsDelta, NO_USAGE, readTotals, type ActUsage, type MetricsTotals } from '../lib/brain-metrics'
-import { actWithCache, BRAIN_GONE, fencedCall, forgetCached, withTimeout, zombieGate } from '../lib/step-cache'
+import { actWithCache, brainPageFor, BRAIN_GONE, fencedCall, forgetCached, withTimeout, zombieGate } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
 import { serialSaver, writeAtomic } from '../lib/profile-save'
 import { attachDevtools, redactDiagnostics, redactJson, type DevtoolsBuffer } from '../lib/devtools'
@@ -484,7 +485,8 @@ async function main() {
   const brainDownMsg = () => reviving && zombies.pending ? 'a timed-out brain call is still running; the brain re-init is waiting for it to stop — retry shortly; /eval, /tab and /shot still work'
     : reviving ? 'the brain is re-initializing — retry in a few seconds; /eval, /tab and /shot still work'
     : `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
-  const brain = async (i: string, p: Page = active) => {
+  // `run` swaps the call under the fence (the vision retry); the default is the cached act.
+  const brain = async (i: string, p: Page = active, run?: (sh: Stagehand, signal: AbortSignal) => Promise<Awaited<ReturnType<typeof actWithCache>> & { ran?: boolean; note?: string }>, maxMs?: number) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
     await zombies.wait(zombieBudget(), 'act')
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
@@ -498,8 +500,8 @@ async function main() {
     const why = `brain call timed out after ${BRAIN_TIMEOUT_MS / 1000}s`
     const q = `"${i.slice(0, 60)}"`
     try {
-      return await fencedCall((signal) => actWithCache(sh, p, i, signal), {
-        timeoutMs: BRAIN_TIMEOUT_MS, settleMs: SETTLE_MS, why,
+      return await fencedCall((signal) => run ? run(sh, signal) : actWithCache(sh, p, i, signal), {
+        timeoutMs: maxMs ? Math.min(BRAIN_TIMEOUT_MS, maxMs) : BRAIN_TIMEOUT_MS, settleMs: SETTLE_MS, why,
         onTimeout: (call) => {
           // A replacement brain has its own CDP connection; the revive that made it closed this one.
           if (stagehand !== sh) { zombies.track(call); return }
@@ -1462,7 +1464,7 @@ async function main() {
           // the dead recipe stayed in the action cache.
           const pre = await snap()
           await page.waitForTimeout(350).catch(() => {})
-          const before = await snap()
+          let before = await snap()
           const textVolatile = !!pre && !!before && pre.text !== before.text
           let r: any
           let usageBefore: MetricsTotals | null = null
@@ -1473,6 +1475,17 @@ async function main() {
           let popup: Page | null = null
           const onPopup = (p: Page) => { popup ??= p }
           page.on('popup', onPopup)
+          // A failed act is still a task: it must not vanish from the run.
+          const failAct = async (msg: string) => {
+            page.off('popup', onPopup)
+            mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
+            const fn = ++reqN
+            const fshot = await reqShot(fn, 'act', page)
+            const failTask = stampTask(fn, 'act', t0, null, fshot, body.instruction, undefined, page)
+            const failUsage = await usageNow()
+            Object.assign(failTask, { tokens: failUsage.tokens, modelMs: failUsage.modelMs }); writeManifest()
+            return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, tokens: failUsage.tokens, modelMs: failUsage.modelMs, brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null }, brainAlive ? 502 : 503)
+          }
           // PLAIN PAGE SCROLLS ARE DONE BY THE ENGINE, NOT THE BRAIN. On the live
           // landing page the brain's scroll action first moved nothing and, on
           // the identical repeat, scrolled back UP to the top for "scroll down".
@@ -1507,17 +1520,42 @@ async function main() {
                 try { usageBefore = await metricsNow(); r = await brain(body.instruction, page); healed = true } catch (e1) { e = e1 }
               }
             }
-            if (!healed) {
-              page.off('popup', onPopup)
-              const msg = ((e as Error).message || String(e)).slice(0, 300)
-              mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
-              // A failed act is still a task: it must not vanish from the run.
-              const fn = ++reqN
-              const fshot = await reqShot(fn, 'act', page)
-              const failTask = stampTask(fn, 'act', t0, null, fshot, body.instruction, undefined, page)
-              const failUsage = await usageNow()
-              Object.assign(failTask, { tokens: failUsage.tokens, modelMs: failUsage.modelMs }); writeManifest()
-              return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, tokens: failUsage.tokens, modelMs: failUsage.modelMs, brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null }, brainAlive ? 502 : 503)
+            if (!healed) return failAct(((e as Error).message || String(e)).slice(0, 300))
+          }
+          // VISION RETRY (#478): a no-op means the DOM held nothing to match (a canvas, an embedded
+          // frame). Try once from a screenshot, under this same lock and a fresh fence, with a two-step
+          // budget. Never cached: the recipe is a click at a coordinate, not a selector. Any failure keeps
+          // the original no-op, with a note.
+          let visionUsed = false  // the retry made one counted interaction
+          let visionRan = false  // it did something that is not counted or not verified
+          let visionNote: string | null = null
+          const gate = visionGate(body)
+          const retry = shouldRetryWithVision(r, gate)
+          // Bounded by what is left of the lock, less the settle wait a timeout needs and the work after it.
+          const visionMs = zombieBudget() - SETTLE_MS - (body.settleMs ?? 2500) - 3000
+          const tabSize = page.viewportSize()
+          // Only Gemini maps 0-1000 coordinates onto its configured viewport; other providers click in real pixels.
+          const scaled = brainModel.startsWith('google/') && stagehand
+          if (r?.noop && !gate.enabled && gate.why === 'instruction') visionNote = 'skipped: conditional or destructive wording; send "vision":true to allow'
+          else if (retry && scaled && !viewportMatches(tabSize, stagehand!.configuredViewport)) visionNote = `skipped on a ${tabSize?.width}x${tabSize?.height} tab: the brain maps its coordinates onto ${stagehand!.configuredViewport.width}x${stagehand!.configuredViewport.height}`
+          else if (retry && visionMs < 10000) visionNote = 'skipped: no time left on the action lock'
+          else if (retry) {
+            try {
+              before = await snap()  // judge the vision effect against the page as the retry found it
+              const v: { noop?: boolean; did?: string | null; ran?: boolean; note?: string } = await brain(body.instruction, page, async (sh, signal) => {
+                signal.throwIfAborted()
+                const on = await brainPageFor(sh, page)
+                if (!on) return { cached: false, healed: false, noop: true, did: null, note: 'skipped: could not pin the brain to this tab, so it might act on another' }
+                const res = await sh.agent({ mode: 'hybrid' }).execute({ instruction: visionInstruction(body.instruction), maxSteps: VISION_MAX_STEPS, highlightCursor: false, page: on as any })
+                const s = summarizeVision(res)
+                return { cached: false, healed: false, noop: !s.acted, did: s.acted ? s.did : null, ran: s.ran, note: s.note }
+              }, visionMs)
+              if (!v.noop) { r = v; visionUsed = true; mark(`act[${driver}]: DOM brain found nothing — ${v.did}`) }
+              else { visionRan = !!v.ran; visionNote = v.note || 'a screenshot-based retry also found nothing to act on' }
+            } catch (e) {
+              visionNote = `the screenshot-based retry failed: ${((e as Error).message || String(e)).slice(0, 120)}`
+              mark(`act[${driver}]: vision retry failed — ${visionNote}`)
+              if (!brainAlive) return failAct(visionNote)
             }
           }
           const usage = await usageNow()
@@ -1540,8 +1578,8 @@ async function main() {
           // scroll instruction that moved nothing is retried once as a real
           // mouse-wheel gesture over the viewport, which is what a person does.
           const scrollIntent = /\bscroll/i.test(String(body.instruction))
-          let fallback: string | null = null
-          if (scrollIntent && !r?.engine && before && after && before.url === after.url && !moved(before, after) && !r?.noop) {
+          let fallback: string | null = visionUsed ? 'vision' : null
+          if (scrollIntent && !r?.engine && !visionUsed && before && after && before.url === after.url && !moved(before, after) && !r?.noop) {
             const ins = String(body.instruction).toLowerCase()
             const vp = page.viewportSize() ?? { width: 1280, height: 720 }
             const dy = /\b(top|beginning|start)\b/.test(ins) ? -1e6 : /\b(bottom|end)\b/.test(ins) ? 1e6 : (/\bup\b/.test(ins) ? -1 : 1) * Math.round(vp.height * 0.9)
@@ -1560,7 +1598,7 @@ async function main() {
             : scrollIntent ? (before.url !== after.url || moved(before, after))
             : structural || (textChanged && !textVolatile)
           const effect = {
-            changed, noop: !!r?.noop, fallback,
+            changed, noop: !!r?.noop && !visionRan, visionActed: visionRan || (visionUsed && changed !== true), fallback, ...(visionNote ? { visionNote } : {}),
             // true when the page's text was already changing on its own before
             // the action, so text was not used as evidence of an effect.
             textVolatile,
@@ -1571,11 +1609,11 @@ async function main() {
           // Nothing observable changed: say so, and never keep the cached
           // recipe for it (a cached no-op was being replayed as a "success").
           let warning: string | null = null
-          if (r?.noop) warning = 'the brain found nothing on the page matching this instruction — no action was performed'
+          if (r?.noop) warning = `the brain found nothing on the page matching this instruction${visionRan ? ' — the screenshot-based retry did something, check the screenshot before retrying' : ' — no action was performed'}${visionNote ? ` (${visionNote})` : ''}`
           else if (changed === false) {
             warning = scrollIntent
-              ? 'the scroll did not move the page or any scrollable panel (also tried a mouse-wheel gesture) — the page may already be at its limit, or the scrollable area is elsewhere; name the panel to scroll'
-              : `the action ran but nothing observable changed on the page (url, title, scroll, form values${textVolatile ? '; visible text was ignored because this page animates on its own' : ', text length'}) — verify with /eval or the clip; fine for clipboard/background effects, otherwise rephrase the instruction`
+              ? `the scroll did not move the page or any scrollable panel ${visionUsed ? '' : '(also tried a mouse-wheel gesture) '}— the page may already be at its limit, or the scrollable area is elsewhere; name the panel to scroll`
+              : `${visionUsed ? 'the screenshot-based retry acted, but ' : ''}the action ran but nothing observable changed on the page (url, title, scroll, form values${textVolatile ? '; visible text was ignored because this page animates on its own' : ', text length'}) — verify with /eval or the clip; fine for clipboard/background effects, otherwise rephrase the instruction`
             if (before) forgetCached(before.url, String(body.instruction))
           }
           if (!warning && scrollIntent && before && after && before.url === after.url) {
@@ -1606,11 +1644,11 @@ async function main() {
         if (clip) mark(`clip: ${clip}`)
         const shot = await reqShot(n, 'act', opened && !opened.isClosed() ? opened : page)
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
-        Object.assign(window, { tokens: usage.tokens, modelMs: usage.modelMs })
+        Object.assign(window, { tokens: usage.tokens, modelMs: usage.modelMs, ...(effect.fallback === 'vision' ? { fallback: 'vision' } : {}) })
         if (clipError) (window as any).clipError = clipError
         writeManifest()
         addStep('act', String(body.instruction))
-        return json(res, { ok: !r?.noop, ...(r?.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, tokens: usage.tokens, modelMs: usage.modelMs, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
+        return json(res, { ok: !effect.noop && !effect.visionActed, ...(effect.visionActed ? { code: 'unverified' } : effect.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, tokens: usage.tokens, modelMs: usage.modelMs, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
       }
       if (path === '/say') {
         const driver = driverId(req)

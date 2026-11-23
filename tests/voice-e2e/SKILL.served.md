@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 67
+Version: 68
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -133,7 +133,7 @@ curl -s "${H[@]}" -X POST $E/shot -d '{}'                                       
 curl -s "${H[@]}" -X POST $E/tab -d '{"op":"close"}'                               # close your tab when done
 ```
 Check `ok` on every reply: `/act` returns `ok:false, code:"noop"` when nothing on the page
-matched. Reading page content: use `/eval` (there is no extract endpoint).
+matched, and `ok:false, code:"unverified"` when a screenshot-based retry did something whose effect was not confirmed (look at the screenshot before retrying). Reading page content: use `/eval` (there is no extract endpoint).
 
 ## LIVE RELAY — review and forward media DURING the run, not after
 The loop is **drive → review → relay**, interleaved: run `drive.sh act …`, it
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v68
+- When `/act` finds nothing in the DOM to match (a canvas, an embedded frame) the engine makes one screenshot-based attempt (one look, then one click, type or key press) and reports `effect.fallback:'vision'`; if nothing observable changed, or it did something it cannot confirm, the answer is `ok:false, code:'unverified'`. Skipped for conditional or destructive wording unless you send `"vision":true`; opt out per call with `"vision":false` or engine-wide with `OSBORN_NO_VISION_RETRY=1`; its tokens are not exact. See `references/harness-api.md`.
 
 ## What's new in v67
 - A driver that posts `/canvas`, `/tts` or `/noise-cancel` to an agent from another machine sends the owner's Bearer token (see `references/streaming.md`); the agent's own localhost curl needs nothing extra.
@@ -295,7 +298,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - A detached brain heals itself: `/act` re-initialises it once before answering `brain_unavailable` (after a failed try it waits a minute before trying again). A `brain_unavailable` whose error says *re-initializing* means a revive is already running: retry in a few seconds, do not `POST /brain`. If you still get `brain_unavailable`, `POST /brain {}` re-picks it without restarting the engine; `/eval`, `/tab` and `/shot` keep working meanwhile.
 
 ## What's new in v46
-- `/act` returns `ok:false` with `code:"noop"` when the brain found nothing to do (it used to say `ok:true` plus a warning). A compound instruction can still do only part of the job: check `result.did` and the screenshot.
+- `/act` returns `ok:false` with `code:"noop"` when the brain found nothing to do (it used to say `ok:true` plus a warning). A compound instruction can still do only part of the job: check `result.did` and the screenshot. `code:"unverified"` (`effect.visionActed`) means a screenshot-based retry ran something that is not counted or not confirmed: do not retry blindly; `drive.sh act` exits 6.
 - `/tab navigate` and `/tab close` with no `i` act on YOUR tab, not whichever tab another driver fronted last. `drive.sh act` prints NOOP and exits 5 when nothing matched.
 - Navigation errors are clean: `400 bad_url` for a non-http(s) or malformed URL, `502 nav_failed` with `netError` for a failed load, and no error when the page loaded anyway.
 - A failed `/act` clip returns `clipUrl:null` and keeps its `clipError` on `/clip?n=N`. Malformed JSON gets `400 bad_json`; an instruction over 4,000 characters gets `413 too_large`.

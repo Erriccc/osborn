@@ -16,7 +16,7 @@
 | `GET /audio` | your tab's captured audio as mp3 (`<audio>`/`<video>` elements and WebAudio output — absent from the video-only clips/stream). 404 with `ears` until the tab has recorded something; it does not arm them (`/act`, `/say` or `/hear` does). WebAudio output of the top page only, not iframes |
 | `GET /logs` | full console+network+websocket buffers, all tabs |
 | `GET /events` | SSE: live navigation/task/tab/journey/transcript/agent_output/lifecycle events (25-event replay on connect; `engine_stopping` announces sleep) |
-| `POST /act {instruction, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab; arms the ears on the tab so `/clip?n=N&audio=1` can carry its sound; a tab the action opens becomes your tab (`effect.openedTab`) |
+| `POST /act {instruction, clipSeconds?, settleMs?, vision?}` | natural-language action → returns clip + screenshot + devtools + tab; arms the ears on the tab so `/clip?n=N&audio=1` can carry its sound; a tab the action opens becomes your tab (`effect.openedTab`) |
 | `POST /input {type: key\|type\|click\|scroll, key?, text?, x?, y?, dy?}` | raw input on your tab: a real key press (`Enter` submits a form; `/act` fills fields but does not reliably press keys), keystrokes into the focused field, a click at frame fractions, a wheel scroll |
 | `POST /say {text, ...}` | speak into the mic; returns a screenshot, `heard` (agent's spoken reply, transcribed) and a `clipUrl` that waits until the clip is encoded (`clipPending: true`; pass `waitClip: true` to get the clip in the reply) |
 | `POST /hear {lastMs}` | transcript of recent agent audio |
@@ -57,8 +57,26 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   server is listening.
 - **`/act` response**: `effect {changed, noop, urlBefore, urlAfter, titleAfter,
   scrollBefore, scrollAfter}`, `warning`, `result.did`, `brainModel`, `tokens {prompt, completion, reasoning, total}` and `modelMs` (model use of this act, also on the task in `manifest.json`; a cached replay normally reports 0, more than 0 means Stagehand re-asked the model to heal it; an engine scroll reports 0). Failures (the first three carry `tokens` and `modelMs` too):
-  `noop` (`ok:false`, nothing on the page matched), `brain_error` (502, provider
+  `noop` (`ok:false`, nothing on the page matched), `unverified` (`ok:false`, a vision retry ran something it could not confirm), `brain_error` (502, provider
   message), `brain_unavailable` (503), `bad_request` (400), `too_large` (413).
+- **Vision retry** (on by default): when the DOM brain finds nothing to match (a
+  canvas, an embedded frame) the engine makes ONE screenshot-based attempt under
+  the same action lock (its own timeout, capped by the lock time left; skipped
+  under 10s): look at a screenshot, then make one interaction. Only exactly one
+  `click`, `type` or `keys` call that succeeded after a screenshot that returned
+  an image is counted; anything else it ran (scroll, goto, the DOM `act` tool,
+  several calls, a click sent blind) is named in `effect.visionNote`. Counted:
+  `effect.fallback:'vision'`, `result.did`, and `ok:true` only if `effect.changed`
+  is true. Not counted but something ran, or no observable change:
+  `ok:false, code:'unverified'`, `effect.visionActed:true` (check the screenshot
+  before retrying; `drive.sh` exits 6). Nothing ran: the original `noop`. Never
+  cached, never a 500. Skipped for conditional ("if ... otherwise") or
+  destructive wording (pay, delete, send, submit, order, post, cancel ...) unless
+  `"vision":true`, off per call with `"vision":false` or engine-wide with
+  `OSBORN_NO_VISION_RETRY=1`, and on Gemini brains on a tab whose viewport is not
+  the brain's. `modelMs` is wall time (nested act time may be counted twice);
+  `tokens` are not exact (the forced `done` call is not counted; an error reports
+  0). Click accuracy on the default Gemini Flash brain is unverified.
 - **Async**: `POST /act|/say {"async":true}` → 202 `{job, resultUrl}`;
   `GET /result?id=<job>` → 202 `{done:false, runningSec}` or 200
   `{done:true, status, ...the synchronous response}`.
@@ -98,6 +116,7 @@ Every failure reply is `{ok:false, code, error, ...}`.
 | 503 | `engine_restarting` | the engine was stopped (a deploy or restart) while your request ran; `retryable:true`, retry after `retryAfterSec` — an active journey is carried across the restart |
 | 503 | `engine_token_missing` | a public engine has no `OSBORN_ENGINE_TOKEN`; only `/health` and signed `/media` links answer |
 | 200 | `noop` (`ok:false`) | `/act` found nothing on the page to do; `drive.sh act` exits 5 |
+| 200 | `unverified` (`ok:false`) | a screenshot-based retry ran something not counted or with no observable change (`effect.visionActed`); `drive.sh act` exits 6 |
 
 - A navigation that settles on another page of the same host (http→https, trailing slash, `/login` → `/dashboard`) succeeds with `redirectedTo` set to where the tab landed.
 - `/tab navigate` and `/tab close` with no `i` act on a tab you OWN (the one you last used, else the newest you own), never tab 0 (the voice room), an unowned tab or a tab another driver fronted. After a close, `/tab list` and the close reply report the same `activeTab`.
