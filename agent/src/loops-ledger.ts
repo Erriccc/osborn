@@ -87,8 +87,6 @@ export interface LoopItem {
   filedUrl?: string
   filedAt?: string
   recapped?: boolean
-  /** `queued`: the instruction kept to start it later. */
-  instruction?: string
 }
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
@@ -189,7 +187,6 @@ export function foldLoops(records: LoopRecord[]): Map<string, LoopItem> {
       id: r.id, kind: r.kind, text: '', source: 'inferred', origin, fg: false, at: r.at, open: true,
     }
     if (r.text && (!prev || !item.text)) item.text = r.text
-    if (r.instruction && !item.instruction) item.instruction = r.instruction
     if (!prev) {
       // Only a user's own words can be explicit.
       item.source = r.source === 'explicit' && origin === 'user_mic' ? 'explicit' : 'inferred'

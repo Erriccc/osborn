@@ -1,4 +1,4 @@
-// Follow-through (#378) slice 2: nextQueued, the `started` close, and the one-offer-per-slot-free rules.
+// Follow-through (#378) slice 2: the `started` close and the offer rules (only items this process queued).
 // Run: npx tsx agent/tests/loops-offer.test.ts
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync } from 'node:fs'
@@ -7,8 +7,8 @@ import { tmpdir } from 'node:os'
 
 const home = mkdtempSync(join(tmpdir(), 'loops-offer-test-'))
 process.env.CLAUDE_CONFIG_DIR = join(home, '.claude')
-const cwd = join(home, 'api'); const hub = join(home, 'hub')
-mkdirSync(cwd, { recursive: true }); mkdirSync(hub, { recursive: true })
+const cwd = join(home, 'api')
+mkdirSync(cwd, { recursive: true })
 const L = await import('../src/loops-ledger.js')
 const O = await import('../src/loops-offer.js')
 const { getSpokeReport } = await import('../src/prompts.js')
@@ -18,7 +18,7 @@ let pass = 0
 const t = (name: string, fn: () => unknown) => {
   try { fn(); pass++; console.log('ok   ', name) } catch (e: any) { console.log('FAIL ', name, '\n     ', String(e?.message ?? e).split('\n')[0]); process.exitCode = 1 }
 }
-const q = (instruction: string, at: string, id?: string) => ({ v: 1 as const, at, ...L.queuedLoopRecord(instruction, 'api'), ...(id ? { id } : {}) })
+const q = (instruction: string, at: string) => ({ v: 1 as const, at, ...L.queuedLoopRecord(instruction, 'api') })
 
 t('started closes it; filed also closes it', () => {
   const a = q('first', '2026-11-01T00:00:00Z'), b = q('second', '2026-11-02T00:00:00Z')
