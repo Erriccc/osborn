@@ -86,6 +86,14 @@ await t('slot cap refusal appends slot_refused', () => {
   assert.ok(body.indexOf("kind: 'slot_refused'") < body.indexOf('return'), 'recorded before the early return')
 })
 
+await t('slot cap refusal also records a queued item carrying the instruction', () => {
+  const body = slice(idx, 'async function spawnBackgroundSession(', 'const slotWorkingDir')
+  assert.match(body, /seat\.reason === 'cap' && queuedFor/)
+  assert.match(body, /queuedLoopRecord\(queuedFor\.instruction, queuedFor\.project\)/)
+  assert.ok(body.indexOf("kind: 'slot_refused'") < body.indexOf('queuedLoopRecord'), 'slot_refused stays')
+  assert.ok(body.indexOf('queuedLoopRecord') < body.indexOf('return'), 'recorded before the early return')
+})
+
 await t('index registers SIGINT and SIGTERM handlers that flush', () => {
   assert.match(idx, /for \(const sig of \['SIGINT', 'SIGTERM'\] as const\)/)
   const body = slice(idx, "for (const sig of ['SIGINT', 'SIGTERM'] as const)", '\n}\n')

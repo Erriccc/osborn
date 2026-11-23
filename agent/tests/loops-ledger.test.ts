@@ -144,3 +144,29 @@ t('background (non-foreground) records are never fileable', () => {
 
 rmSync(root, { recursive: true, force: true })
 console.log(`\n${pass} passed`)
+
+t('queued: fold round-trip, open, fileable, kept as its own kind', () => {
+  const r = L.queuedLoopRecord('fix the login bug in osborn', 'osborn')
+  const rs = [rec({ ...r } as any)]
+  const it = L.foldLoops(rs).get(r.id!)!
+  assert.equal(it.kind, 'queued'); assert.equal(it.source, 'explicit'); assert.equal(it.text, 'fix the login bug in osborn')
+  assert.deepEqual(open(rs), [r.id])
+  assert.deepEqual(L.fileableLoops(rs).map((i) => i.id), [r.id])
+  assert.notEqual(r.id, L.loopIds.slot('fix the login bug in osborn'))
+})
+
+t('queued: survives a restart (re-read from the JSONL) and is filed once', () => {
+  const sid = 'sess-queued', cwd = join(root, 'proj')
+  const r = L.queuedLoopRecord('ship the report', 'osborn')
+  assert.ok(L.appendLoopRecord(sid, cwd, { ...r, fg: true }))
+  assert.ok(L.appendLoopRecord(sid, cwd, { kind: 'slot_refused', id: L.loopIds.slot(sid), text: 'refused', fg: true }))
+  const again = L.readLoopRecords(sid, cwd)
+  assert.deepEqual(open(again), [r.id, L.loopIds.slot(sid)].sort())
+  assert.equal(L.foldLoops(again).get(r.id!)!.kind, 'queued')
+  L.appendLoopRecord(sid, cwd, { kind: 'filed', id: r.id, url: 'https://x/1' })
+  const done = L.readLoopRecords(sid, cwd)
+  assert.deepEqual(open(done), [L.loopIds.slot(sid)])
+  assert.equal(L.foldLoops(done).get(r.id!)!.kind, 'queued')
+  L.appendLoopRecord(sid, cwd, { ...r, fg: true })  // same instruction refused again: same id, still filed
+  assert.ok(!open(L.readLoopRecords(sid, cwd)).includes(r.id!))
+})

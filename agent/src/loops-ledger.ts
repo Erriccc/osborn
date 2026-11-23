@@ -45,7 +45,7 @@ export type LoopKind =
   | 'steward_block' | 'steward_clear'
   | 'question' | 'question_answered'
   | 'permission_pending' | 'permission_settled'
-  | 'slot_refused' | 'budget_denied' | 'open_loop'
+  | 'slot_refused' | 'budget_denied' | 'open_loop' | 'queued'
   | 'filed' | 'recapped' | 'held'
 
 export interface LoopRecord {
@@ -64,6 +64,8 @@ export interface LoopRecord {
   by?: 'user' | 'abort'
   url?: string
   cwd?: string
+  /** `queued`: the project the instruction was meant for. */
+  project?: string
   /** `held`: the repo that held the item back (public or unknown visibility). */
   repo?: string
   truncated?: boolean
@@ -155,6 +157,8 @@ const OPENS: Partial<Record<LoopKind, (r: LoopRecord) => boolean>> = {
   slot_refused: () => true,
   budget_denied: () => true,
   open_loop: () => true,
+  // An instruction that found no free background slot: startable later, open until filed.
+  queued: () => true,
 }
 
 /** Fold the ledger: the last record per item id wins. `prompt` and `session` lines are never items. */
@@ -234,7 +238,14 @@ export const loopIds = {
   slot: (text: string) => `slot:${loopKey('slot', text)}`,
   budget: (turn: number, at: string) => `budget:${turn}:${at}`,
   openLoop: (text: string) => `open_loop:${loopKey('open_loop', text)}`,
+  queued: (project: string, instruction: string) => `queued:${loopKey('queued', `${project} ${instruction}`)}`,
   steward: () => 'steward',
+}
+
+/** The record for an instruction refused at slot capacity: carries the text and project so it can start later. */
+export function queuedLoopRecord(instruction: string, project: string): LoopRecordInput {
+  const text = String(instruction || '').trim().slice(0, MAX_ITEM_CHARS)
+  return { kind: 'queued', id: loopIds.queued(project, text), text, project, source: 'explicit', origin: 'user_mic' }
 }
 
 // ── IO ──────────────────────────────────────────────────────────────────────

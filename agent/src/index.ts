@@ -23,7 +23,7 @@ setMaxListeners(50)
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'http'
 import { WebSocket, WebSocketServer } from 'ws'
 import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, mkdtempSync, cpSync, rmSync, renameSync, statSync, utimesSync, createWriteStream, openSync, readSync, closeSync, fstatSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
@@ -57,7 +57,7 @@ import { clearPipelineFastBrainSession, prewarmBM25Index, probeFastBrain, fastBr
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { loopIds } from './loops-ledger.js'
+import { loopIds, queuedLoopRecord } from './loops-ledger.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport } from './prompts.js'
@@ -3070,7 +3070,7 @@ async function main() {
   // Output events are forwarded to the frontend data channel only,
   // tagged with the slot id so the frontend can distinguish them.
   // ============================================================
-  async function spawnBackgroundSession(sessionId: string, bgWorkingDir?: string): Promise<void> {
+  async function spawnBackgroundSession(sessionId: string, bgWorkingDir?: string, queuedFor?: { instruction: string; project: string }): Promise<void> {
     // Foreground, duplicate and cap checks (slots.admit); add() below follows with no await between.
     // Never background the LIVE foreground session: two Claude processes appending to the same
     // session JSONL corrupt the transcript.
@@ -3078,6 +3078,7 @@ async function main() {
     if (!seat.ok) {
       console.warn(`⚠️ spawnBackgroundSession: ${seat.error}`)
       ;(currentLLM as any)?.recordLoop?.({ kind: 'slot_refused', id: loopIds.slot(sessionId), text: `Background session was refused: ${sessionId.slice(0, 8)} (${seat.error})`, source: 'inferred', origin: 'system' })
+      if (seat.reason === 'cap' && queuedFor) (currentLLM as any)?.recordLoop?.({ ...queuedLoopRecord(queuedFor.instruction, queuedFor.project), cwd: bgWorkingDir })
       await sendToFrontend({ type: 'background_session_error', slotId: sessionId, error: seat.error })
       return
     }
@@ -3216,7 +3217,7 @@ async function main() {
     if (targetSessionId === focusedId) return fail('Target is the focused session — use the normal path')
     const spawned = !slots.has(targetSessionId)
     if (spawned) {
-      try { await spawnBackgroundSession(targetSessionId, opts.cwd) } catch (err) { return fail(err instanceof Error ? err.message : String(err)) }
+      try { await spawnBackgroundSession(targetSessionId, opts.cwd, { instruction, project: opts.report?.project ?? basename(opts.cwd || workingDir) }) } catch (err) { return fail(err instanceof Error ? err.message : String(err)) }
     }
     const slot = slots.get(targetSessionId)
     if (!slot || !slot.emitter || !slot.sdkOptions) return fail('Slot not ready')
