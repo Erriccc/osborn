@@ -1145,8 +1145,8 @@ export async function listAllClaudeSessions(limit = 1000, includeSubagents = fal
       }
       try {
         const [preview, cwd] = await Promise.all([getSessionPreview(c.filePath, c.size), extractCwd(c.filePath)])
-        // Session files only grow: a counted session that gained a turn keeps its count as a floor.
-        if (hit?.exact && c.size >= hit.size) preview.messageCount = Math.max(preview.messageCount, hit.messageCount)
+        // Session files only grow: any earlier count stays a floor, however many times the file grows.
+        if (hit && c.size >= hit.size) preview.messageCount = Math.max(preview.messageCount, hit.messageCount)
         manifest.entries[c.filePath] = {
           mtimeMs: c.mtime.getTime(), size: c.size,
           lastMessage: preview.lastMessage, messageCount: preview.messageCount, cwd,

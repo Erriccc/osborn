@@ -40,6 +40,9 @@ assert.equal(manifest.entries[idle].exact, true, 'the count is persisted, so a r
 appendFileSync(idle, row('user', 'one more') + '\n')
 invalidateSessionListCache()
 assert.ok((await count(idle)) >= 200, 'a counted session that grew does not fall back to the sampled count')
+appendFileSync(idle, row('user', 'and another') + '\n')
+invalidateSessionListCache()
+assert.ok((await count(idle)) >= 200, 'nor after it grows again')
 // The voice-connect sweep (no countInBackground) never starts the count.
 const sweepDir = join(dir, '66666666-6666-4666-8666-666666666666.jsonl')
 writeFileSync(sweepDir, rows.join('\n') + '\n')
