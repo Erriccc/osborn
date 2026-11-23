@@ -486,7 +486,7 @@ async function main() {
     : reviving ? 'the brain is re-initializing — retry in a few seconds; /eval, /tab and /shot still work'
     : `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   // `run` swaps the call under the fence (the vision retry); the default is the cached act.
-  const brain = async (i: string, p: Page = active, run?: (sh: Stagehand, signal: AbortSignal) => ReturnType<typeof actWithCache>, maxMs?: number) => {
+  const brain = async (i: string, p: Page = active, run?: (sh: Stagehand, signal: AbortSignal) => Promise<Awaited<ReturnType<typeof actWithCache>> & { ran?: boolean; note?: string }>, maxMs?: number) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
     await zombies.wait(zombieBudget(), 'act')
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
@@ -1464,7 +1464,7 @@ async function main() {
           // the dead recipe stayed in the action cache.
           const pre = await snap()
           await page.waitForTimeout(350).catch(() => {})
-          const before = await snap()
+          let before = await snap()
           const textVolatile = !!pre && !!before && pre.text !== before.text
           let r: any
           let usageBefore: MetricsTotals | null = null
@@ -1526,37 +1526,38 @@ async function main() {
           // frame). Try once from a screenshot, under this same lock and a fresh fence, with a two-step
           // budget. Never cached: the recipe is a click at a coordinate, not a selector. Any failure keeps
           // the original no-op, with a note.
-          let visionUsed = false
+          let visionUsed = false  // the retry made one counted interaction
+          let visionRan = false  // it did something that is not counted or not verified
           let visionNote: string | null = null
-          let blind = false
-          let visionTried = false
-          let visionMsg: string | null = null
           const gate = visionGate(body)
-          // Bounded by what is left of the lock (less the settle wait a timeout needs), not a fresh full budget.
-          const visionMs = zombieBudget() - SETTLE_MS
+          const retry = shouldRetryWithVision(r, gate)
+          // Bounded by what is left of the lock, less the settle wait a timeout needs and the work after it.
+          const visionMs = zombieBudget() - SETTLE_MS - (body.settleMs ?? 2500) - 3000
           const tabSize = page.viewportSize()
-          if (shouldRetryWithVision(r, gate) && stagehand && !viewportMatches(tabSize, stagehand.configuredViewport)) visionNote = `the screenshot-based retry is skipped on a ${tabSize?.width}x${tabSize?.height} tab: the brain maps clicks onto ${stagehand.configuredViewport.width}x${stagehand.configuredViewport.height}`
-          else if (shouldRetryWithVision(r, gate) && visionMs < 10000) visionNote = 'no time left on the action lock for a screenshot-based retry'
-          else if (shouldRetryWithVision(r, gate)) {
-            visionTried = true
+          // Only Gemini maps 0-1000 coordinates onto its configured viewport; other providers click in real pixels.
+          const scaled = brainModel.startsWith('google/') && stagehand
+          if (r?.noop && !gate.enabled && gate.why === 'instruction') visionNote = 'skipped: conditional or destructive wording; send "vision":true to allow'
+          else if (retry && scaled && !viewportMatches(tabSize, stagehand!.configuredViewport)) visionNote = `skipped on a ${tabSize?.width}x${tabSize?.height} tab: the brain maps its coordinates onto ${stagehand!.configuredViewport.width}x${stagehand!.configuredViewport.height}`
+          else if (retry && visionMs < 10000) visionNote = 'skipped: no time left on the action lock'
+          else if (retry) {
             try {
-              const v = await brain(body.instruction, page, async (sh, signal) => {
+              before = await snap()  // judge the vision effect against the page as the retry found it
+              const v: { noop?: boolean; did?: string | null; ran?: boolean; note?: string } = await brain(body.instruction, page, async (sh, signal) => {
                 signal.throwIfAborted()
                 const on = await brainPageFor(sh, page)
-                const res = await sh.agent({ mode: 'hybrid' }).execute({ instruction: visionInstruction(body.instruction), maxSteps: VISION_MAX_STEPS, highlightCursor: false, ...(on ? { page: on as any } : {}) })
+                if (!on) return { cached: false, healed: false, noop: true, did: null, note: 'skipped: could not pin the brain to this tab, so it might act on another' }
+                const res = await sh.agent({ mode: 'hybrid' }).execute({ instruction: visionInstruction(body.instruction), maxSteps: VISION_MAX_STEPS, highlightCursor: false, page: on as any })
                 const s = summarizeVision(res)
-                if (s.blind) blind = true
-                else if (!s.acted && res.success === false && res.message) visionMsg = res.message.slice(0, 120)
-                return { cached: false, healed: false, noop: !s.acted, did: s.acted ? s.did : null }
+                return { cached: false, healed: false, noop: !s.acted, did: s.acted ? s.did : null, ran: s.ran, note: s.note }
               }, visionMs)
               if (!v.noop) { r = v; visionUsed = true; mark(`act[${driver}]: DOM brain found nothing — ${v.did}`) }
-              else visionNote = blind ? 'the screenshot-based retry acted without looking at the screen first, so it was not counted' : visionMsg ? `the screenshot-based retry did nothing: ${visionMsg}` : 'a screenshot-based retry also found nothing to act on'
+              else { visionRan = !!v.ran; visionNote = v.note || 'a screenshot-based retry also found nothing to act on' }
             } catch (e) {
               visionNote = `the screenshot-based retry failed: ${((e as Error).message || String(e)).slice(0, 120)}`
               mark(`act[${driver}]: vision retry failed — ${visionNote}`)
+              if (!brainAlive) return failAct(visionNote)
             }
           }
-          if (visionTried && !brainAlive) return failAct(visionNote ?? brainDownMsg())
           const usage = await usageNow()
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
@@ -1597,7 +1598,7 @@ async function main() {
             : scrollIntent ? (before.url !== after.url || moved(before, after))
             : structural || (textChanged && !textVolatile)
           const effect = {
-            changed, noop: !!r?.noop || (visionUsed && changed === false), fallback, ...(visionNote ? { visionNote } : {}),
+            changed, noop: !!r?.noop && !visionRan, visionActed: visionRan || (visionUsed && changed !== true), fallback, ...(visionNote ? { visionNote } : {}),
             // true when the page's text was already changing on its own before
             // the action, so text was not used as evidence of an effect.
             textVolatile,
@@ -1608,7 +1609,7 @@ async function main() {
           // Nothing observable changed: say so, and never keep the cached
           // recipe for it (a cached no-op was being replayed as a "success").
           let warning: string | null = null
-          if (r?.noop) warning = `the brain found nothing on the page matching this instruction${blind ? '' : ' — no action was performed'}${visionNote ? ` (${visionNote})` : ''}`
+          if (r?.noop) warning = `the brain found nothing on the page matching this instruction${visionRan ? ' — the screenshot-based retry did something, check the screenshot before retrying' : ' — no action was performed'}${visionNote ? ` (${visionNote})` : ''}`
           else if (changed === false) {
             warning = scrollIntent
               ? `the scroll did not move the page or any scrollable panel ${visionUsed ? '' : '(also tried a mouse-wheel gesture) '}— the page may already be at its limit, or the scrollable area is elsewhere; name the panel to scroll`
@@ -1647,7 +1648,7 @@ async function main() {
         if (clipError) (window as any).clipError = clipError
         writeManifest()
         addStep('act', String(body.instruction))
-        return json(res, { ok: !effect.noop, ...(effect.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, tokens: usage.tokens, modelMs: usage.modelMs, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
+        return json(res, { ok: !effect.noop && !effect.visionActed, ...(effect.visionActed ? { code: 'unverified' } : effect.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, tokens: usage.tokens, modelMs: usage.modelMs, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
       }
       if (path === '/say') {
         const driver = driverId(req)

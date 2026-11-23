@@ -57,35 +57,26 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   server is listening.
 - **`/act` response**: `effect {changed, noop, urlBefore, urlAfter, titleAfter,
   scrollBefore, scrollAfter}`, `warning`, `result.did`, `brainModel`, `tokens {prompt, completion, reasoning, total}` and `modelMs` (model use of this act, also on the task in `manifest.json`; a cached replay normally reports 0, more than 0 means Stagehand re-asked the model to heal it; an engine scroll reports 0). Failures (the first three carry `tokens` and `modelMs` too):
-  `noop` (`ok:false`, nothing on the page matched), `brain_error` (502, provider
+  `noop` (`ok:false`, nothing on the page matched), `unverified` (`ok:false`, a vision retry ran something it could not confirm), `brain_error` (502, provider
   message), `brain_unavailable` (503), `bad_request` (400), `too_large` (413).
 - **Vision retry** (on by default): when the DOM brain finds nothing to match (a
-  canvas, an embedded frame) the engine makes ONE screenshot-based attempt
-  (Stagehand `agent({mode:'hybrid'})`, cursor highlight off so nothing is
-  injected). It runs under the same action lock with its own timeout fence,
-  capped by what is left of the lock less 15s for a timeout to settle (skipped
-  when that leaves under 10s), and has a
-  2-step budget: take a screenshot, then make one interaction (about three
-  model calls with Stagehand's forced final `done`). An interaction made before
-  the model saw a screenshot (including one sent in the same step as it), one
-  whose tool reported failure, or the DOM `act` tool does not count. It is
-  skipped when the tab's viewport is more than 10px off the brain's (1288x711;
-  the default 1280x720 tab is within that, so its clicks land at most 9px off at
-  the far edge; `/tab` mobile and tablet tabs are not), and for
-  conditional ("if ... otherwise") or destructive (delete, pay, send, submit,
-  confirm, sign out ...) instructions unless the call sends `"vision":true`.
-  When it acts, `effect.fallback:'vision'` (also on the manifest task) and
-  `result.did` names the tool, target and coordinates; `effect.changed` is judged
-  as usual, and if nothing observable changed the answer stays `ok:false`
-  `code:'noop'`. It is never written to `knowledge/<host>/actions.json`.
-  A failed, blind or empty retry, or one skipped for the tab size or the lock
-  time, returns the original `noop` with `effect.visionNote` (never a 500; `brain_unavailable` if the retry killed the
-  brain). Metrics: `modelMs` is the wall time of the whole attempt (nested act
-  time may be counted twice); `tokens` are not exact: Stagehand's forced `done`
-  call is not counted and an erroring attempt reports 0. Opt out for one call
-  with `"vision":false`, or engine-wide with env `OSBORN_NO_VISION_RETRY=1`. The
-  brain model is the engine's own (Gemini Flash by default, outside Stagehand's
-  hybrid list, so it only logs a warning): click accuracy on it is unverified.
+  canvas, an embedded frame) the engine makes ONE screenshot-based attempt under
+  the same action lock (its own timeout, capped by the lock time left; skipped
+  under 10s): look at a screenshot, then make one interaction. Only exactly one
+  `click`, `type` or `keys` call that succeeded after a screenshot that returned
+  an image is counted; anything else it ran (scroll, goto, the DOM `act` tool,
+  several calls, a click sent blind) is named in `effect.visionNote`. Counted:
+  `effect.fallback:'vision'`, `result.did`, and `ok:true` only if `effect.changed`
+  is true. Not counted but something ran, or no observable change:
+  `ok:false, code:'unverified'`, `effect.visionActed:true` (check the screenshot
+  before retrying; `drive.sh` exits 6). Nothing ran: the original `noop`. Never
+  cached, never a 500. Skipped for conditional ("if ... otherwise") or
+  destructive wording (pay, delete, send, submit, order, post, cancel ...) unless
+  `"vision":true`, off per call with `"vision":false` or engine-wide with
+  `OSBORN_NO_VISION_RETRY=1`, and on Gemini brains on a tab whose viewport is not
+  the brain's. `modelMs` is wall time (nested act time may be counted twice);
+  `tokens` are not exact (the forced `done` call is not counted; an error reports
+  0). Click accuracy on the default Gemini Flash brain is unverified.
 - **Async**: `POST /act|/say {"async":true}` → 202 `{job, resultUrl}`;
   `GET /result?id=<job>` → 202 `{done:false, runningSec}` or 200
   `{done:true, status, ...the synchronous response}`.
@@ -125,6 +116,7 @@ Every failure reply is `{ok:false, code, error, ...}`.
 | 503 | `engine_restarting` | the engine was stopped (a deploy or restart) while your request ran; `retryable:true`, retry after `retryAfterSec` — an active journey is carried across the restart |
 | 503 | `engine_token_missing` | a public engine has no `OSBORN_ENGINE_TOKEN`; only `/health` and signed `/media` links answer |
 | 200 | `noop` (`ok:false`) | `/act` found nothing on the page to do; `drive.sh act` exits 5 |
+| 200 | `unverified` (`ok:false`) | a screenshot-based retry ran something not counted or with no observable change (`effect.visionActed`); `drive.sh act` exits 6 |
 
 - A navigation that settles on another page of the same host (http→https, trailing slash, `/login` → `/dashboard`) succeeds with `redirectedTo` set to where the tab landed.
 - `/tab navigate` and `/tab close` with no `i` act on a tab you OWN (the one you last used, else the newest you own), never tab 0 (the voice room), an unowned tab or a tab another driver fronted. After a close, `/tab list` and the close reply report the same `activeTab`.

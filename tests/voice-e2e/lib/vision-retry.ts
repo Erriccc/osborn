@@ -10,7 +10,7 @@ export type VisionGate = { enabled: boolean; why?: 'env' | 'request' | 'instruct
 
 /** "If X ... otherwise do nothing" must stay a no-op, and a guess from pixels must not delete, pay or send. */
 const CONDITIONAL = /\b(if|otherwise|unless)\b/i
-const DESTRUCTIVE = /\b(delete|remove|pay|purchase|buy|send|submit|confirm|sign out|log out)\b/i
+const DESTRUCTIVE = /\b(pay\w*|checkout|order|subscri\w*|donat\w*|transfer|publish|post|approve|merge|accept|cancel|book|reserve|sign.?out|log.?out|delete|remove|purchase|buy|send|submit|confirm)\b/i
 
 /**
  * Default ON. Off for the whole engine by the env var, or for one call by `vision:false` in the body.
@@ -47,30 +47,46 @@ export function visionInstruction(instruction: string): string {
     + 'Stop after that one interaction. If the target is not visible on screen, do nothing.'
 }
 
-/** Agent tools that look, wait or only re-run the DOM path: none of them is a vision interaction. */
-// `act` is the DOM tool: it re-runs the DOM act that just failed, and Stagehand drops its success flag.
-const PASSIVE = new Set(['act', 'done', 'think', 'screenshot', 'wait', 'ariaTree', 'extract', 'close'])
+/** Tools that look or wait; everything else the agent calls is an interaction (the DOM `act` tool included). */
+const PASSIVE = new Set(['done', 'think', 'screenshot', 'wait', 'ariaTree', 'extract', 'close'])
+/** The only interactions that are counted, one per attempt. */
+const COUNTED = new Set(['click', 'type', 'keys'])
 
 type VisionAction = { type?: string; reasoning?: string; description?: string; describe?: string; coordinates?: number[]; success?: boolean; error?: unknown }
+type Part = { type?: string; toolName?: string; output?: { value?: unknown } }
 type Msg = { role?: string; content?: unknown }
-type AgentLike = { message?: string; actions?: VisionAction[]; messages?: Msg[] }
+type AgentLike = { success?: boolean; message?: string; actions?: VisionAction[]; messages?: Msg[] }
 
-/** The model step of each action, in order: one assistant message per step, its tool calls in the actions' order. */
-const stepsOf = (messages: Msg[] = []): number[] => messages.filter((m) => m?.role === 'assistant')
-  .flatMap((m, step) => (Array.isArray(m.content) ? m.content : []).filter((p: { type?: string } | null) => p?.type === 'tool-call').map(() => step))
+/** The model step of the first interaction call, and of the first screenshot that came back with an image. */
+function stepsOf(messages: Msg[] = []): { call?: number; looked?: number } {
+  let step = -1
+  const out: { call?: number; looked?: number } = {}
+  for (const m of messages) {
+    const parts: Part[] = Array.isArray(m?.content) ? (m.content as Part[]) : []
+    if (m?.role === 'assistant') {
+      step++
+      if (out.call === undefined && parts.some((p) => p?.type === 'tool-call' && p.toolName && !PASSIVE.has(p.toolName))) out.call = step
+    } else if (m?.role === 'tool' && out.looked === undefined) {
+      const shot = parts.some((p) => p?.type === 'tool-result' && p.toolName === 'screenshot' && Array.isArray(p.output?.value) && (p.output!.value as Array<{ type?: string }>).some((v) => v?.type === 'media'))
+      if (shot) out.looked = step
+    }
+  }
+  return out
+}
 
 /**
- * Whether the agent changed anything, and a short account of it. An interaction that failed does not count,
- * and neither does one made before the model saw a screenshot: one before the first screenshot, or one sent in
- * the same step as it (parallel tool calls run together, so it acted without looking).
+ * What the attempt did. `acted` only for exactly one click, type or keys press that succeeded after a
+ * screenshot that returned an image in an EARLIER step. `ran` is true when something else was done
+ * (not counted, or not verified): the caller must not treat the page as untouched. `note` says why.
  */
-export function summarizeVision(res: AgentLike | null | undefined): { acted: boolean; did: string; blind?: boolean } {
-  const actions = res?.actions ?? []
-  const first = actions.findIndex((a) => a?.type && !PASSIVE.has(a.type) && a.success !== false && !a.error)
-  if (first < 0) return { acted: false, did: '' }
-  const steps = stepsOf(res?.messages)
-  const looked = actions.slice(0, first).some((a, j) => a?.type === 'screenshot' && (steps[first] === undefined || steps[j] < steps[first]))
-  if (!looked) return { acted: false, did: '', blind: true }
-  const a = actions[first]
-  return { acted: true, did: `vision (${a.type}): ${String(a.describe ?? a.description ?? a.reasoning ?? res?.message ?? '').slice(0, 120)}${a.coordinates ? ` at (${a.coordinates.join(',')})` : ''}`.trim() }
+export function summarizeVision(res: AgentLike | null | undefined): { acted: boolean; ran: boolean; did: string; note: string } {
+  const none = { acted: false, ran: false, did: '' }
+  const run = (res?.actions ?? []).filter((a) => a?.type && !PASSIVE.has(a.type))
+  if (!run.length) return { ...none, note: res?.success === false && res.message ? res.message.slice(0, 120) : '' }
+  const a = run[0]
+  if (run.length === 1 && a.type !== 'act' && (a.success === false || a.error)) return { ...none, note: `the ${a.type} failed${a.error ? `: ${String(a.error).slice(0, 80)}` : ''}` }
+  if (run.length > 1 || !COUNTED.has(a.type!)) return { ...none, ran: true, note: `the retry ran ${run.map((x) => x.type).join(' + ')}${a.type === 'act' ? ' (the DOM tool; its effect is unverified)' : ''}; only a single click, type or keys press is counted` }
+  const { call, looked } = stepsOf(res?.messages)
+  if (looked === undefined || call === undefined || looked >= call) return { ...none, ran: true, note: 'the retry acted without a screenshot that came back with an image first' }
+  return { acted: true, ran: true, note: '', did: `vision (${a.type}): ${String(a.describe ?? a.description ?? a.reasoning ?? res?.message ?? '').slice(0, 120)}${a.coordinates ? ` at (${a.coordinates.join(',')})` : ''}`.trim() }
 }

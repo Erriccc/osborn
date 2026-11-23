@@ -108,7 +108,8 @@ case "$CMD" in
     file "$clip" 2>/dev/null | grep -q "MP4\|ISO Media" || { echo "DRIVE FAILED — no video for task $n after 3 tries (engine: $(head -c 160 "$clip" 2>/dev/null))" >&2; exit 4; }
     file "$shot" 2>/dev/null | grep -qi "jpeg\|jpg" || rm -f "$shot"
     noop=$(printf '%s' "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print((d.get('warning') or 'nothing matched') if d.get('code')=='noop' else '')" 2>/dev/null || true)
-    if [ -n "$noop" ]; then echo "task $n [$CMD]: NOOP — $noop (rephrase or check the FRAME)"; else echo "task $n [$CMD]: ok"; fi
+    unver=$(printf '%s' "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); e=d.get('effect') or {}; print((d.get('warning') or e.get('visionNote') or 'something ran, its effect is not confirmed') if d.get('code')=='unverified' else '')" 2>/dev/null || true)
+    if [ -n "$noop" ]; then echo "task $n [$CMD]: NOOP — $noop (rephrase or check the FRAME)"; elif [ -n "$unver" ]; then echo "task $n [$CMD]: UNVERIFIED — $unver (check the FRAME before retrying: it may already have acted)"; else echo "task $n [$CMD]: ok"; fi
     [ -n "$heard" ] && echo "  heard: $heard"
     [ -n "$nag" ] && echo "  ⚠ NAG: $nag"
     cont=$(printf '%s' "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('contention') or '')" 2>/dev/null || true)
@@ -117,6 +118,7 @@ case "$CMD" in
     echo "  VIDEO: $clip"
     [ -f "$shot" ] && echo "  FRAME: $shot"
     [ -n "$noop" ] && exit 5  # nothing happened: stop a chained run
+    [ -n "$unver" ] && exit 6  # something may have happened: stop a chained run, do not retry blindly
     ;;
   status|tasks|runs|logs)  cc --max-time 20 "$ENGINE/$CMD" ;;
   clip|artifact)           cc --max-time 60 "$ENGINE/$CMD?n=$ARG" -o "$OUT/pull-$ARG.${CMD/clip/mp4}"; echo "$OUT/pull-$ARG" ;;
