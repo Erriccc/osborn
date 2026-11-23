@@ -203,6 +203,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
+## What's new in v67
+- A driver that posts `/canvas`, `/tts` or `/noise-cancel` to an agent from another machine sends the owner's Bearer token (see `references/streaming.md`); the agent's own localhost curl needs nothing extra.
+
 ## What's new in v66
 - `/act` returns `tokens {prompt, completion, reasoning, total}` and `modelMs`, the model use of that act, and the task in `manifest.json` carries them. A cached replay normally reports 0 (more than 0 means Stagehand re-asked the model to heal it). Failed acts (`brain_error`, `brain_unavailable`) report them too.
 
