@@ -13,6 +13,7 @@
 import { flushSession } from '../loops-flush.js'
 import { fileableLoops, listLedgers, readLoopRecordsAt } from '../loops-ledger.js'
 import { readLastSession } from './lens-paths.js'
+import { isFollowThroughEnabled } from './lens-launch.js'
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(name)
@@ -20,6 +21,8 @@ function arg(name: string): string | undefined {
 }
 
 async function main(): Promise<number> {
+  // The kill switch also covers bin/cli.js's abnormal-exit spawn, which does not check it.
+  if (!isFollowThroughEnabled()) return 0
   const targets: Array<{ id: string; cwd: string }> = []
   if (process.argv.includes('--drain')) {
     for (const l of listLedgers()) {

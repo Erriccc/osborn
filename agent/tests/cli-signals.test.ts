@@ -1,6 +1,6 @@
 // Follow-through (#378) and #450: bin/cli.js run for real against a stub agent entry.
 // A signalled agent exits 128+signal (was 0) after an abnormal-exit flush; exit 1 stays 1 and
-// flushes; a clean exit is 0 with no flush; a stop signal to the parent is forwarded and exits 0.
+// flushes; a clean exit is 0 with no flush; a stop signal to the parent is forwarded; an agent that handles it exits 0.
 // Run: npx tsx agent/tests/cli-signals.test.ts
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -14,7 +14,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 const root = mkdtempSync(join(tmpdir(), 'cli-signals-test-'))
 mkdirSync(join(root, 'bin'))
 mkdirSync(join(root, 'dist', 'content'), { recursive: true })
-copyFileSync(join(here, '..', 'bin', 'cli.js'), join(root, 'bin', 'cli.js'))
+for (const f of ['cli.js', 'child-exit.js']) copyFileSync(join(here, '..', 'bin', f), join(root, 'bin', f))
 writeFileSync(join(root, 'package.json'), JSON.stringify({ type: 'module', version: '0.0.0' }))
 // The stub agent: behaviour chosen by STUB.
 writeFileSync(join(root, 'dist', 'index.js'), `
@@ -83,15 +83,15 @@ await t('SIGTERM to the parent is forwarded; the agent stops cleanly and the par
   assert.equal(r.flushed, false, 'the agent flushed in its own handler')
 })
 
-await t('a stop that kills an agent with no handler still exits 0 (stopping) and flushes', async () => {
+await t('a stop that kills an agent with no handler exits 128 + signal (superviseChild) and flushes', async () => {
   const r = await run('nohandle', 'SIGTERM')
-  assert.equal(r.code, 0)
+  assert.equal(r.code, 128 + constants.signals.SIGTERM)
   assert.equal(r.flushed, true)
 })
 
 await t('SIGINT is forwarded too', async () => {
   const r = await run('nohandle', 'SIGINT')
-  assert.equal(r.code, 0)
+  assert.equal(r.code, 128 + constants.signals.SIGINT)
 })
 
 rmSync(root, { recursive: true, force: true })
