@@ -1611,7 +1611,7 @@ export class ClaudeLLM extends llm.LLM {
       writeLastSession(sid, cwd)
       if (this.#loopRecapDone) return ''
       this.#loopRecapDone = true
-      return getFollowThroughRecap(takeLoopsRecap(cwd))
+      return getFollowThroughRecap(takeLoopsRecap(cwd, undefined, sid))
     } catch {
       return ''
     }
