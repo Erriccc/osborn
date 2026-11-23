@@ -173,7 +173,7 @@ Session picker scans ALL `~/.claude/projects/*/` folders via `listAllClaudeSessi
 | `lib/supabase*.ts` | Supabase client factories (browser, server, middleware) |
 | `app/api/token/route.ts` | LiveKit JWT token generation |
 | `app/api/instance/route.ts` | User instance CRUD (Supabase) |
-| `app/api/sandbox/route.ts` | Daytona sandbox CRUD + keepalive |
+| `app/api/sandbox/route.ts` | Sandbox CRUD (Sprites or Fly Machines) |
 | `app/dashboard/page.tsx` | Dashboard: recent chats, settings, agent health |
 | `app/chat/page.tsx` | Voice chat wrapper (resolves cloud or local agent URL) |
 | `app/page.tsx` | Landing page (OAuth + guest connect) |

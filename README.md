@@ -298,7 +298,7 @@ osborn/
 │   │   ├── app/
 │   │   │   ├── api/token/route.ts      # LiveKit JWT token generation
 │   │   │   ├── api/instance/route.ts   # User instance CRUD
-│   │   │   ├── api/sandbox/route.ts    # Daytona sandbox CRUD
+│   │   │   ├── api/sandbox/route.ts    # Sandbox CRUD (Sprites or Fly Machines)
 │   │   │   ├── dashboard/page.tsx      # Recent chats, settings, agent health
 │   │   │   ├── chat/page.tsx           # Voice chat wrapper
 │   │   │   └── page.tsx                # Landing page (OAuth + guest)

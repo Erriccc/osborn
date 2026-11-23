@@ -487,7 +487,6 @@ async function main() {
     eq(st.updates, [], 'a locked or refused call is not activity')
     eq(st.sent.length, 0, 'no email')
     eq(lines(), [code.CODE_DAILY_LIMIT_LINE], 'line')
-    eq(st.updates, [], 'a refused code step is not activity')
     eq(st.deleted, [ROOM], 'hung up')
   })
   await t('routeCall with callCode: a try given back unchecked -> "type it again", then a match connects', async () => {
