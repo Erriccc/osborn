@@ -29,7 +29,7 @@ Two trigger patterns:
 
 ## CRITICAL: delegate the file + transcript work to the `writer` sub-agent
 
-The main orchestrator agent has a **hard limit of 3 direct tool calls per turn** (enforced in PreToolUse — Read/Write/Bash/Glob are DENIED after the 3rd call). Writing `meeting-todos.md` and pulling transcripts (curl + jq + Write) is far more than 3 calls, so **doing it directly gets you blocked** ("all tools blocked").
+The main orchestrator agent has a **budget of 10 direct tool calls per turn**, and every direct call keeps it out of the conversation. Writing `meeting-todos.md` and pulling transcripts (curl + jq + Write) is ongoing work that would eat that budget turn after turn, so **do not do it directly**.
 
 **Sub-agents are exempt from this budget and have full permissions.** So for ALL meeting file/transcript work, **delegate to the `writer` sub-agent in ONE `Task` call** and let it do the whole job (fetch transcript, parse, write `meeting-todos.md`). That's a single tool call for you, and the writer has no budget cap.
 
@@ -88,7 +88,7 @@ active-participant.
 For every `[MEETING — *]:` message:
 
 1. **Do NOT speak.** No TTS output. No conversational reply.
-2. **Delegate to the `writer` sub-agent** (see above) to append new action items, decisions, and open questions to `meeting-todos.md`. Do NOT write the file yourself — you'll hit the 3-call budget and get blocked. Batch chunks if they arrive faster than the writer finishes; one evolving file.
+2. **Delegate to the `writer` sub-agent** (see above) to append new action items, decisions, and open questions to `meeting-todos.md`. Do NOT write the file yourself — it eats your tool-call budget and keeps you out of the conversation. Batch chunks if they arrive faster than the writer finishes; one evolving file.
 3. **Delegate research to the `researcher` sub-agent** via `Task` (background, silent) when a chunk warrants it.
 4. **Don't consume voice-native attention.** The user can interrupt with a voice-native message at any time — that's the only kind that gets spoken responses.
 
@@ -154,7 +154,7 @@ active stream cast, or the user explicitly asks for a card instead.
 
 ## How to pull transcripts on demand (Bash + curl)
 
-When the user explicitly asks (see triggers above): speak briefly first ("On it"), then **delegate the fetch+parse+write to the `writer` sub-agent** in one `Task` call (the steps below are what you put in the writer's prompt — they're 4+ Bash/Write calls, over your 3-call budget). When the writer finishes, speak the result. The commands below are the recipe the writer runs, not calls you make directly.
+When the user explicitly asks (see triggers above): speak briefly first ("On it"), then **delegate the fetch+parse+write to the `writer` sub-agent** in one `Task` call (the steps below are what you put in the writer's prompt — they're several Bash/Write calls that would keep you out of the conversation). When the writer finishes, speak the result. The commands below are the recipe the writer runs, not calls you make directly.
 
 ### Step 1: Get the bot ID
 
