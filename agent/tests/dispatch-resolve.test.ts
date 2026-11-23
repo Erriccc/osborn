@@ -98,7 +98,9 @@ t('the hub\'s query options include the dispatch tool (fresh per query); a slot\
   assert.equal(hubMcpServers(undefined), undefined, 'a slot passes no hubTools')
   const idx = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf-8')
   assert.doesNotMatch(idx.slice(idx.indexOf('const bgLLM = createClaudeLLM('), idx.indexOf('const slot = slots.add(')), /hubTools|mcpServers/)
-  assert.match(idx.slice(idx.indexOf('const directLLM = llmOverride'), idx.indexOf('const directLLM = llmOverride') + 400), /hubTools,/)
+  // both places index.ts builds the pipeline hub (connect, recovery) hand it hubTools
+  const sites = [...idx.matchAll(/createPipelineDirectLLM\(\{/g)].map((m) => idx.slice(m.index, m.index! + 400))
+  assert.equal(sites.length, 2); sites.forEach((s) => assert.match(s, /hubTools,/))
   const llm = readFileSync(new URL('../src/claude-llm.ts', import.meta.url), 'utf-8')
   assert.match(llm, /hubMcpServers\(this\.#opts\.hubTools\)/)
   assert.doesNotMatch(llm, /mcp__dispatch/, 'not in allowedTools')
