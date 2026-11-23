@@ -40,7 +40,7 @@
  * REWRITTEN ON EVERY EVENT — kill the engine at any point and the full task
  * index is already on disk. No continuous recordVideo (the old model grew
  * 1.3GB in 3 days and its index only wrote on a clean /end). Old runs are
- * pruned at startup (keep OSBORN_KEEP_RUNS, default 10).
+ * pruned at startup (keep OSBORN_KEEP_RUNS, default 30).
  *
  * TWO MODES:
  *  - DIRECTED: the user/agent drives via /act & /say, video proof per task.
@@ -1319,8 +1319,8 @@ async function main() {
         }
         if (!file || !existsSync(file)) {
           // A clip that failed after the reply carries its reason (#299).
-          if (path === '/artifact') { const m = artifactMissing(n, runParam, t, !!file && existsSync(file)); return json(res, { ...m, ok: false }, 404) }
-          const failed = path === '/clip' ? t?.clipError : null
+          if (path === '/artifact') return json(res, { ok: false, ...artifactMissing(n, runParam, t) }, 404)
+          const failed = t?.clipError
           return json(res, { error: failed ? `task ${n}'s clip failed: ${failed}` : `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs`, ...(failed ? { clipError: failed } : {}) }, 404)
         }
         res.writeHead(200, { 'Content-Type': path === '/clip' ? 'video/mp4' : 'image/jpeg', 'Content-Length': statSync(file).size })

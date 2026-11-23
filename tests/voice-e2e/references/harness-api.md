@@ -105,6 +105,7 @@ Every failure reply is `{ok:false, code, error, ...}`.
 | 409 | `no_own_tab` | `/tab close` or `navigate` with no `i`, and you own no tab besides tab 0; `/audio` for a /browser panel person with no tab |
 | 409 | `room_tab` | `/tab cast` of tab 0 (the voice room) |
 | 403 | `not_your_task` | `/clip` or `/artifact` of another driver's task, asked by a /browser panel person (`x-driver-id: person:…`) |
+| 404 | `task_unknown` / `no_frame_captured` / `frame_file_missing` | `/artifact`: no such task in that run; the task recorded no frame (screenshot and live stream frame both failed); its frame file is gone from disk |
 | 409 | `tab_owned` | the tab belongs to another driver (`/act`, `/say`, `/eval`, `/shot`, `/recover`, `/tab navigate\|release`) |
 | 409 | `not_your_tab` | `/input`, `/stream?tab=i` or `/tab cast` on a tab you neither opened nor took over; `/tab uncast` of someone else's cast |
 | 409 | `paused_by_supervisor` | your tab is taken over; retry after `retryAfterSec` |
