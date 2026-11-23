@@ -60,7 +60,7 @@ export async function GET() {
   // The stored status is only as fresh as the last write (a machine stopped by Fly's idle exit never updates
   // it), so ask Fly for the live state; a read that fails or takes over 6 s keeps the stored value.
   const live = new Map(await Promise.all(
-    [...new Set((instances ?? []).map((row) => row.sandbox_id as string | null).filter((id): id is string => !!id))].map(async (id) =>
+    Array.from(new Set((instances ?? []).map((row) => row.sandbox_id as string | null).filter((id): id is string => !!id))).map(async (id) =>
       [id, await Promise.race([readMachineActivity(id), new Promise<null>((r) => setTimeout(() => r(null), 6000))])] as const),
   ))
 
