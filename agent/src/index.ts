@@ -3250,6 +3250,9 @@ async function main() {
     // turn work, and a 'now' dispatch would abort the previous instruction mid-flight. Instructions queue/fold.
     slot.llm.pushMessage(instruction, slot.sdkOptions, { onSessionId: () => {}, onCheckpoint: () => {}, eventEmitter: slot.emitter })
     void sendToFrontend({ type: 'background_dispatched', sessionId: targetSessionId, instruction })
+    // Sent, so a queued item for it (this process's offer and the target project's ledger) is closed, whichever path sent it.
+    const doneCwd = opts.cwd ?? await resolveCwdForSession(targetSessionId, null)
+    if (doneCwd) { const project = opts.report?.project ?? basename(doneCwd); markQueuedStarted(doneCwd, project, instruction); queuedOfferer.started(project, instruction) }
     return { ok: true }
   }
 
@@ -3302,7 +3305,6 @@ async function main() {
     if (!cwd) return `Not sent: the ${pick.project} session's folder is gone.`
     if (!pick.ok) return `Not sent: ${pick.error}${keepQueued(pick.sessionId, cwd, instruction.trim(), pick.project)}`
     const sent = await dispatchToSlot(pick.sessionId, instruction.trim(), { cwd, report: { project: pick.project } })
-    if (sent.ok) { markQueuedStarted(cwd, pick.project, instruction.trim()); queuedOfferer.started(pick.project, instruction) }
     return sent.ok ? `Sent to ${pick.project}. Its result comes back as a notification.` : `Not sent: ${sent.error}`
   }
   const hubTools = dispatchServers(dispatchByName)

@@ -62,6 +62,19 @@ t('offer: no live turn, max 2 offers an hour apart, started stops it, full instr
   o.add('api', 'bad \u202e text')
   assert.equal(o.onSlotFree(), null, 'refused by the dispatch tool: never offered')
 })
+t('offer key matches the ledger id: a whitespace-different resend closes it', () => {
+  const o = O.makeOfferer({ hubIdle: () => true })
+  o.add('api', 'fix  the login bug'); o.started('api', 'fix the login bug')
+  assert.equal(o.onSlotFree(), null)
+})
+t('offer: re-adding does not reset the offer cap', () => {
+  let clock = 1_000_000
+  const o = O.makeOfferer({ hubIdle: () => true, now: () => clock })
+  o.add('api', 'again'); assert.ok(o.onSlotFree())
+  o.add('api', 'again'); clock += 61 * 60_000
+  assert.ok(o.onSlotFree(), 'second offer'); clock += 61 * 60_000
+  assert.equal(o.onSlotFree(), null, 'a re-add did not give it a third')
+})
 t('the offer rides in the spoke report as quoted data, still a non-steering notification', () => {
   const r = getSpokeReport({ project: 'p', sessionId: 'abcdef123', status: 'done', summary: 'ok', offer: { project: 'api', instruction: 'say "hi"\nthen stop' } })
   assert.ok(r.startsWith('[NOTIFICATION] Spoke report.'))

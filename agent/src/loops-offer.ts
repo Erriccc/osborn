@@ -4,6 +4,7 @@
  * starts one: the hub asks the user and calls mcp__dispatch__send only on a yes (approval mode applies).
  */
 import { dispatchFieldsOk } from './dispatch.js'
+import { queuedLoopRecord } from './loops-ledger.js'
 
 const OFFER_REPEAT_MS = 60 * 60 * 1000
 const MAX_OFFERS = 2
@@ -11,10 +12,10 @@ const MAX_OFFERS = 2
 export function makeOfferer(deps: { hubIdle: () => boolean; now?: () => number }) {
   const items = new Map<string, { project: string; instruction: string; offers: number; last: number }>()
   const now = deps.now ?? Date.now
-  const key = (project: string, instruction: string) => `${project}\n${instruction.trim()}`
+  const key = (project: string, instruction: string) => queuedLoopRecord(instruction, project).id!
   return {
     /** Remember an item this process queued, with its full (already validated) instruction. */
-    add(project: string, instruction: string): void { if (dispatchFieldsOk(project, instruction)) items.set(key(project, instruction), { project, instruction: instruction.trim(), offers: 0, last: -Infinity }) },
+    add(project: string, instruction: string): void { const k = key(project, instruction); if (dispatchFieldsOk(project, instruction) && !items.has(k)) items.set(k, { project, instruction: instruction.trim(), offers: 0, last: -Infinity }) },
     /** The hub sent it: stop offering. */
     started(project: string, instruction: string): void { items.delete(key(project, instruction)) },
     /** The oldest item due an offer, or null. At most 2 offers per item, an hour apart, never during a live turn. */
