@@ -57,7 +57,7 @@ import { clearPipelineFastBrainSession, prewarmBM25Index, probeFastBrain, fastBr
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { loopIds, queuedLoopRecord } from './loops-ledger.js'
+import { loopIds, appendQueuedLoop } from './loops-ledger.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport } from './prompts.js'
@@ -3070,7 +3070,7 @@ async function main() {
   // Output events are forwarded to the frontend data channel only,
   // tagged with the slot id so the frontend can distinguish them.
   // ============================================================
-  async function spawnBackgroundSession(sessionId: string, bgWorkingDir?: string, queuedFor?: { instruction: string; project: string }): Promise<void> {
+  async function spawnBackgroundSession(sessionId: string, bgWorkingDir?: string): Promise<void> {
     // Foreground, duplicate and cap checks (slots.admit); add() below follows with no await between.
     // Never background the LIVE foreground session: two Claude processes appending to the same
     // session JSONL corrupt the transcript.
@@ -3078,7 +3078,6 @@ async function main() {
     if (!seat.ok) {
       console.warn(`⚠️ spawnBackgroundSession: ${seat.error}`)
       ;(currentLLM as any)?.recordLoop?.({ kind: 'slot_refused', id: loopIds.slot(sessionId), text: `Background session was refused: ${sessionId.slice(0, 8)} (${seat.error})`, source: 'inferred', origin: 'system' })
-      if (seat.reason === 'cap' && queuedFor) (currentLLM as any)?.recordLoop?.({ ...queuedLoopRecord(queuedFor.instruction, queuedFor.project), cwd: bgWorkingDir })
       await sendToFrontend({ type: 'background_session_error', slotId: sessionId, error: seat.error })
       return
     }
@@ -3217,7 +3216,13 @@ async function main() {
     if (targetSessionId === focusedId) return fail('Target is the focused session — use the normal path')
     const spawned = !slots.has(targetSessionId)
     if (spawned) {
-      try { await spawnBackgroundSession(targetSessionId, opts.cwd, { instruction, project: opts.report?.project ?? basename(opts.cwd || workingDir) }) } catch (err) { return fail(err instanceof Error ? err.message : String(err)) }
+      // Full: nothing starts. The instruction is kept as a queued item in the target project's own ledger (#378), typed here by the user.
+      const seat = slots.admit(targetSessionId)
+      if (!seat.ok && seat.reason === 'cap') {
+        const cwd = opts.cwd ?? await resolveCwdForSession(targetSessionId, null)
+        if (cwd) appendQueuedLoop(targetSessionId, cwd, instruction, opts.report?.project ?? basename(cwd), { typed: !opts.report })
+      }
+      try { await spawnBackgroundSession(targetSessionId, opts.cwd) } catch (err) { return fail(err instanceof Error ? err.message : String(err)) }
     }
     const slot = slots.get(targetSessionId)
     if (!slot || !slot.emitter || !slot.sdkOptions) return fail('Slot not ready')
@@ -3283,7 +3288,14 @@ async function main() {
     const pick = resolveDispatchTarget(project.trim(), await listAllClaudeSessions(1000), {
       seat: (id) => slots.admit(id), slotState: targetSlotState, dirExists: existsSync, ownWriteAt: (id) => spokeFreedAt.get(id),
     })
-    if (!pick.ok) return `Not sent: ${pick.error}`
+    if (!pick.ok) {
+      // At the slot cap the instruction is kept, in the target project's own ledger, not the hub's (#378). It does not start.
+      if (pick.reason === 'cap' && pick.sessionId && pick.cwd) {
+        const saved = appendQueuedLoop(pick.sessionId, pick.cwd, instruction.trim(), pick.project || basename(pick.cwd))
+        return `Not sent: ${pick.error}${saved ? ` It is saved as a queued item for ${pick.project}; it has not started.` : ''}`
+      }
+      return `Not sent: ${pick.error}`
+    }
     const cwd = await resolveCwdForSession(pick.sessionId, pick.cwd)
     if (!cwd) return `Not sent: the ${pick.project} session's folder is gone.`
     const sent = await dispatchToSlot(pick.sessionId, instruction.trim(), { cwd, report: { project: pick.project } })

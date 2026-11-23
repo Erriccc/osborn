@@ -36,7 +36,8 @@ t('the focused session is refused', () => {
 })
 t('a full slot cap and a busy existing slot are refused; an idle one is reused', () => {
   const full = new SlotRegistry({ max: 1 }); full.add({ id: 'x', llm: {}, isFocused: false, workingDir: '/w' })
-  assert.equal(resolveDispatchTarget('osborn', sessions, free(null, 'none', full)).ok, false)
+  const capped = resolveDispatchTarget('osborn', sessions, free(null, 'none', full))
+  assert.equal(capped.ok, false); assert.equal(capped.reason, 'cap'); assert.equal(capped.sessionId, 'new-osborn'); assert.equal(capped.cwd, '/work/osborn'); assert.equal(capped.project, 'osborn')
   const mine = new SlotRegistry({ max: 2 }); mine.add({ id: 'new-osborn', llm: {}, isFocused: false, workingDir: '/w' })
   assert.equal(resolveDispatchTarget('osborn', sessions, free(null, 'busy', mine)).ok, false)
   assert.equal(resolveDispatchTarget('osborn', sessions, free(null, 'idle', mine)).ok, true)

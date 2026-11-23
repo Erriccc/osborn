@@ -142,31 +142,66 @@ t('background (non-foreground) records are never fileable', () => {
   assert.deepEqual(L.fileableLoops(rs).map((i) => i.id), ['todo:f'])
 })
 
+
+t('queued: model-written is inferred, not explicit; typed text may be explicit', () => {
+  const r = L.queuedLoopRecord('fix the login bug in osborn', 'osborn')
+  assert.equal(r.source, 'inferred'); assert.equal(r.origin, 'tool')
+  const it = L.foldLoops([rec({ ...r } as any)]).get(r.id!)!
+  assert.equal(it.kind, 'queued'); assert.equal(it.source, 'inferred')
+  assert.deepEqual(open([rec({ ...r } as any)]), [r.id])
+  const typed = L.queuedLoopRecord('fix it', 'osborn', { typed: true })
+  assert.equal(L.foldLoops([rec({ ...typed } as any)]).get(typed.id!)!.source, 'explicit')
+})
+
+t('queued: long instruction keeps a startable body, short ellipsized title, project in the id', () => {
+  const long = 'do the thing '.repeat(100)
+  const r = L.queuedLoopRecord(long, 'osborn')
+  assert.ok(r.text!.length <= L.MAX_ITEM_CHARS && r.text!.endsWith('…') && r.text!.startsWith('Queued for osborn'))
+  assert.ok(r.instruction!.length > 500 && r.instruction!.length <= 800)
+  assert.notEqual(L.queuedLoopRecord('same', 'osborn').id, L.queuedLoopRecord('same', 'audos').id)
+})
+
+t('queued: appendQueuedLoop writes into the target project ledger (not the hub), with a session line, survives restart, filed once', () => {
+  const hub = join(root, 'hub'), target = join(root, 'target')
+  assert.ok(L.appendQueuedLoop('tsess', target, 'ship the report', 'target'))
+  assert.ok(L.appendQueuedLoop('tsess', target, 'ship the report', 'target'))
+  assert.deepEqual(L.readLoopRecords('tsess', hub), [])
+  const rs = L.readLoopRecords('tsess', target)
+  assert.equal(rs.filter((r) => r.kind === 'session').length, 1)
+  assert.equal(rs.find((r) => r.kind === 'session')!.cwd, target)
+  const items = L.fileableLoops(rs)
+  assert.equal(items.length, 1); assert.equal(items[0].kind, 'queued'); assert.equal(items[0].source, 'inferred')
+  L.appendLoopRecord('tsess', target, { kind: 'filed', id: items[0].id, url: 'https://x/1' })
+  assert.deepEqual(L.fileableLoops(L.readLoopRecords('tsess', target)), [])
+})
+
+// The real spoken path: resolveDispatchTarget refuses at the cap, the hub's dispatch handler keeps the instruction in the
+// TARGET project's ledger, and the flush files it to that project's repo (never the hub's), as an inferred item.
+{
+  const { SlotRegistry } = await import('../src/slot-manager.js')
+  const { resolveDispatchTarget } = await import('../src/dispatch.js')
+  const { flushSession } = await import('../src/loops-flush.js')
+  const full = new SlotRegistry({ max: 1 }); full.add({ id: 'x', llm: {}, isFocused: false, workingDir: '/w' })
+  const pick = resolveDispatchTarget('audos', [{ sessionId: 'aud-1', cwd: '/work/audos', timestamp: new Date(2026, 10, 1) }],
+    { seat: (id) => full.admit(id), slotState: () => 'none', dirExists: () => true, now: Date.UTC(2026, 11, 1) })
+  t('spoken path: the cap refusal carries target, and queuing lands in the target ledger', () => {
+    assert.equal(pick.ok, false); assert.equal(pick.reason, 'cap'); assert.equal(pick.sessionId, 'aud-1'); assert.equal(pick.cwd, '/work/audos')
+    assert.ok(L.appendQueuedLoop(pick.sessionId!, pick.cwd!, 'add dark mode', pick.project!))
+    assert.equal(L.readLoopRecords(pick.sessionId!, pick.cwd!).filter((r) => r.kind === 'queued').length, 1)
+    assert.deepEqual(L.readLoopRecords('hub-sess', '/work/hub'), [])
+  })
+  const posts: any[] = []
+  const fetchFn = (async (_u: any, init: any) => {
+    const body = JSON.parse(init.body); posts.push(body)
+    return { status: 200, json: async () => ({ results: body.items.map((i: any) => ({ key: i.key, action: 'created', url: 'https://github.com/me/audos/issues/1' })) }) }
+  }) as any
+  const flushed = await flushSession('aud-1', '/work/audos', { fetchFn, syncToken: 'x', frontendUrl: 'http://127.0.0.1:9', repoFor: (c) => (c === '/work/audos' ? 'me/audos' : 'me/hub') })
+  t('spoken path: flush files it to the target project repo as inferred, once', () => {
+    assert.equal(flushed.status, 'done'); assert.equal(flushed.filed, 1)
+    assert.equal(posts.length, 1); assert.equal(posts[0].repo, 'me/audos')
+    assert.equal(posts[0].items[0].kind, 'queued'); assert.equal(posts[0].items[0].source, 'inferred'); assert.equal(posts[0].items[0].origin, 'tool')
+  })
+}
+
 rmSync(root, { recursive: true, force: true })
 console.log(`\n${pass} passed`)
-
-t('queued: fold round-trip, open, fileable, kept as its own kind', () => {
-  const r = L.queuedLoopRecord('fix the login bug in osborn', 'osborn')
-  const rs = [rec({ ...r } as any)]
-  const it = L.foldLoops(rs).get(r.id!)!
-  assert.equal(it.kind, 'queued'); assert.equal(it.source, 'explicit'); assert.equal(it.text, 'fix the login bug in osborn')
-  assert.deepEqual(open(rs), [r.id])
-  assert.deepEqual(L.fileableLoops(rs).map((i) => i.id), [r.id])
-  assert.notEqual(r.id, L.loopIds.slot('fix the login bug in osborn'))
-})
-
-t('queued: survives a restart (re-read from the JSONL) and is filed once', () => {
-  const sid = 'sess-queued', cwd = join(root, 'proj')
-  const r = L.queuedLoopRecord('ship the report', 'osborn')
-  assert.ok(L.appendLoopRecord(sid, cwd, { ...r, fg: true }))
-  assert.ok(L.appendLoopRecord(sid, cwd, { kind: 'slot_refused', id: L.loopIds.slot(sid), text: 'refused', fg: true }))
-  const again = L.readLoopRecords(sid, cwd)
-  assert.deepEqual(open(again), [r.id, L.loopIds.slot(sid)].sort())
-  assert.equal(L.foldLoops(again).get(r.id!)!.kind, 'queued')
-  L.appendLoopRecord(sid, cwd, { kind: 'filed', id: r.id, url: 'https://x/1' })
-  const done = L.readLoopRecords(sid, cwd)
-  assert.deepEqual(open(done), [L.loopIds.slot(sid)])
-  assert.equal(L.foldLoops(done).get(r.id!)!.kind, 'queued')
-  L.appendLoopRecord(sid, cwd, { ...r, fg: true })  // same instruction refused again: same id, still filed
-  assert.ok(!open(L.readLoopRecords(sid, cwd)).includes(r.id!))
-})

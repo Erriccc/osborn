@@ -64,8 +64,9 @@ export interface LoopRecord {
   by?: 'user' | 'abort'
   url?: string
   cwd?: string
-  /** `queued`: the project the instruction was meant for. */
+  /** `queued`: the project the instruction was meant for, and the instruction itself (`text` is a short title). */
   project?: string
+  instruction?: string
   /** `held`: the repo that held the item back (public or unknown visibility). */
   repo?: string
   truncated?: boolean
@@ -242,10 +243,30 @@ export const loopIds = {
   steward: () => 'steward',
 }
 
-/** The record for an instruction refused at slot capacity: carries the text and project so it can start later. */
-export function queuedLoopRecord(instruction: string, project: string): LoopRecordInput {
-  const text = String(instruction || '').trim().slice(0, MAX_ITEM_CHARS)
-  return { kind: 'queued', id: loopIds.queued(project, text), text, project, source: 'explicit', origin: 'user_mic' }
+const MAX_QUEUED_INSTRUCTION = 800
+const clipEllipsis = (s: string, n: number): string => (s.length > n ? s.slice(0, n - 1) + '…' : s)
+
+/**
+ * The record for an instruction refused at slot capacity. `text` is a short title; `instruction` keeps enough
+ * to start it later. The hub model wrote the instruction, so it is inferred; only text the user typed
+ * themselves (`typed`) is explicit.
+ */
+export function queuedLoopRecord(instruction: string, project: string, opts: { typed?: boolean } = {}): LoopRecordInput {
+  const full = clipEllipsis(String(instruction || '').replace(/\s+/g, ' ').trim(), MAX_QUEUED_INSTRUCTION)
+  const typed = opts.typed === true
+  return {
+    kind: 'queued', id: loopIds.queued(project, full), text: clipEllipsis(`Queued for ${project}: ${full}`, MAX_ITEM_CHARS), instruction: full, project,
+    source: typed ? 'explicit' : 'inferred', origin: typed ? 'user_mic' : 'tool',
+  }
+}
+
+/**
+ * Keep a refused instruction in the TARGET project's ledger (its session `sessionId` under `cwd`), so the flush
+ * files it to that project's own repo and never to the hub's. Writes the ledger's `session` line when missing.
+ */
+export function appendQueuedLoop(sessionId: string, cwd: string, instruction: string, project: string, opts: { typed?: boolean } = {}): boolean {
+  if (!readLoopRecords(sessionId, cwd).some((r) => r.kind === 'session' && r.cwd)) appendLoopRecord(sessionId, cwd, { kind: 'session', cwd, fg: true })
+  return appendLoopRecord(sessionId, cwd, { ...queuedLoopRecord(instruction, project, opts), fg: true })
 }
 
 // ── IO ──────────────────────────────────────────────────────────────────────
