@@ -2,6 +2,7 @@
  * phone-calls.ts — route one inbound phone call (#361) to the caller's agent.
  * Server-only; called from the LiveKit webhook (/api/phone/livekit).
  */
+import { createHmac } from 'node:crypto'
 import { IngressClient, IngressInput, RoomServiceClient } from 'livekit-server-sdk'
 import { checkSandboxClaim, serviceClient } from '@/lib/sandbox-claims'
 import { connectUserAgent } from '@/lib/connect-agent'
@@ -23,8 +24,10 @@ const FAILED_HANGUP_MS = 7_000
 const livekitHost = () => process.env.LIVEKIT_URL || process.env.NEXT_PUBLIC_LIVEKIT_URL
 
 const roomService = (host: string) => new RoomServiceClient(host, process.env.LIVEKIT_API_KEY, process.env.LIVEKIT_API_SECRET)
-// A line spoken by the agent's own /tts.
-const agentLine = (agentUrl: string, text: string) => `${agentUrl}/tts?text=${encodeURIComponent(text)}`
+// A line spoken by the agent's own /tts. LiveKit's ingress fetches it with no headers, so it carries a
+// signature (agent canvas-key.ts ttsLineSig) that only lets this exact text be spoken.
+const agentLine = (agentUrl: string, syncToken: string, text: string) =>
+  `${agentUrl}/tts?text=${encodeURIComponent(text)}&sig=${createHmac('sha256', syncToken).update(`tts:${text}`).digest('base64url')}`
 
 async function hangUp(roomName: string): Promise<void> {
   const host = livekitHost()
@@ -97,8 +100,9 @@ async function codeStep(
   userId: string,
   roomName: string,
   agentUrl: string,
+  syncToken: string,
 ): Promise<'connected' | 'rejected'> {
-  const line = (text: string) => agentLine(agentUrl, text)
+  const line = (text: string) => agentLine(agentUrl, syncToken, text)
   const sent = await startCallCode(admin, userId, roomName)
   if (sent === 'already-open') return 'connected'
   if (sent !== 'sent') {
@@ -184,9 +188,9 @@ export async function routeCall(
     } finally {
       await (await hold.playing)?.()
     }
-    if (r.ok) return r.callCode ? await codeStep(admin, userId, call.roomName, r.agentUrl) : 'connected'
+    if (r.ok) return r.callCode ? await codeStep(admin, userId, call.roomName, r.agentUrl, syncToken) : 'connected'
     if (r.reason === 'busy') {
-      await sayThenHangUp(call.roomName, 'busy', r.agentUrl && agentLine(r.agentUrl, BUSY_LINE), BUSY_HANGUP_MS)
+      await sayThenHangUp(call.roomName, 'busy', r.agentUrl && agentLine(r.agentUrl, syncToken, BUSY_LINE), BUSY_HANGUP_MS)
       return 'busy'
     }
     console.warn(`[phone] could not bring the agent into ${call.roomName}: ${r.reason}`)

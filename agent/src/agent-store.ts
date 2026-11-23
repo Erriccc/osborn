@@ -231,6 +231,11 @@ export function describeAgents(core: CoreAgents, user: Record<string, AgentDef> 
 const LOOPBACK_HOST = /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/
 const LOOPBACK_ADDR = /^(127\.|::1$|::ffff:127\.)/
 
+/** True for a request made from this machine itself: a loopback name and address, not forwarded. */
+export function isThisMachine(r: { forwarded: boolean; host?: string; remote?: string }): boolean {
+  return !r.forwarded && LOOPBACK_HOST.test(r.host || '') && LOOPBACK_ADDR.test(r.remote || '')
+}
+
 /** Browser origins allowed to make store writes on a machine with no sync token: a local
  *  page, voice-native.com, or the frontend the agent is configured with. No Origin = not a
  *  browser cross-site request. Also decides which origin the write routes' CORS echoes. */
@@ -252,8 +257,7 @@ export function storeWriteRefusal(r: {
   origin?: string; contentType?: string; frontendUrl: string; read?: boolean
 }): { status: number; error: string } | null {
   if (!r.hasToken) {
-    if (r.publicDeploy || r.forwarded || !LOOPBACK_HOST.test(r.host || '')) return { status: 403, error: 'this machine is reachable from outside: set OSBORN_SYNC_TOKEN to use the store' }
-    if (!LOOPBACK_ADDR.test(r.remote || '')) return { status: 403, error: 'the store needs the sync token or a request from this machine' }
+    if (r.publicDeploy || !isThisMachine(r)) return { status: 403, error: 'the store needs the sync token or a request from this machine (a machine reachable from outside must set OSBORN_SYNC_TOKEN)' }
     if (!storeWriteOriginAllowed(r.origin, r.frontendUrl)) return { status: 403, error: 'the store is refused from this site' }
   }
   if (!r.read && !/^application\/json\b/i.test(r.contentType || '')) return { status: 415, error: 'send JSON (Content-Type: application/json)' }

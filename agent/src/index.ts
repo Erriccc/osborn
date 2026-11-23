@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
 import { randomUUID, randomBytes, createHmac } from 'node:crypto'
-import { newCanvasKey, secretMatches, withCanvasKey } from './canvas-key.js'
+import { newCanvasKey, secretMatches, withCanvasKey, canvasRouteAllowed, ttsLineSig } from './canvas-key.js'
 import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
 
@@ -695,6 +695,8 @@ function startApiServer(workingDir: string, port: number): void {
     const url = new URL(req.url || '/', `http://localhost:${port}`)
 
     const syncToken = process.env.OSBORN_SYNC_TOKEN
+    const forwarded = !!(req.headers['x-forwarded-for'] || req.headers['x-forwarded-host'])
+    const bearerOk = secretMatches(syncToken ? `Bearer ${syncToken}` : null, req.headers['authorization'])
 
     // Fail-closed auth for the sensitive session/ops routes. Requires
     // `Authorization: Bearer <OSBORN_SYNC_TOKEN>` whenever we're on a cloud
@@ -705,12 +707,25 @@ function startApiServer(workingDir: string, port: number): void {
     // open on any machine that hadn't set a token).
     const unauthorized = (): boolean => {
       const requireAuth = !!process.env.FLY_APP_NAME || !!syncToken
-      if (requireAuth && req.headers['authorization'] !== `Bearer ${syncToken}`) {
+      if (requireAuth && !bearerOk) {
         res.writeHead(401, { 'Content-Type': 'application/json' })
         res.end(JSON.stringify({ error: 'Unauthorized' }))
         return true
       }
       return false
+    }
+
+    // Who may call the canvas routes and /report-bug: canvasRouteAllowed (canvas-key.ts). The meeting key opens only /canvas-stream and /tts, the two the canvas page uses.
+    const canvasRefused = (): boolean => {
+      const ok = canvasRouteAllowed({
+        bearerOk,
+        lineOk: url.pathname === '/tts' && !!syncToken && secretMatches(ttsLineSig(syncToken, url.searchParams.get('text') || ''), url.searchParams.get('sig')),
+        key: canvasKey, k: url.pathname === '/canvas-stream' || url.pathname === '/tts' ? url.searchParams.get('k') : null,
+        forwarded,
+        host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin as string | undefined,
+      })
+      if (!ok) { res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Unauthorized' })) }
+      return !ok
     }
 
     if (req.method === 'GET' && url.pathname === '/sessions') {
@@ -819,7 +834,7 @@ function startApiServer(workingDir: string, port: number): void {
       const refusal = storeWriteRefusal({ read,
         hasToken: !!syncToken,
         publicDeploy: !!process.env.FLY_APP_NAME || !!process.env.OSBORN_PUBLIC_HOST,
-        forwarded: !!(req.headers['x-forwarded-for'] || req.headers['x-forwarded-host']),
+        forwarded,
         host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin,
         contentType: String(req.headers['content-type'] || ''), frontendUrl: osbornFrontendUrl(),
       })
@@ -1124,6 +1139,7 @@ function startApiServer(workingDir: string, port: number): void {
     // owns the actual Supabase write (it already has the keys for the log-upload
     // flow, no need to ship them to the Fly machine).
     if (req.method === 'POST' && url.pathname === '/report-bug') {
+      if (canvasRefused()) return
       let body = ''
       req.on('data', (chunk: Buffer) => { body += chunk.toString() })
       req.on('end', () => {
@@ -1225,6 +1241,7 @@ function startApiServer(workingDir: string, port: number): void {
     // becomes what the meeting sees + hears. On connect we resync the current
     // visual so a page reload doesn't blank the bot's camera.
     if (req.method === 'GET' && url.pathname === '/canvas-stream') {
+      if (canvasRefused()) return
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -1246,6 +1263,7 @@ function startApiServer(workingDir: string, port: number): void {
     // webpage output pipes it into the meeting — speechSynthesis is NOT
     // captured by Recall, page audio IS.
     if (req.method === 'GET' && url.pathname === '/tts') {
+      if (canvasRefused()) return
       const text = (url.searchParams.get('text') || '').slice(0, 4000)
       if (!text) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no text' })); return }
       const t0 = Date.now()
@@ -1265,6 +1283,7 @@ function startApiServer(workingDir: string, port: number): void {
     // ── Meeting canvas: control endpoint (director / agent tool) ─────────────
     // POST /canvas  { kind:'say', text } | { kind:'show', mode, title?, items?, url?, text? }
     if (req.method === 'POST' && url.pathname === '/canvas') {
+      if (canvasRefused()) return
       let body = ''
       req.on('data', (c) => { body += c })
       req.on('end', () => {
@@ -7530,10 +7549,9 @@ async function main() {
           // verbatim; a direct hit to /editor without it is refused (RCE fix).
           const editorTok = mintEditorToken()
           const tokQs = editorTok ? `?t=${encodeURIComponent(editorTok)}` : ''
-          const ideUrl = (process.env.FLY_APP_NAME
-            ? `https://${flyAppHost}/editor`
-            : `http://${flyAppHost}/editor`) + tokQs
-          console.log(`✅ IDE proxy ready: ${process.env.FLY_APP_NAME ? `https://${flyAppHost}/editor` : ideUrl}${editorTok ? ' (token-gated)' : ''}`)
+          const ideBase = `${process.env.FLY_APP_NAME ? 'https' : 'http'}://${flyAppHost}/editor`
+          const ideUrl = ideBase + tokQs
+          console.log(`✅ IDE proxy ready: ${ideBase}${editorTok ? ' (token-gated)' : ''}`)
           // The URL carries the editor token (remote code execution on this machine): only the requester gets it.
           await sendToFrontend({ type: 'ide_ready', url: ideUrl }, opts.sender)
         } catch (err: any) {

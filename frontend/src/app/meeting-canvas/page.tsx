@@ -9,8 +9,8 @@
  * hears. It's a pure presentational surface driven entirely by the osborn agent
  * over Server-Sent Events — no LiveKit, no auth (Recall loads it server-side).
  *
- * URL: /meeting-canvas?agent=<https-agent-url>&k=<meeting key, added by the agent; sent to /canvas-token>
- *   Opens EventSource(`${agent}/canvas-stream`) and reacts to:
+ * URL: /meeting-canvas?agent=<https-agent-url>&k=<meeting key, added by the agent; sent to /canvas-token, /canvas-stream and /tts>
+ *   Opens EventSource(`${agent}/canvas-stream?k=…`) and reacts to:
  *     { kind:'say',  text }                         → speechSynthesis → meeting hears it
  *     { kind:'show', mode:'idle'|'notes'|'link'|'web'|'text', title?, items?, url?, text? }
  *
@@ -108,6 +108,7 @@ function stopTTS() {
 function CanvasInner() {
   const params = useSearchParams()
   const agent = params.get('agent') || ''
+  const k = encodeURIComponent(params.get('k') || '')
   const [show, setShow] = useState<Show>({ mode: 'idle' })
   const [caption, setCaption] = useState<string>('')
   const [connected, setConnected] = useState(false)
@@ -125,7 +126,7 @@ function CanvasInner() {
     let cancelled = false
     ;(async () => {
       try {
-        const r = await fetch(`${base}/canvas-token?k=${encodeURIComponent(params.get('k') || '')}`, { signal: AbortSignal.timeout(10000) })
+        const r = await fetch(`${base}/canvas-token?k=${k}`, { signal: AbortSignal.timeout(10000) })
         if (!r.ok) return // agent pre-parity or no room — SSE path handles it
         const { token, url } = await r.json()
         if (!token || !url || cancelled) return
@@ -162,7 +163,7 @@ function CanvasInner() {
     let cancelled = false
     ;(async () => {
       try {
-        const r = await fetch(`${base}/canvas-token?k=${encodeURIComponent(params.get('k') || '')}`, { signal: AbortSignal.timeout(10000) })
+        const r = await fetch(`${base}/canvas-token?k=${k}`, { signal: AbortSignal.timeout(10000) })
         if (!r.ok) return // agent pre-parity or no room — SSE path handles it
         const { token, url } = await r.json()
         if (!token || !url || cancelled) return
@@ -191,7 +192,7 @@ function CanvasInner() {
     try { window.speechSynthesis?.getVoices() } catch { /* ignore */ }
     if (!agent) return
     const base = agent.replace(/\/$/, '')
-    const es = new EventSource(`${base}/canvas-stream`)
+    const es = new EventSource(`${base}/canvas-stream?k=${k}`)
     es.onopen = () => setConnected(true)
     es.onerror = () => setConnected(false)
     es.onmessage = (e) => {
@@ -216,7 +217,7 @@ function CanvasInner() {
         // page is rendering in "web" mode). Recall's webpage output captures the
         // audio-graph output into the meeting. Fall back to browser speech only if
         // Web Audio / the endpoint fails.
-        playTTS(`${base}/tts?text=${encodeURIComponent(sayText)}`).catch(() => speak(sayText))
+        playTTS(`${base}/tts?k=${k}&text=${encodeURIComponent(sayText)}`).catch(() => speak(sayText))
         setCaption(sayText)
         if (captionTimer.current) clearTimeout(captionTimer.current)
         // Hold the caption roughly as long as it takes to speak (~12 chars/sec).

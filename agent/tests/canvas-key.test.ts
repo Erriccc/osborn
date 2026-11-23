@@ -43,10 +43,39 @@ assert.ok(src.includes('const authSend = (type: string, payload: unknown) => sen
 assert.equal((src.match(/(ensureClaudeAuth|replayInFlightAuth|startClaudeAuthOnDemand)\(\(/g) ?? []).length, 0, 'no auth callback bypasses sendAuthEvent')
 
 const page = readFileSync(new URL('../../frontend/src/app/meeting-canvas/page.tsx', import.meta.url), 'utf8')
-assert.equal((page.match(/canvas-token\?k=\$\{encodeURIComponent\(params\.get\('k'\)/g) ?? []).length, 2, 'both canvas-token fetches send the page key')
+assert.equal((page.match(/canvas-token\?k=\$\{k\}/g) ?? []).length, 2, 'both canvas-token fetches send the page key')
+assert.ok(page.includes("const k = encodeURIComponent(params.get('k') || '')"), 'the page parses its key once')
 assert.ok(/sendToFrontend\(\{ type: 'ide_ready', url: ideUrl \}, opts\.sender\)/.test(src), 'the editor token URL goes only to the requester')
 const join = src.slice(src.indexOf('Recall.ai join error'), src.indexOf('Recall.ai join error') + 200)
 assert.ok(join.includes('canvasKey = null'), 'a failed join leaves no live key')
 const rc = readFileSync(new URL('../src/recall-client.ts', import.meta.url), 'utf8')
 assert.ok(!/\$\{opts(\?|!)?\.castUrl\}/.test(rc), 'the recall client never logs the raw cast URL (it carries the key)')
 console.log('canvas-key: ok')
+
+// The canvas routes and /report-bug: owner token, the live meeting's key, or this machine itself.
+import { canvasRouteAllowed, ttsLineSig } from '../src/canvas-key.js'
+const local = { forwarded: false, host: 'localhost:8741', remote: '127.0.0.1' }
+const stranger = { forwarded: true, host: 'm.fly.dev', remote: '172.16.0.1' }
+const ask = (o: object) => canvasRouteAllowed({ bearerOk: false, key: k, k: null, ...stranger, ...o } as any)
+assert.equal(ask({}), false, 'a stranger at the public address is refused')
+assert.equal(ask({ bearerOk: true }), true, 'the owner token')
+assert.equal(ask({ k }), true, 'the live meeting key')
+assert.equal(ask({ k: 'wrong' }), false, 'a wrong key')
+assert.equal(ask({ key: null, k }), false, 'no live meeting: a key proves nothing')
+assert.equal(ask({ lineOk: true }), true, 'a signed phone line (an ingress fetch has no headers)')
+assert.equal(ttsLineSig('tok-123', 'hi'), '3CbAFahcW54n_pvLyHf2TuUPPCfh8eMy8rd-iVnTRuE', 'pinned: the frontend signs phone lines with this same formula (phone-calls.test.ts checks the same value)')
+assert.notEqual(ttsLineSig('tok', 'one line'), ttsLineSig('tok', 'another line'), 'a signature only speaks its own text')
+assert.notEqual(ttsLineSig('tok', 'one line'), ttsLineSig('other', 'one line'), 'and only for its machine')
+assert.equal(ask(local), true, "the agent's own curl")
+assert.equal(ask({ ...local, remote: '::1' }), true, 'loopback over IPv6')
+assert.equal(ask({ ...local, forwarded: true }), false, 'a tunnelled request is not this machine')
+assert.equal(ask({ ...local, host: 'm.fly.dev' }), false, 'a public name is not this machine')
+assert.equal(ask({ ...local, origin: 'https://evil.example' }), false, 'a web page in a browser on this machine')
+for (const r of ['/canvas', '/canvas-stream', '/tts', '/report-bug']) {
+  const i = src.indexOf(`url.pathname === '${r}') {`)
+  assert.ok(src.slice(i, i + 140).includes('canvasRefused()'), `${r} checks access first`)
+}
+assert.ok(!/console\.log\([^\n]*IDE proxy ready[^\n]*\bideUrl\b/.test(src), 'the editor token is not logged')
+assert.ok(page.includes('canvas-stream?k=') && page.includes('/tts?k='), 'the canvas page sends its key to the stream and to /tts')
+assert.ok(src.includes("url.pathname === '/canvas-stream' || url.pathname === '/tts' ? url.searchParams.get('k') : null"), 'the meeting key opens only the two routes the canvas page uses')
+console.log('canvas-routes: ok')
