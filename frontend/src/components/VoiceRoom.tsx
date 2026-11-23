@@ -1691,6 +1691,16 @@ function VoiceRoomInner({
     waiting.push(done)
     sendJson(m)
   }), [sendJson])
+  // Connect Claude: the single login trigger shared by the fallback banner and
+  // the persistent in-session Settings/More-menu control. Opens the sign-in modal
+  // and, on a fallback model (no flow running), asks the owner's agent to start
+  // one (claude_auth_start replays a flow already in flight). It never
+  // reimplements OAuth — the agent owns the whole flow.
+  const connectClaude = useCallback(() => {
+    setAuthPromptDismissed(false)
+    setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required')
+    if (!claudeAuthUrl && isController) sendJson({ type: 'claude_auth_start' })
+  }, [claudeAuthUrl, isController, sendJson])
   // Skills: the chat acts on the agent it is connected to (LAN, tunnel or cloud), over the
   // owner-gated data channel; Settings, with no room, uses the same rules over HTTP.
   const chatSkills = useMemo<SkillTransport>(() => ({
@@ -2664,8 +2674,13 @@ function VoiceRoomInner({
         setClaudeAuthOptional(false)
         setAuthPromptDismissed(false) // auth resolved — allow a future prompt to re-open
         onAuthResolved?.('claude_auth_complete')
-        // Auto-dismiss after 3 seconds
-        setTimeout(() => setClaudeAuthStatus('none'), 3000)
+        // Auto-dismiss the success state after 3 seconds — but ONLY if the modal
+        // is still showing that completion. The timer is never cancelled, so a
+        // stale completion's timer would otherwise blindly reset to 'none' and
+        // close a sign-in modal the user has since re-opened (Connect Claude on a
+        // fallback session) — the fallback "stuck, can't finish sign-in" bug. The
+        // functional guard makes it a no-op once the status has moved on.
+        setTimeout(() => setClaudeAuthStatus(s => s === 'complete' ? 'none' : s), 3000)
         // Persist the OAuth token to the host-persistent layer so it survives
         // service container restarts (warm→running transitions). Without this,
         // credentials written inside the ephemeral container overlay are lost
@@ -4108,13 +4123,7 @@ function VoiceRoomInner({
                 upgrade framing (models 3 + 5): connect Claude for full power. */}
             <span className="min-w-0">Not signed in to Claude — the model badge shows what&apos;s answering. Connect Claude for full power.</span>
             <button
-              onClick={() => {
-                setAuthPromptDismissed(false)
-                setClaudeAuthStatus(claudeAuthUrl ? 'waiting' : 'required')
-                // On a fallback model no sign-in flow is running, so ask the agent
-                // to start one (it replays a flow already in flight). Owner-only.
-                if (!claudeAuthUrl && isController) sendJson({ type: 'claude_auth_start' })
-              }}
+              onClick={connectClaude}
               className="shrink-0 px-3 py-1 rounded-md bg-black/85 hover:bg-black text-white text-xs font-semibold transition-colors"
             >
               Connect Claude
@@ -4415,6 +4424,22 @@ function VoiceRoomInner({
                           <svg className="w-4 h-4 shrink-0 text-gray-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d={FOLDER_ICON_PATH} /></svg>
                           <span className="truncate">{projectName}</span>
                         </div>
+                      )}
+                      {/* Connect Claude — the persistent entry point for the sign-in
+                          flow, so it is reachable from the menu after the fallback
+                          banner has been dismissed (not only from the transient
+                          banner/modal). Reuses the banner's handler; shown only while
+                          the session is relying on a fallback model. */}
+                      {(claudeAuthEverRequired || claudeAuthOptional) && (
+                        <>
+                          <button role="menuitem" onClick={() => { setShowHeaderMore(false); connectClaude() }}
+                            className={MORE_ROW}>
+                            <svg className="w-4 h-4 shrink-0 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.8}><path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" /></svg>
+                            <span className="flex-1">Connect Claude</span>
+                            <span className="text-[11px] font-semibold text-amber-400">Upgrade</span>
+                          </button>
+                          <div className="h-px bg-gray-800 mx-2 my-1" />
+                        </>
                       )}
                       {/* A narrow chat column hides the Meeting and Background agents
                           buttons; their panels stay mounted, so these rows open them. */}
@@ -4766,6 +4791,20 @@ function VoiceRoomInner({
               {/* TRAY RULE (2026-08-01): controls hidden from the mobile header
                   COLLAPSE here — the menu is the backup for every viewport-cut
                   control, nothing just disappears. */}
+
+              {/* Connect Claude — persistent sign-in entry (mobile), reachable after
+                  the fallback banner is dismissed. Reuses the banner's handler;
+                  shown only while the session relies on a fallback model. */}
+              {(claudeAuthEverRequired || claudeAuthOptional) && (
+                <button onClick={() => { setShowMobileMenu(false); connectClaude() }}
+                  className="w-full flex items-center gap-3 px-3 py-3 rounded-xl hover:bg-gray-800 transition-colors text-left">
+                  <svg className="w-5 h-5 text-amber-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                  </svg>
+                  <span className="text-sm text-gray-200">Connect Claude</span>
+                  <span className="ml-auto text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-500/25 text-amber-300 border border-amber-500/30">Upgrade</span>
+                </button>
+              )}
 
               {/* Auto-approve is no longer a hidden toggle — the single, visible,
                   session-scoped "Approvals" mode picker lives in the Activity log row
