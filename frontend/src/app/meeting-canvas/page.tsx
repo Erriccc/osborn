@@ -9,7 +9,7 @@
  * hears. It's a pure presentational surface driven entirely by the osborn agent
  * over Server-Sent Events — no LiveKit, no auth (Recall loads it server-side).
  *
- * URL: /meeting-canvas?agent=<https-agent-url>
+ * URL: /meeting-canvas?agent=<https-agent-url>&k=<meeting key, added by the agent; sent to /canvas-token>
  *   Opens EventSource(`${agent}/canvas-stream`) and reacts to:
  *     { kind:'say',  text }                         → speechSynthesis → meeting hears it
  *     { kind:'show', mode:'idle'|'notes'|'link'|'web'|'text', title?, items?, url?, text? }
@@ -125,7 +125,7 @@ function CanvasInner() {
     let cancelled = false
     ;(async () => {
       try {
-        const r = await fetch(`${base}/canvas-token`, { signal: AbortSignal.timeout(10000) })
+        const r = await fetch(`${base}/canvas-token?k=${encodeURIComponent(params.get('k') || '')}`, { signal: AbortSignal.timeout(10000) })
         if (!r.ok) return // agent pre-parity or no room — SSE path handles it
         const { token, url } = await r.json()
         if (!token || !url || cancelled) return
@@ -162,7 +162,7 @@ function CanvasInner() {
     let cancelled = false
     ;(async () => {
       try {
-        const r = await fetch(`${base}/canvas-token`, { signal: AbortSignal.timeout(10000) })
+        const r = await fetch(`${base}/canvas-token?k=${encodeURIComponent(params.get('k') || '')}`, { signal: AbortSignal.timeout(10000) })
         if (!r.ok) return // agent pre-parity or no room — SSE path handles it
         const { token, url } = await r.json()
         if (!token || !url || cancelled) return
