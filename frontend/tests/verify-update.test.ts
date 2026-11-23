@@ -31,6 +31,14 @@ async function main() {
   assert.match((o.r as any).error, /after 3 min \(machine=started, installed=unknown\)/)
   assert.ok(o.t >= 180_000 && o.t < 200_000)
 
+  // a stored success for another target is not this update's success
+  o = await run([{ machineState: 'running', installedVersion: '1.2.2', lastUpdate: { status: 'success', targetVersion: '1.2.2', installedVersion: '1.2.2' } }], '1.2.3')
+  assert.equal(o.r.success, false)
+
+  // no target ("latest"): the stored success stands
+  o = await run([{ machineState: 'running', installedVersion: '1.2.4', lastUpdate: { status: 'success', targetVersion: '1.2.4', installedVersion: '1.2.4' } }], null)
+  assert.deepEqual(o.r, { success: true, version: '1.2.4' })
+
   // in-progress keeps polling, then the real failure appears
   const prog = { machineState: 'running', installedVersion: '1.2.2', lastUpdate: { status: 'in-progress', targetVersion: '1.2.3' } }
   o = await run([...Array(30).fill(prog), { ...prog, lastUpdate: { status: 'error', targetVersion: '1.2.3', error: 'real cause' } }], '1.2.3')

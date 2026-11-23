@@ -937,13 +937,7 @@ export default function Dashboard() {
     // to distinguish "server gave up partway" from "actually broken"). The
     // server stores its final result in `getLastUpdateResult(sandboxId)`, so
     // we ask for it directly instead of inferring from version probes alone.
-    //
-    // Three exit conditions:
-    //   1. Authoritative: `lastUpdate.status === 'success'` or `'error'` →
-    //      use its installedVersion + error message verbatim
-    //   2. Inferred success: machine `started` AND `installedVersion === target` AND
-    //      `lastUpdate.status` is null/missing (frontend pod restarted) → trust signals
-    //   3. Timeout after 3 minutes → declare error using best-available info
+    // Exit rules: `pollVerifyUpdate` in lib/verify-update.ts.
     const verifyUpdate = (targetVersion: string | null) =>
       pollVerifyUpdate(sandboxId, targetVersion, { fetchFn: fetch })
 
@@ -1001,7 +995,7 @@ export default function Dashboard() {
         } else {
           // Prefer the original server error message when present — it has
           // more detail than the verify timeout fallback ("Verification
-          // timed out after 3 min" tells the user nothing useful).
+          // timed out" tells the user nothing useful).
           const errMsg = result.error || verified.error
           setStatusMessage({ text: `Update failed: ${errMsg}`, type: 'error' })
         }
