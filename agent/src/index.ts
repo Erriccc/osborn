@@ -356,6 +356,8 @@ let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null
 // agent's room and play the agent's REAL TTS audio track — bit-identical to
 // the browser voice experience (2026-08-01 quality architecture; replaces the
 // synth-file chain when connected). Set from main() where the room name lives.
+// Failed fast-brain lookups are kept out of the chat, so /health is where an outage (a retired model, a dead key) shows.
+const fastBrainErrors = { count: 0, lastAt: null as string | null }
 let canvasTokenHook: (() => Promise<{ token: string; url: string; room: string } | null>) | null = null
 // Per-meeting key the canvas page presents to /canvas-token (canvas-key.ts); null when no meeting is live.
 let canvasKey: string | null = null
@@ -969,6 +971,7 @@ function startApiServer(workingDir: string, port: number): void {
         status: 'ok',
         workingDir,
         version,
+        fastBrain: { errors: fastBrainErrors.count, lastErrorAt: fastBrainErrors.lastAt },
         // Library: is it on, can it call the model, does it reach /library. Public: counts, times and codes only.
         library: {
           enabled: isContentLensEnabled(),
@@ -4633,7 +4636,7 @@ async function main() {
     // A hand-off to the main agent has nothing to say yet; its answer follows.
     if (r.type === 'research_needed') return
     // A failed lookup is a log line, not a chat message: "Search error occurred." under "provisional" tells the user nothing.
-    if (r.type === 'error') return
+    if (r.type === 'error') { fastBrainErrors.count++; fastBrainErrors.lastAt = new Date().toISOString(); return }
     sendToFrontend({
       type: 'fast_brain_response', text: r.answer, responseType: r.type,
       elapsedMs: r.elapsedMs, question: r.question, toolsUsed: r.toolsUsed,

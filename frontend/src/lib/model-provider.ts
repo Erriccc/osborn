@@ -1,11 +1,4 @@
-/**
- * Shared text-model provider resolution for the platform-side content routes
- * (/api/content/refine, /api/content/chat). Mirrors the agent-side house demo
- * pass: Fireworks first (pay-per-use, glm-5p3-flash), z.ai GLM subscription as
- * the fallback so content ops keep working without a Fireworks key.
- * Embeddings are NOT covered — the z.ai pass has no embedding model; the agent
- * embedder stays on Fireworks.
- */
+/** Text-model provider for the content routes: Fireworks first, the z.ai house pass as the fallback. */
 export interface TextProvider {
   url: string
   key: string

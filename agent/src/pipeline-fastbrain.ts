@@ -45,14 +45,8 @@ export interface AgentControlCallbacks {
 // CONSTANTS
 // ============================================================
 
-// Model reads from env var (set by main process from getInferenceConfig) or DEFAULT_CONFIG default.
-// To switch model: update DEFAULT_CONFIG.inference.fastBrainModel in config.ts, or set OSBORN_FAST_BRAIN_MODEL env var.
-// Provider switch: Fireworks (OpenAI-compatible) when FIREWORKS_API_KEY is set, else
-// OpenRouter. Default Fireworks model: glm-5p3-flash ($0.15/M) with OpenAI-style function
-// calling (the fast brain is a tool loop). gpt-oss-120b was the default until Fireworks began
-// answering it with 404 "Model not found, inaccessible, and/or not deployed" (seen 2026-11-23
-// on the platform key; glm-5p3-flash answered 200), which failed every fast-brain turn.
-// Override with OSBORN_FAST_BRAIN_MODEL.
+// Provider: Fireworks (OpenAI-compatible) when FIREWORKS_API_KEY is set, else OpenRouter.
+// Override the model with OSBORN_FAST_BRAIN_MODEL (note: the noise gate falls back to it too; set OSBORN_GATE_MODEL).
 const FIREWORKS = !!process.env.FIREWORKS_API_KEY
 const PROVIDER_NAME = FIREWORKS ? 'Fireworks' : 'OpenRouter'
 const OPENROUTER_MODEL = process.env.OSBORN_FAST_BRAIN_MODEL ||
