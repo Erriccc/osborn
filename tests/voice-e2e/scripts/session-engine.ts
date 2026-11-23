@@ -69,6 +69,7 @@ import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, AUDIO_DECODE_CAP_MS, decodeBudgetMs, recordingAge, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
+import { metricsDelta, NO_USAGE, readTotals, type ActUsage, type MetricsTotals } from '../lib/brain-metrics'
 import { actWithCache, BRAIN_GONE, fencedCall, forgetCached, withTimeout, zombieGate } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
 import { serialSaver, writeAtomic } from '../lib/profile-save'
@@ -1425,7 +1426,7 @@ async function main() {
           if (typeof body.instruction !== 'string' || !body.instruction.trim()) return json(res, { ok: false, code: 'bad_request', error: '/act needs {"instruction": "<what to do>"}' }, 400)
           if (body.instruction.length > 4000) return json(res, { ok: false, code: 'too_large', error: 'instruction is over 4000 characters — split it into steps' }, 413)
           // A brain-free action (a plain scroll) does not wait on, or fail for, the brain.
-          if (!brainAlive && !PLAIN_SCROLL.test(String(body.instruction)) && !(await reviveBrain(true))) return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver }, 503)
+          if (!brainAlive && !PLAIN_SCROLL.test(String(body.instruction)) && !(await reviveBrain(true))) return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver, ...NO_USAGE }, 503)
           // Ears on the acted tab, so its clip can carry what the page plays (/clip?n&audio=1).
           await ensureEars(page)
           const t0 = Date.now()
@@ -1464,6 +1465,9 @@ async function main() {
           const before = await snap()
           const textVolatile = !!pre && !!before && pre.text !== before.text
           let r: any
+          let usageBefore: MetricsTotals | null = null
+          const usageNow = async (): Promise<ActUsage> => usageBefore ? metricsDelta(usageBefore, await metricsNow()) : NO_USAGE
+          const metricsNow = () => readTotals(stagehand)
           // A tab the action opens (target=_blank, window.open) becomes this driver's tab
           // after the act, so the next /act works where the click led.
           let popup: Page | null = null
@@ -1485,7 +1489,7 @@ async function main() {
             r = { cached: false, healed: false, did: `engine mouse-wheel scroll ${edge ? `to the ${edge.toLowerCase()}` : `${dir.toLowerCase()} ${size}px`} (no model call)`, engine: true }
             mark(`act[${driver}]: ${r.did}`)
           } else
-          try { r = await brain(body.instruction, page) }
+          try { usageBefore = await metricsNow(); r = await brain(body.instruction, page) }
           catch (e0) {
             let e = e0
             // The provider itself refused (credits ran out, key revoked, rate
@@ -1499,7 +1503,8 @@ async function main() {
               mark(`act[${driver}]: provider refused on ${before} — re-picking a brain provider`)
               await reviveBrain()
               if (brainAlive && brainModel !== before) {
-                try { r = await brain(body.instruction, page); healed = true } catch (e1) { e = e1 }
+                // The revive built a new brain whose totals start at zero: measure from it.
+                try { usageBefore = await metricsNow(); r = await brain(body.instruction, page); healed = true } catch (e1) { e = e1 }
               }
             }
             if (!healed) {
@@ -1509,10 +1514,13 @@ async function main() {
               // A failed act is still a task: it must not vanish from the run.
               const fn = ++reqN
               const fshot = await reqShot(fn, 'act', page)
-              stampTask(fn, 'act', t0, null, fshot, body.instruction, undefined, page)
-              return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null }, brainAlive ? 502 : 503)
+              const failTask = stampTask(fn, 'act', t0, null, fshot, body.instruction, undefined, page)
+              const failUsage = await usageNow()
+              Object.assign(failTask, { tokens: failUsage.tokens, modelMs: failUsage.modelMs }); writeManifest()
+              return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, tokens: failUsage.tokens, modelMs: failUsage.modelMs, brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null }, brainAlive ? 502 : 503)
             }
           }
+          const usage = await usageNow()
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.
           await page.waitForTimeout(body.settleMs ?? 2500).catch(() => {})
@@ -1587,10 +1595,10 @@ async function main() {
           const nag = (prevTask?.clip || (prevTask as any)?.clipPending) && !fetchedClips.has(prevTask.n) ? `task ${prevTask.n}'s clip was never fetched — review media before stacking more acts` : null
           actionCount++; noteVisit(page)
           const n = ++reqN
-          return { page, opened, n, t0, r, effect, warning, nag, endMs: Date.now() }
+          return { page, opened, n, t0, r, effect, warning, nag, usage, endMs: Date.now() }
         })
         if (!post) return  // answered inside the lock (refused, invalid, or failed)
-        const { page, opened, n, t0, r, effect, warning, nag } = post
+        const { page, opened, n, t0, r, effect, warning, nag, usage } = post
         const actFrom = Math.max(t0 - 1500, post.endMs - (body.clipSeconds ?? 45) * 1000, takenSince(driver, page) ?? 0)
         const actRange = body.clip !== false && live?.clipRange ? await live.clipRange(join(RUN_DIR, `req-${String(n).padStart(3, '0')}-act.mp4`), actFrom, post.endMs, page, isPersonDriver(driver)).catch(() => null) : null
         const clip = actRange?.path ?? null
@@ -1598,9 +1606,11 @@ async function main() {
         if (clip) mark(`clip: ${clip}`)
         const shot = await reqShot(n, 'act', opened && !opened.isClosed() ? opened : page)
         const window = stampTask(n, 'act', t0, clip, shot, body.instruction, undefined, page)
-        if (clipError) { (window as any).clipError = clipError; writeManifest() }
+        Object.assign(window, { tokens: usage.tokens, modelMs: usage.modelMs })
+        if (clipError) (window as any).clipError = clipError
+        writeManifest()
         addStep('act', String(body.instruction))
-        return json(res, { ok: !r?.noop, ...(r?.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
+        return json(res, { ok: !r?.noop, ...(r?.noop ? { code: 'noop' } : {}), task: n, result: r, effect, warning, evidence: evidenceFor(mediaBase, RUN_STAMP, n, { clip: !!clip, shot: !!shot }), brainModel, tokens: usage.tokens, modelMs: usage.modelMs, clip, clipError, artifact: shot, clipUrl: clip ? `${mediaBase}/clip?n=${n}` : null, audioClipUrl: clip ? `${mediaBase}/clip?n=${n}&audio=1` : null, artifactUrl: shot ? `${mediaBase}/artifact?n=${n}` : null, nag, driver, window })
       }
       if (path === '/say') {
         const driver = driverId(req)
