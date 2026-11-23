@@ -260,7 +260,7 @@ Sign-out wipes all `osborn-*`. No IndexedDB/cookies writes in app code.
 **Native:** UserDefaults; sync-token + auth → Keychain (P2).
 
 ### 3.5 Network inventory (by caller)
-- `/chat`: `/api/sandbox` (GET, POST connect-room/start/keepalive/leave-room/fetch-log),
+- `/chat`: `/api/sandbox` (GET, POST connect-room/start/leave-room/fetch-log),
   `/api/token`, `${agent}/health` (15s poll), `${agent}/events` (SSE),
   `${agent}/session-messages`, `${agent}/connect-room` (fallback), DC traffic.
 - `/dashboard`+`/settings`: `/api/sandbox` (all actions + DELETE), `/api/instance`,

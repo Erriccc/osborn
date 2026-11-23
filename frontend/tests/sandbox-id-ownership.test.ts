@@ -73,13 +73,13 @@ async function main() {
 
   // ---- C2. /api/sandbox ownership with a duplicate claim ----
   const sbx: any = await import('../src/app/api/sandbox/route')
-  for (const action of ['start', 'stop', 'keepalive', 'delete']) {
+  for (const action of ['start', 'stop', 'delete']) {
     await t(`POST /api/sandbox ${action}: own row id also claimed by another user -> rejected (404/403)`, async () => {
       st.user = { id: USER_A }; st.instance = { sandbox_id: MINE }; st.cloudCalls = []
       st.claims = [{ user_id: USER_A }, { user_id: 'victim-user' }]; st.claimsError = null
       const r = await sbx.POST({ json: async () => ({ action, sandboxId: MINE }) })
       ok(r.status === 404 || r.status === 403, `status ${r.status}`)
-      ok(!st.cloudCalls.some((c: string) => /^(startSandbox|stopSandbox|deleteSandbox|keepAliveSandbox)$/.test(c)), `mutating cloud call made: ${st.cloudCalls}`)
+      ok(!st.cloudCalls.some((c: string) => /^(startSandbox|stopSandbox|deleteSandbox)$/.test(c)), `mutating cloud call made: ${st.cloudCalls}`)
     })
   }
   await t('POST /api/sandbox start: uniquely-claimed own id still allowed (compat)', async () => {

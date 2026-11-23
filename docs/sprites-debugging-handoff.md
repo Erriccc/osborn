@@ -98,7 +98,7 @@ Every sprite has a public URL at `https://<name>-x745.sprites.app/`. This routes
 | `/health` | `{ status: 'ok', workingDir }`. Hitting this **wakes the sprite from warm/cold** (Sprites' edge proxy thaws it) |
 | `/sessions[?limit=N]` | Lists Claude session JSONLs visible to the agent (uses `listAllClaudeSessions()` over `~/.claude/projects/**`). Returns `{ sessions: [...], total }` |
 | `/room-code` | Returns `{ roomCode }` — the LiveKit room the agent created on boot |
-| `/events` | **Long-lived SSE keepalive**. Opening this prevents the sprite from hibernating. Frontend opens it on chat page mount |
+| `/events` | **Long-lived SSE keepalive**. Opening this prevents the sprite from hibernating. Frontend opens it while connected (the chat page sends no `/api/sandbox` keepalive) |
 | `/restart` | Graceful agent process restart (process manager auto-restarts) |
 | `/meeting-output` | HTML page Recall.ai bot loads as its video tile (post-0.8.35 fix) |
 | `/webhook/recall` | Recall.ai real-time transcript webhook |
@@ -144,7 +144,6 @@ Actions (POST body `{ action: '...' }`):
 - `create` — `createSandbox(user.id)`. Persists `sandbox_id`, `sandbox_url` to Supabase `instances` table.
 - `start` — `startSandbox(sb.id, user.id)`. Returns `{ previewUrl }`.
 - `stop` — `stopSandbox(sb.id)`.
-- `keepalive` — periodic ping from chat page.
 - `restart-service` — `restartService(sb.id)`. Used by dashboard's Restart button.
 - `update-osborn` — `updateOsborn(sb.id, user.id)`. Used by Update Osborn button.
 - `room-code` — proxies sprite's `/room-code` after ensuring it's awake.

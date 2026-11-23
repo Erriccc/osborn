@@ -48,7 +48,6 @@ export const deleteSandbox = provider.deleteSandbox
 export const execInSprite = provider.execInSprite
 export const findUserSandbox = provider.findUserSandbox
 export const isSpritesConfigured = provider.isSpritesConfigured
-export const keepAliveSandbox = provider.keepAliveSandbox
 export const resolveOsbornLatest = provider.resolveOsbornLatest
 export const restartService = provider.restartService
 export const startSandbox = provider.startSandbox

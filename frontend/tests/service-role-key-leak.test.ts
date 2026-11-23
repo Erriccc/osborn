@@ -1,6 +1,6 @@
 // Run: cd frontend && npx tsx tests/service-role-key-leak.test.ts
 // Spec: SUPABASE_SERVICE_ROLE_KEY must never be forwarded to agent machines;
-// sandbox start/stop/keepalive/delete must reject foreign sandboxIds;
+// sandbox start/stop/delete must reject foreign sandboxIds;
 // settings copy must not claim "Stored encrypted".
 import fs from 'node:fs'
 import path from 'node:path'
@@ -98,7 +98,7 @@ async function main() {
   M._load = function (req: string, ...rest: any[]) { return req in mocks ? mocks[req] : orig.call(this, req, ...rest) }
   const route: any = await import('../src/app/api/sandbox/route')
   const post = (body: any) => route.POST(new Request('http://x/api/sandbox', { method: 'POST', body: JSON.stringify(body) }))
-  const fn: Record<string, string> = { start: 'startSandbox', stop: 'stopSandbox', keepalive: 'keepAliveSandbox', delete: 'deleteSandbox' }
+  const fn: Record<string, string> = { start: 'startSandbox', stop: 'stopSandbox', delete: 'deleteSandbox' }
 
   for (const action of Object.keys(fn)) {
     await t(`route ${action}: foreign sandboxId rejected (403/404) and ${fn[action]} NOT called`, async () => {

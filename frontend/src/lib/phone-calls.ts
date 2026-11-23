@@ -6,6 +6,7 @@ import { createHmac } from 'node:crypto'
 import { IngressClient, IngressInput, RoomServiceClient } from 'livekit-server-sdk'
 import { checkSandboxClaim, serviceClient } from '@/lib/sandbox-claims'
 import { connectUserAgent } from '@/lib/connect-agent'
+import { touchLastSeen } from '@/lib/last-seen'
 import { sleep } from '@/lib/sleep'
 import {
   CALL_CODE_TTL_MS, CODE_DAILY_LIMIT_LINE, CODE_EXPIRED_LINE, CODE_SORRY_LINE, CODE_LOCKED_LINE, CODE_PROMPT_LINE, CODE_RETRY_LINE, CODE_SEND_FAILED_LINE,
@@ -188,6 +189,7 @@ export async function routeCall(
     } finally {
       await (await hold.playing)?.()
     }
+    if (r.ok) touchLastSeen(admin, userId)
     if (r.ok) return r.callCode ? await codeStep(admin, userId, call.roomName, r.agentUrl, syncToken) : 'connected'
     if (r.reason === 'busy') {
       await sayThenHangUp(call.roomName, 'busy', r.agentUrl && agentLine(r.agentUrl, syncToken, BUSY_LINE), BUSY_HANGUP_MS)
