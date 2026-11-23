@@ -279,7 +279,7 @@ t('index.ts: keypad goes through handlePhoneKeypad with the shared settle functi
   const body = src.slice(start, start + 600)
   assert.match(body, /handlePhoneKeypad\(\{ sip: participant\?\.kind === ParticipantKind\.SIP, inPhoneRoom: inPhoneRoom\(\), digit \}, \(answer\) => settlePendingPermission\(answer, phonePromptedRequestId\)\)/, 'the keypad answers only the request the caller heard')
   assert.doesNotMatch(body, /settlePendingPermission\('allow'\)/)
-  assert.match(src, /function settlePendingPermission\(answer: PermissionAnswer, requestId: unknown\): boolean \{\s+return answerPending\(pendingPermissionHolder\(\), answer, requestId, sessionAllows\)/, 'one settle implementation')
+  assert.match(src, /function settlePendingPermission\(answer: PermissionAnswer, requestId: unknown\): boolean \{\s+const settled = answerPending\(pendingPermissionHolder\(\), answer, requestId, sessionAllows\)\s+if \(settled && typeof requestId === 'string'\) settlePermissionPush\(requestId\)\s+return settled/, 'one settle implementation')
 })
 t('index.ts: browser permission_response settles through the same function (#363)', () => {
   const start = src.indexOf("data.type === 'permission_response'")
