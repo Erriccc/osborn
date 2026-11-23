@@ -694,6 +694,8 @@ interface PreviewAcc {
 
 const PREVIEW_LAST_CHARS = 100
 const PREVIEW_TITLE_CHARS = 120
+/** How far a large-file preview reads past its head/tail samples when they hold no user turn. */
+const PREVIEW_WIDEN = 4 * 1024 * 1024
 
 /** User-entry text: string content, or the text parts of an array that is not a tool_result. */
 function previewUserText(content: unknown): string | null {
@@ -810,8 +812,24 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
       const hn = readSync(fd, headBuf, 0, HEAD, 0)
       const tailBuf = Buffer.alloc(TAIL)
       const tn = readSync(fd, tailBuf, 0, TAIL, Math.max(0, size - TAIL))
-      const head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
-      const tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
+      let head = scanPreviewLines(headBuf.toString('utf8', 0, hn), false)
+      let tail = scanPreviewLines(tailBuf.toString('utf8', 0, tn), true)
+      // A long session's samples can hold no user turn (one cut-off huge tool
+      // result, or a tail of tool calls), leaving it "Untitled session" with no
+      // preview. Only then read a wider window, bounded by PREVIEW_WIDEN.
+      const readWindow = (start: number, end: number, skipFirstPartial: boolean): PreviewAcc => {
+        const buf = Buffer.alloc(end - start)
+        const n = readSync(fd, buf, 0, end - start, start)
+        return scanPreviewLines(buf.toString('utf8', 0, n), skipFirstPartial)
+      }
+      if (!tail.lastUser) {
+        const wide = readWindow(Math.max(0, size - TAIL - PREVIEW_WIDEN), size, true)
+        tail = { ...wide, count: tail.count, aiTitle: wide.aiTitle ?? tail.aiTitle }
+      }
+      if (!head.firstUser && !head.aiTitle && !tail.aiTitle) {
+        const wide = readWindow(0, Math.min(size, HEAD + PREVIEW_WIDEN), false)
+        head = { ...wide, count: head.count }
+      }
       const lastMessage = tail.lastUser ?? head.lastUser
       // A lower bound: the turns in both samples, floored at 3 to clear the list gate.
       const messageCount = Math.max(3, head.count + tail.count)
@@ -974,7 +992,8 @@ interface SessionManifest { v: number; entries: Record<string, SessionManifestEn
 // Older manifests are discarded on load. v2: sanitized preview fields. v3: the
 // large-file messageCount estimate changed, and unchanged files are never re-read.
 // v4: the large-file count is the sampled lower bound. v5: no head fallback for last activity.
-const SESSION_MANIFEST_VERSION = 5
+// v6: large-file previews widen the window when the samples hold no user turn.
+const SESSION_MANIFEST_VERSION = 6
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')
 }
