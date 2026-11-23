@@ -102,9 +102,10 @@ If the config file doesn't exist, use Option A or Option B.
 ### Option B: sign in with an email code (no browser needed)
 Use this when the user does not want to open Settings. The email-code steps
 (Supabase URL and public key included) are in the served copy of this skill,
-which this packaged seed does not carry. Run the MANDATORY VERSION CHECK first:
-it replaces this file with the served copy, then re-read the new file and follow
-its "Option B" section. If the served copy cannot be reached, use Option A.
+which this packaged seed does not carry. Replace this file with the served copy
+(`curl -sS https://www.voice-native.com/api/sync-skill -o ~/.claude/skills/voice-native-sync/SKILL.md`),
+then re-read it and follow its "Option B" section. If the served copy cannot be
+reached, use Option A.
 
 ---
 

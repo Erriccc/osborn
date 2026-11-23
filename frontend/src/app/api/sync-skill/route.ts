@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server'
 
 // Option B needs the Supabase project URL and anon key. Both are public values
-// (NEXT_PUBLIC_*), read at request time so nothing is hardcoded here.
+// (NEXT_PUBLIC_*), read at request time (force-dynamic) so nothing is hardcoded here.
 function emailCodeOption(): string {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -11,31 +11,29 @@ Not available from this copy: the server that served this skill has no Supabase
 project values configured. Use Option A.`
   }
   return `### Option B: sign in with an email code (no browser needed)
-Use this when the user does not want to open Settings. Run these steps in order.
-Never print, echo or log the code, the access token or the sync token.
-
-\`\`\`bash
-SUPABASE_URL=${url}
-ANON=${anon}
-\`\`\`
+Use this when the user does not want to open Settings. Shell variables do not
+carry over between commands: run each block as ONE command, with <email> (and in
+step 4 <code>) filled in. Never print, echo or log the code, the access token or
+the sync token.
 
 1. Ask the user for the email they use for Voice Native.
 2. Send the code. create_user is false, so a code goes only to an existing account:
 \`\`\`bash
+SUPABASE_URL=${url}; ANON=${anon}; EMAIL='<email>'
 curl -sS -X POST "$SUPABASE_URL/auth/v1/otp" \\
   -H "apikey: $ANON" -H "Content-Type: application/json" \\
   -d "{\\"email\\":\\"$EMAIL\\",\\"create_user\\":false}"
 \`\`\`
 3. Tell the user to read the 6-digit code from the email and paste it here.
-4. Exchange the code for an access token (keep it in a shell variable only):
+4. Exchange the code for an access token, fetch the sync credentials and write the config (chmod 600):
 \`\`\`bash
+umask 077
+SUPABASE_URL=${url}; ANON=${anon}; EMAIL='<email>'; CODE='<code>'
 ACCESS=$(curl -sS -X POST "$SUPABASE_URL/auth/v1/verify" \\
   -H "apikey: $ANON" -H "Content-Type: application/json" \\
   -d "{\\"type\\":\\"email\\",\\"email\\":\\"$EMAIL\\",\\"token\\":\\"$CODE\\"}" \\
   | python3 -c "import json,sys; print(json.load(sys.stdin).get('access_token',''))")
-\`\`\`
-5. Fetch the sync credentials and write the config (chmod 600):
-\`\`\`bash
+[ -n "$ACCESS" ] || { echo 'code rejected or expired'; exit 1; }
 mkdir -p ~/.claude/skills/voice-native-sync
 curl -sS https://www.voice-native.com/api/instance -H "Authorization: Bearer $ACCESS" \\
   | python3 -c "
@@ -45,12 +43,14 @@ url=i.get('sandbox_url') or i.get('server_url') or ''
 tok=i.get('sync_token') or ''
 if not url or not tok or 'localhost' in url: sys.exit('no cloud machine or sync token on this account')
 open('$HOME/.claude/skills/voice-native-sync/config','w').write('CLOUD_URL=%s\\nTOKEN=%s\\n'%(url,tok))
-"
-chmod 600 ~/.claude/skills/voice-native-sync/config
+" && chmod 600 ~/.claude/skills/voice-native-sync/config
+curl -sS -o /dev/null -X POST "$SUPABASE_URL/auth/v1/logout" -H "apikey: $ANON" -H "Authorization: Bearer $ACCESS"
 \`\`\`
-6. Tell the user only that sync is set up. If the code was wrong or expired,
-   ask for a new one (repeat from step 2).`
+5. Tell the user only that sync is set up. If step 4 says the code was rejected
+   or expired, ask for a new one (repeat from step 2).`
 }
+
+export const dynamic = 'force-dynamic'
 
 export async function GET() {
   const skillContent = `# Voice Native Sync Skill
