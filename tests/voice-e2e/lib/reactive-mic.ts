@@ -87,8 +87,8 @@ export async function installReactiveMic(page: Page) {
   })
 }
 
-/** In-page: has the app opened the mic (getUserMedia called)? */
-const micReady = () => (window as any).__mic?.ready === true
+/** In-page: has the app opened the mic (getUserMedia called) and is the feed usable? A page that only sets `ready` has no audio context to play into (#468). */
+const micReady = () => { const m = (window as any).__mic; return m?.ready === true && !!m.ctx && !!m.dest }
 
 /** Resolves once the app has actually opened the mic. */
 export async function waitForMicOpen(page: Page, timeoutMs = 60_000) {
@@ -106,7 +106,7 @@ export async function speakWav(page: Page, wavPath: string): Promise<{ audioMs: 
   const b64 = readFileSync(wavPath).toString('base64')
   const r = await page.evaluate(async (b64) => {
     const w = window as any
-    if (!w.__mic?.ready) return null
+    if (!w.__mic?.ready || !w.__mic.ctx || !w.__mic.dest) return null
     const ctx = w.__mic.ctx as AudioContext
     await ctx.resume()
     const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
