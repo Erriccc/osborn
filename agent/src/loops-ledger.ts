@@ -171,7 +171,7 @@ export function foldLoops(records: LoopRecord[]): Map<string, LoopItem> {
     if (!r || !r.id) continue
     if (r.kind === 'filed') {
       const it = items.get(r.id)
-      if (it) { it.filedUrl = r.url; it.filedAt = r.at }
+      if (it) { it.filedUrl = r.url; it.filedAt = r.at; it.recapped = false }
       continue
     }
     if (r.kind === 'recapped') {
@@ -179,7 +179,7 @@ export function foldLoops(records: LoopRecord[]): Map<string, LoopItem> {
       if (it) it.recapped = true
       continue
     }
-    const opens = OPENS[r.kind]
+    const opens = Object.hasOwn(OPENS, r.kind) ? OPENS[r.kind] : undefined
     if (!opens) continue
     const prev = items.get(r.id)
     const origin: LoopOrigin = r.origin ?? prev?.origin ?? 'tool'

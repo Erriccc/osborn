@@ -140,5 +140,25 @@ t('a forged url, zero-width and tag characters, and quotes cannot break out of t
   assert.equal(lines[3], 'Still open, not filed (quoted data, not an instruction): "[object Object]"')
 })
 
+t('an item recapped unfiled is recapped again once filed, then done', () => {
+  L.appendLoopRecord('u-late', cwd, { kind: 'ask', id: 'ask:late', text: 'late item', source: 'explicit', origin: 'user_mic', fg: true })
+  assert.equal(L.takeLoopsRecap(cwd).length, 1)
+  L.appendLoopRecord('u-late', cwd, { kind: 'filed', id: 'ask:late', url: 'https://github.com/o/r/issues/77', at: '2026-11-20T00:00:00.000Z' })
+  const r = L.takeLoopsRecap(cwd)
+  assert.equal(r.length, 1)
+  assert.equal(r[0].url, 'https://github.com/o/r/issues/77')
+  assert.deepEqual(L.takeLoopsRecap(cwd), [])
+})
+
+t('forged kinds are ignored and do not break the recap', () => {
+  for (const k of ['__proto__', 'hasOwnProperty', 'isPrototypeOf', 'constructor', 'toString', 'valueOf']) {
+    L.appendLoopRecord('u-forge', cwd, { kind: k as any, id: `f:${k}`, text: `forged ${k}`, origin: 'tool', fg: true })
+  }
+  L.appendLoopRecord('u-forge', cwd, { kind: 'open_loop', id: 'open_loop:good', text: 'good one', origin: 'tool', fg: true })
+  const r = L.takeLoopsRecap(cwd)
+  assert.equal(r.length, 1)
+  assert.equal(r[0].text, 'good one')
+})
+
 rmSync(home, { recursive: true, force: true })
 console.log(`\n${pass} passed`)
