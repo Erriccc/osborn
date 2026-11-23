@@ -20,7 +20,7 @@ export default function TermsPage() {
     <MarketingShell>
       <article className="w-full max-w-[72ch] mx-auto px-5 py-12 sm:py-16">
         <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-[var(--text-muted)]">
-          Last updated: October 22, 2026
+          Last updated: November 23, 2026
         </p>
 
         <h1 className="mt-4 font-display text-3xl sm:text-4xl font-medium text-[var(--text-primary)] leading-[1.15] tracking-tight">
@@ -63,7 +63,7 @@ export default function TermsPage() {
               Accounts
             </h2>
             <p className="mt-3">
-              You sign in with your email address and a one-time code we send you. You are
+              You sign in with your email address and a one-time code we send you, or, in the mobile app, with Google. You are
               responsible for the activity that happens under your account and for keeping
               access to your email secure.
             </p>
