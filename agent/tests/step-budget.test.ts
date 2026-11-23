@@ -28,4 +28,7 @@ assert.match(reminder, /at most 10 direct tool calls per turn/)
 for (const p of [prompt, research]) {
   assert.match(p, new RegExp(`every ${cadence} calls`), 'prompt cadence matches SPEAK_CADENCE_N')
 }
+// The packaged meetings skill no longer claims a 3-call budget.
+const meetings = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '.claude', 'skills', 'meetings', 'SKILL.md'), 'utf8')
+assert.doesNotMatch(meetings, /3-call|3 direct tool calls/)
 console.log('step-budget tests passed')
