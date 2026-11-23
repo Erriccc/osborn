@@ -4,7 +4,7 @@
  * broadcast in the room) is gated by a random per-meeting key carried in the page's own URL.
  */
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto'
-import { localNoBrowser } from './agent-store.js'
+import { isThisMachine } from './agent-store.js'
 
 export const newCanvasKey = (): string => randomBytes(18).toString('hex')
 
@@ -38,5 +38,5 @@ export function canvasRouteAllowed(r: {
   bearerOk: boolean; lineOk?: boolean; key: string | null; k: string | null | undefined
   forwarded: boolean; host?: string; remote?: string; origin?: string
 }): boolean {
-  return r.bearerOk || !!r.lineOk || secretMatches(r.key, r.k) || localNoBrowser(r)
+  return r.bearerOk || !!r.lineOk || secretMatches(r.key, r.k) || (!r.origin && isThisMachine(r))
 }

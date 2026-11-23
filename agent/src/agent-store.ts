@@ -236,11 +236,6 @@ export function isThisMachine(r: { forwarded: boolean; host?: string; remote?: s
   return !r.forwarded && LOOPBACK_HOST.test(r.host || '') && LOOPBACK_ADDR.test(r.remote || '')
 }
 
-/** A request from this machine that no browser page made (no Origin): the agent's own tools. */
-export function localNoBrowser(r: { forwarded: boolean; host?: string; remote?: string; origin?: string }): boolean {
-  return !r.origin && isThisMachine(r)
-}
-
 /** Browser origins allowed to make store writes on a machine with no sync token: a local
  *  page, voice-native.com, or the frontend the agent is configured with. No Origin = not a
  *  browser cross-site request. Also decides which origin the write routes' CORS echoes. */
@@ -268,7 +263,6 @@ export function storeWriteRefusal(r: {
   if (!r.read && !/^application\/json\b/i.test(r.contentType || '')) return { status: 415, error: 'send JSON (Content-Type: application/json)' }
   return null
 }
-
 
 // ── SKILL.md and agent .md front matter ───────────────────────────────────────
 

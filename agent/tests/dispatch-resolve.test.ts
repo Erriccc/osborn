@@ -1,7 +1,7 @@
 // Voice dispatch: project name -> session, the hub-only dispatch tool, and spoke reports never steering a turn.
 // Run: npx tsx agent/tests/dispatch-resolve.test.ts
 import assert from 'node:assert/strict'
-import { resolveDispatchTarget } from '../src/session-switch.js'
+import { resolveDispatchTarget, listFreshSessions } from '../src/session-switch.js'
 import { SlotRegistry } from '../src/slot-manager.js'
 import { DISPATCH_TOOL, dispatchFieldsOk, describeDispatch } from '../src/dispatch.js'
 import { getSpokeReport } from '../src/prompts.js'
@@ -25,20 +25,20 @@ t('matches by folder name, newest session wins, case and punctuation ignored', (
   assert.equal(resolveDispatchTarget('audos com', sessions, free()).sessionId, 'audos-1')
 })
 t('unknown project is 404, empty is 400, two folders with the name are 400', () => {
-  assert.equal(resolveDispatchTarget('nope', sessions, free()).status, 404)
-  assert.equal(resolveDispatchTarget('  ', sessions, free()).status, 400)
+  assert.match(resolveDispatchTarget('nope', sessions, free()).error!, /no session found/)
+  assert.equal(resolveDispatchTarget('  ', sessions, free()).ok, false)
   const amb = resolveDispatchTarget('web', sessions, free())
-  assert.equal(amb.ok, false); assert.equal(amb.status, 400); assert.match(amb.error, /\/a\/web/)
+  assert.equal(amb.ok, false); assert.match(amb.error, /\/a\/web/)
 })
 t('the focused session is refused with 409', () => {
   const r = resolveDispatchTarget('osborn', sessions, free('new-osborn'))
-  assert.equal(r.ok, false); assert.equal(r.status, 409)
+  assert.equal(r.ok, false); assert.match(r.error!, /foreground/)
 })
 t('a full slot cap is 409; a busy existing slot is 409; an idle one is reused', () => {
   const full = new SlotRegistry({ max: 1 }); full.add({ id: 'x', llm: {}, isFocused: false, workingDir: '/w' })
-  assert.equal(resolveDispatchTarget('osborn', sessions, free(null, 'none', full)).status, 409)
+  assert.equal(resolveDispatchTarget('osborn', sessions, free(null, 'none', full)).ok, false)
   const mine = new SlotRegistry({ max: 2 }); mine.add({ id: 'new-osborn', llm: {}, isFocused: false, workingDir: '/w' })
-  assert.equal(resolveDispatchTarget('osborn', sessions, free(null, 'busy', mine)).status, 409)
+  assert.equal(resolveDispatchTarget('osborn', sessions, free(null, 'busy', mine)).ok, false)
   assert.equal(resolveDispatchTarget('osborn', sessions, free(null, 'idle', mine)).ok, true)
 })
 
@@ -53,11 +53,18 @@ t('folders that no longer exist are dropped before the ambiguity check; a sessio
   const slots = new SlotRegistry({ max: 2 })
   const now = Date.UTC(2026, 11, 1)
   const fresh = [{ sessionId: 'live', cwd: '/w/live', timestamp: new Date(now - 60_000) }]
-  assert.equal(resolveDispatchTarget('live', fresh, { ...free(null, 'none', slots), now }).status, 409)
+  assert.equal(resolveDispatchTarget('live', fresh, { ...free(null, 'none', slots), now }).ok, false)
   const calm = [{ sessionId: 'live', cwd: '/w/live', timestamp: new Date(now - 10 * 60_000) }]
   assert.equal(resolveDispatchTarget('live', calm, { ...free(null, 'none', slots), now }).ok, true)
   slots.add({ id: 'live', llm: {}, isFocused: false, workingDir: '/w' })
   assert.equal(resolveDispatchTarget('live', fresh, { ...free(null, 'idle', slots), now }).ok, true, 'our own slot writing it is fine')
+})
+t('the session list is read fresh before the live-elsewhere check', async () => {
+  const calls: string[] = []
+  const out = await listFreshSessions({ invalidate: () => calls.push('invalidate'), list: async () => { calls.push('list'); return [1] } })
+  assert.deepEqual(calls, ['invalidate', 'list']); assert.deepEqual(out, [1])
+  const idx = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf-8')
+  assert.match(idx, /resolveDispatchTarget\(project\.trim\(\), await listFreshSessions\(\{ invalidate: invalidateSessionListCache/)
 })
 t('the dispatch tool is described from its structured input and is high risk', () => {
   assert.equal(DISPATCH_TOOL, 'mcp__dispatch__send')
@@ -87,9 +94,9 @@ t('a follow-up to a session our freed slot just wrote is not refused as live els
   const now = Date.UTC(2026, 11, 1)
   const wrote = [{ sessionId: 'w', cwd: '/w/proj', timestamp: new Date(now - 30_000) }]
   const base = free()
-  assert.equal(resolveDispatchTarget('proj', wrote, { ...base, now }).status, 409)
+  assert.equal(resolveDispatchTarget('proj', wrote, { ...base, now }).ok, false)
   assert.equal(resolveDispatchTarget('proj', wrote, { ...base, now, ownWriteAt: () => now - 29_000 }).ok, true)
-  assert.equal(resolveDispatchTarget('proj', wrote, { ...base, now, ownWriteAt: () => now - 120_000 }).status, 409, 'a later write is not ours')
+  assert.equal(resolveDispatchTarget('proj', wrote, { ...base, now, ownWriteAt: () => now - 120_000 }).ok, false, 'a later write is not ours')
 })
 t('the pipeline fast brain is skipped for every no-steer turn', () => {
   assert.match(readFileSync(new URL('../src/pipeline-direct-llm.ts', import.meta.url), 'utf-8'), /userText\.trim\(\) && steersTurn\(userText\)\) \{\n\s+this\.#firePipelineFastBrain/)

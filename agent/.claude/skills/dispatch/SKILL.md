@@ -12,7 +12,7 @@ The user keeps one voice conversation. When they ask for work in a different pro
 Call the tool with `project` (the project's folder name as the user said it, e.g. "osborn", "audos-com") and `instruction`. The newest session in that folder runs the task.
 
 - `instruction` must stand alone: the other session has none of this conversation. Say what to change, where, and how to know it worked.
-- The user is asked to approve each call, and sees the project and the start of the instruction. Plain text only: no control characters.
+- The user is asked to approve the call (they see the project and the start of the instruction) unless the session is allow-all or they already chose Always for that exact request. Plain text only: no control characters.
 - Answer "Sent." with one short line: "Sent to <project>." Do not wait for it.
 
 ## Refusals (the tool returns "Not sent: ...")

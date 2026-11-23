@@ -57,7 +57,7 @@ import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { loopIds } from './loops-ledger.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir, resolveDispatchTarget } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir, resolveDispatchTarget, listFreshSessions } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
@@ -3208,16 +3208,16 @@ async function main() {
 
   // Push an instruction into a background slot (spawning it first if needed). With `report`, the hub
   // hears the result when the slot goes idle (the Instances panel path passes none and is unchanged).
-  async function dispatchToSlot(targetSessionId: string, instruction: string, opts: { cwd?: string; report?: { project: string } } = {}): Promise<{ ok: boolean; error?: string; status?: number }> {
-    const fail = (error: string, status = 409) => { void sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error }); return { ok: false, error, status } }
+  async function dispatchToSlot(targetSessionId: string, instruction: string, opts: { cwd?: string; report?: { project: string } } = {}): Promise<{ ok: boolean; error?: string }> {
+    const fail = (error: string) => { void sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error }); return { ok: false, error } }
     const focusedId = currentLLM?.sessionId || currentResumeSessionId || null
     if (targetSessionId === focusedId) return fail('Target is the focused session — use the normal path')
     const spawned = !slots.has(targetSessionId)
     if (spawned) {
-      try { await spawnBackgroundSession(targetSessionId, opts.cwd) } catch (err) { return fail(err instanceof Error ? err.message : String(err), 500) }
+      try { await spawnBackgroundSession(targetSessionId, opts.cwd) } catch (err) { return fail(err instanceof Error ? err.message : String(err)) }
     }
     const slot = slots.get(targetSessionId)
-    if (!slot || !slot.emitter || !slot.sdkOptions) return fail('Slot not ready', 500)
+    if (!slot || !slot.emitter || !slot.sdkOptions) return fail('Slot not ready')
     if (opts.report && slot.reportPending) return fail('That project is already working on an earlier dispatch')
     slot.dispatchInFlight = true
     if (opts.report) reportSlotWhenIdle(slot, opts.report.project, spawned)
@@ -3267,7 +3267,7 @@ async function main() {
   // apply. Added to the hub's mcpServers only; the slots above are built without any.
   async function dispatchByName(project: string, instruction: string): Promise<string> {
     if (!dispatchFieldsOk(project, instruction)) return 'Not sent: project and instruction must be plain text with no control characters.'
-    const pick = resolveDispatchTarget(project.trim(), await listAllClaudeSessions(1000), {
+    const pick = resolveDispatchTarget(project.trim(), await listFreshSessions({ invalidate: invalidateSessionListCache, list: () => listAllClaudeSessions(1000) }), {
       seat: (id) => slots.admit(id), slotState: targetSlotState, dirExists: existsSync, ownWriteAt: (id) => spokeFreedAt.get(id),
     })
     if (!pick.ok) return `Not sent: ${pick.error}`
@@ -7319,7 +7319,7 @@ async function main() {
       // ============================================================
       // MCP SERVER TOGGLE HANDLERS
       // ============================================================
-      else if (data.type === 'mcp_toggle' && currentLLM) {
+      else if (data.type === 'mcp_toggle' && currentLLM && data.serverKey !== DISPATCH_SERVER) {  // the hub's own dispatch tool is not a toggle
         const serverKey = data.serverKey as string
         const enabled = data.enabled as boolean
         console.log(`🔌 MCP toggle: ${serverKey} → ${enabled ? 'ON' : 'OFF'}`)

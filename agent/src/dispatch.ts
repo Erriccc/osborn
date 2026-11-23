@@ -15,7 +15,7 @@ export const dispatchFieldsOk = (project: unknown, instruction: unknown): boolea
   typeof project === 'string' && typeof instruction === 'string'
   && project.trim().length > 0 && instruction.trim().length > 0
   && project.length <= MAX_PROJECT && instruction.length <= MAX_INSTRUCTION
-  && !/[\u0000-\u0008\u000b-\u001f\u007f-\u009f‎‏‪-‮⁦-⁩]/.test(project + instruction)
+  && !/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/.test(project + instruction)
 
 const cut = (s: string, n: number): string => (s.length > n ? `${s.slice(0, n)}...` : s)
 
