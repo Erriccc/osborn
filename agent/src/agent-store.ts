@@ -265,11 +265,8 @@ export function storeWriteRefusal(r: {
     if (r.publicDeploy || !isThisMachine(r)) return { status: 403, error: 'the store needs the sync token or a request from this machine (a machine reachable from outside must set OSBORN_SYNC_TOKEN)' }
     if (!storeWriteOriginAllowed(r.origin, r.frontendUrl)) return { status: 403, error: 'the store is refused from this site' }
   }
-  return r.read ? null : jsonRefusal(r.contentType)
-}
-
-export function jsonRefusal(contentType: string | undefined): { status: number; error: string } | null {
-  return /^application\/json\b/i.test(contentType || '') ? null : { status: 415, error: 'send JSON (Content-Type: application/json)' }
+  if (!r.read && !/^application\/json\b/i.test(r.contentType || '')) return { status: 415, error: 'send JSON (Content-Type: application/json)' }
+  return null
 }
 
 

@@ -28,8 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
 import { randomUUID, randomBytes, createHmac } from 'node:crypto'
-import { dispatchNonces, dispatchRefusal, DISPATCH_KEY_REFUSAL } from './dispatch.js'
-import { dispatchBodyHash, dispatchFieldsOk } from './dispatch-command.js'
+import { DISPATCH_SERVER, dispatchFieldsOk } from './dispatch.js'
 import { newCanvasKey, secretMatches, withCanvasKey, canvasRouteAllowed, ttsLineSig } from './canvas-key.js'
 import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
@@ -87,6 +86,7 @@ import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeC
 import { readVolumeSyncStatus } from './volume-sync-status.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
+import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { closeSessionBounded } from './lib/settle-within.js'
 
 // ============================================================
@@ -367,8 +367,6 @@ let canvasKey: string | null = null
 // `withToken` a hidden, subscribe-only LiveKit token (`viewer-*`) to watch its
 // broadcast stream. Null when no room is live. Set from main().
 let viewTokenHook: ((withToken: boolean) => Promise<Record<string, unknown> | null>) | null = null
-// POST /dispatch (the hub's voice dispatch to a project's session). Set from main(), where the slots live.
-let dispatchHook: ((project: string, instruction: string) => Promise<{ status: number; body: Record<string, unknown> }>) | null = null
 let leaveRoomHook: ((reason: string) => Promise<void>) | null = null
 // Hook for the bug-reporter skill. The /report-bug HTTP endpoint validates the
 // payload + generates the reportId in the module-level handler, then delegates
@@ -461,7 +459,7 @@ function parseDevSubdomainPort(req: { headers: { host?: string; 'fly-replay-src'
 // Route prefixes that belong to the agent itself. The proxy fall-through checks
 // this list FIRST so it never intercepts an agent API path.
 const AGENT_ROUTE_PREFIXES = [
-  '/health', '/sessions', '/skills', '/agents', '/store', '/canvas', '/canvas-token', '/view-token', '/dispatch',
+  '/health', '/sessions', '/skills', '/agents', '/store', '/canvas', '/canvas-token', '/view-token',
   '/canvas-stream', '/events', '/room-code', '/connect-room', '/leave-room',
   '/report-bug', '/restart', '/tts', '/noise-cancel', '/webhook', '/sessions/export',
   '/sessions/import', '/sessions/manifest',
@@ -1307,31 +1305,6 @@ function startApiServer(workingDir: string, port: number): void {
           res.end(JSON.stringify({ error: (e as Error).message }))
         }
       })
-      return
-    }
-
-    // ── Voice dispatch: the hub sends an instruction to a project's own session ──
-    // POST /dispatch { project, instruction } → { status: 'sent' } straight away; the result comes back as a hub turn.
-    if (req.method === 'POST' && url.pathname === '/dispatch') {
-      if (unauthorized()) return
-      const refusal = dispatchRefusal({ forwarded, host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin as string | undefined, contentType: String(req.headers['content-type'] || ''), })
-      if (refusal) return reply(refusal.status, { error: refusal.error })
-      void (async () => {
-        try {
-          const raw = await readBodyCapped(req.iterator({ destroyOnReturn: false }), 100_000)
-          if (raw === null) return reply(413, { error: 'instruction too long' })
-          const { project, instruction } = JSON.parse(raw || '{}') as { project?: unknown; instruction?: unknown }
-          if (typeof project !== 'string' || typeof instruction !== 'string' || !project.trim() || !instruction.trim()) return reply(400, { error: 'send {project, instruction} as strings' })
-          if (!dispatchFieldsOk(project, instruction)) return reply(400, { error: 'project and instruction cannot contain control characters' })
-          // The key is for the body the user approved: a leaked or reused key with another body is refused.
-          if (!dispatchNonces.consume(req.headers['x-osborn-dispatch-key'] as string | undefined, dispatchBodyHash(project, instruction))) return reply(DISPATCH_KEY_REFUSAL.status, { error: DISPATCH_KEY_REFUSAL.error })
-          if (!dispatchHook) return reply(503, { error: 'the agent is still starting' })
-          const out = await dispatchHook(project.trim(), instruction.trim())
-          reply(out.status, out.body)
-        } catch (e) {
-          reply(400, { error: (e as Error).message })
-        }
-      })()
       return
     }
 
@@ -3288,6 +3261,27 @@ async function main() {
       }
     }, 5_000)
   }
+
+  // The hub's `dispatch` tool (dispatch.ts): an in-process MCP tool, so a call is structured input that the
+  // permission dialog describes as it will run. Not in allowedTools, so canUseTool and the approval mode
+  // apply. Added to the hub's mcpServers only; the slots above are built without any.
+  async function dispatchByName(project: string, instruction: string): Promise<string> {
+    if (!dispatchFieldsOk(project, instruction)) return 'Not sent: project and instruction must be plain text with no control characters.'
+    const pick = resolveDispatchTarget(project.trim(), await listAllClaudeSessions(1000), {
+      seat: (id) => slots.admit(id), slotState: targetSlotState, dirExists: existsSync, ownWriteAt: (id) => spokeFreedAt.get(id),
+    })
+    if (!pick.ok) return `Not sent: ${pick.error}`
+    const cwd = await resolveCwdForSession(pick.sessionId, pick.cwd)
+    if (!cwd) return `Not sent: the ${pick.project} session's folder is gone.`
+    const sent = await dispatchToSlot(pick.sessionId, instruction.trim(), { cwd, report: { project: pick.project } })
+    return sent.ok ? `Sent to ${pick.project}. Its result comes back as a notification.` : `Not sent: ${sent.error}`
+  }
+  mcpServers[DISPATCH_SERVER] = createSdkMcpServer({
+    name: DISPATCH_SERVER,
+    tools: [tool('send', "Send a task to another project's own session; the result comes back to you as a notification.",
+      { project: z.string().describe("the project's folder name"), instruction: z.string().describe('the task, self-contained: that session has none of this conversation') },
+      async ({ project, instruction }) => ({ content: [{ type: 'text' as const, text: await dispatchByName(project, instruction) }] }))],
+  })
 
   let localParticipant: LocalParticipant | null = null
   let agentState = 'initializing'
@@ -8176,17 +8170,6 @@ async function main() {
     if (!activeRoomName) return null
     const token = await mintRoomToken(activeRoomName, { identity: 'meeting-canvas', name: 'Meeting Canvas', metadata: { type: 'canvas' } }, { canPublish: false, canSubscribe: true, canPublishData: false })
     return { token, url: process.env.LIVEKIT_URL || '', room: activeRoomName }
-  }
-
-  dispatchHook = async (project, instruction) => {
-    const pick = resolveDispatchTarget(project, await listAllClaudeSessions(1000), {
-      seat: (id) => slots.admit(id), slotState: targetSlotState, dirExists: existsSync, ownWriteAt: (id) => spokeFreedAt.get(id),
-    })
-    if (!pick.ok) return { status: pick.status, body: { error: pick.error } }
-    const cwd = await resolveCwdForSession(pick.sessionId, pick.cwd)
-    if (!cwd) return { status: 404, body: { error: `the ${pick.project} session's folder is gone` } }
-    const sent = await dispatchToSlot(pick.sessionId, instruction, { cwd, report: { project: pick.project } })
-    return sent.ok ? { status: 200, body: { status: 'sent', project: pick.project, sessionId: pick.sessionId } } : { status: sent.status ?? 409, body: { error: sent.error } }
   }
 
   viewTokenHook = async (withToken) => {

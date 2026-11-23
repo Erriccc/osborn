@@ -13,8 +13,6 @@ import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, PHONE_TOOLS_DENIED } from './prompts.js'
-import { hasDispatchPlaceholder, parseDispatchCurl, dispatchBodyHash, DISPATCH_PLACEHOLDER } from './dispatch-command.js'
-import { dispatchNonces, isOwnApiCurl } from './dispatch.js'
 import { steersTurn } from './content/transcript-sanitizer.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
@@ -2728,7 +2726,7 @@ class ClaudeLLMStream extends llm.LLMStream {
           // only, no shell chaining — not a general curl allowance.
           if ((toolName as string) === 'Bash') {
             const cmd = String((input as any)?.command || '')
-            if (isOwnApiCurl(cmd)) {
+            if (/^\s*curl\b[^;&|]*https?:\/\/(localhost|127\.0\.0\.1):\d+\/(canvas|tts|noise-cancel)\b/.test(cmd) && !/[;&|]/.test(cmd)) {
               console.log(`✅ Auto-approved Bash → own API (canvas/tts/noise-cancel path)`)
               return { behavior: 'allow', updatedInput: input }
             }
@@ -2795,24 +2793,12 @@ class ClaudeLLMStream extends llm.LLMStream {
             return { behavior: 'deny', message: 'Research mode does not use plan mode. Just proceed with the research directly.' }
           }
           
-          // A dispatch is labelled and keyed only in the skill's exact shape; any other placeholder command is refused unseen.
-          if ((toolName as string) === 'Bash' && hasDispatchPlaceholder(String((input as any)?.command || '')) && !parseDispatchCurl(String((input as any).command))) {
-            return { behavior: 'deny', message: 'A dispatch must be the dispatch skill\'s command as written: one line, its three headers once each, `--data-binary @-` and one JSON heredoc ending in EOF.' }
-          }
           console.log(`⚠️ Permission needed: ${toolName}`)
           // Track the pending dialog so steer-priority ('now') suppression can
           // avoid aborting the very turn that's waiting on the user's answer.
           this.#llmRef.permissionPending = true
           try {
-            const answer = await this.#onPermissionRequest(toolName, input)
-            // Approved (by the user, the approval mode or allow-all): only now does a dispatch get its one-time key.
-            const approved = String((answer as any)?.updatedInput?.command || '')
-            if ((toolName as string) === 'Bash' && answer.behavior === 'allow' && hasDispatchPlaceholder(approved)) {
-              const body = parseDispatchCurl(approved)  // the body the user saw is the body the key is for
-              if (!body) return { behavior: 'deny', message: 'A dispatch must be the dispatch skill\'s command as written.' }
-              return { ...answer, updatedInput: { ...(answer as any).updatedInput, command: approved.split(DISPATCH_PLACEHOLDER).join(dispatchNonces.mint(dispatchBodyHash(body.project, body.instruction))) } }
-            }
-            return answer
+            return await this.#onPermissionRequest(toolName, input)
           } finally {
             this.#llmRef.permissionPending = false
           }
@@ -2872,15 +2858,6 @@ class ClaudeLLMStream extends llm.LLMStream {
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
                 }
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
-              }
-
-              // A dispatch starts a bypassPermissions spoke: a command carrying the key placeholder always
-              // goes through approval (the approval mode applies), as Write/Edit do below, since Bash is
-              // in allowedTools and would never reach canUseTool. Only canUseTool turns the placeholder into
-              // a usable one-time key, so a command that skips this gate is refused by /dispatch.
-              if (toolName === 'Bash' && hasDispatchPlaceholder(String(toolInput.command || ''))) {
-                this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main', agentId: input?.agent_id })
-                return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask', ...(stewardNote ? { additionalContext: stewardNote } : {}) } }
               }
 
               // File-edit access control (agent-store.ts EDIT_TOOLS) — keyed by the agent's ROLE

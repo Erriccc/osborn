@@ -9,7 +9,7 @@
  * - the session's always-allow list ("Always" in the browser, keypad 3) and what it covers.
  */
 import { classifyRisk, type RiskTier } from './risk-tier.js'
-import { parseDispatchCurl } from './dispatch-command.js'
+import { DISPATCH_TOOL, describeDispatch } from './dispatch.js'
 
 /** An answer to a pending permission, from any surface. */
 export type PermissionAnswer = 'allow' | 'deny' | 'always_allow'
@@ -84,8 +84,7 @@ export function describePermission(toolName: string, input: ToolInput): string {
   const cmd = str(input?.command)
   const file = str(input?.file_path)
   const url = str(input?.url)
-  const spoke = toolName === 'Bash' ? parseDispatchCurl(cmd) : null
-  if (spoke) return `Start a background session in ${spoke.project.slice(0, 60)}${spoke.project.length > 60 ? '...' : ''}: ${spoke.instruction.slice(0, 120)}${spoke.instruction.length > 120 ? '...' : ''}`
+  if (toolName === DISPATCH_TOOL) return describeDispatch(input)
   if (toolName === 'Bash' && cmd) return `I want to run the command: ${cmd.substring(0, 60)}${cmd.length > 60 ? '...' : ''}`
   if (toolName === 'Write' && file) return `I want to create or overwrite the file: ${file}`
   if (toolName === 'Edit' && file) return `I want to edit the file: ${file}`
@@ -98,8 +97,7 @@ export function speakablePermission(toolName: string, input: ToolInput): string 
   const cmd = str(input?.command).trim()
   const file = str(input?.file_path) || str(input?.notebook_path)
   const url = str(input?.url)
-  const spoke = toolName === 'Bash' ? parseDispatchCurl(cmd) : null
-  if (spoke) return `start a background session in ${spoke.project.slice(0, 60)}${spoke.project.length > 60 ? '...' : ''}`
+  if (toolName === DISPATCH_TOOL) return describeDispatch(input).replace(/^Start/, 'start')
   if (toolName === 'Bash' && cmd) {
     const words = cmd.split(/\s+/).slice(0, 8).join(' ')
     return `run the command ${words}${cmd.split(/\s+/).length > 8 ? ' and so on' : ''}`
