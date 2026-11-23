@@ -1033,7 +1033,7 @@ const EXACT_COUNT_SAVE_MS = 10_000
 const exactCountQueue: { filePath: string; mtimeMs: number; size: number }[] = []
 async function drainExactCounts(): Promise<void> {
   // The file being counted stays at the head of the queue, so a listing meanwhile cannot queue it again.
-  let lastSave = 0
+  let lastSave = 0, unsaved = false
   for (let job = exactCountQueue[0]; job; job = exactCountQueue[0]) {
     const started = Date.now()
     try {
@@ -1043,11 +1043,14 @@ async function drainExactCounts(): Promise<void> {
       if (acc && hit && hit.mtimeMs === job.mtimeMs && hit.size === job.size) {
         hit.messageCount = Math.max(acc.count, hit.messageCount)  // the sampled floor keeps a large session listed
         hit.exact = true
-        if (exactCountQueue.length === 1 || Date.now() - lastSave > EXACT_COUNT_SAVE_MS) {
-          saveSessionManifest(manifest)
-          lastSave = Date.now()
-          _sessionListCache = null  // the next listing reads the real counts
-        }
+        unsaved = true
+      }
+      // Checked even when this file was skipped, so the last file never strands earlier unsaved counts.
+      if (unsaved && (exactCountQueue.length === 1 || Date.now() - lastSave > EXACT_COUNT_SAVE_MS)) {
+        saveSessionManifest(manifest)
+        lastSave = Date.now()
+        unsaved = false
+        _sessionListCache = null  // the next listing reads the real counts
       }
       // Pause as long as the pass took before the next file.
       await new Promise((r) => setTimeout(r, Date.now() - started))

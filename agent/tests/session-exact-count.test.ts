@@ -2,11 +2,12 @@
 // still being written (live) keeps its sampled count instead of being recounted every turn.
 // npx tsx agent/tests/session-exact-count.test.ts
 import assert from 'node:assert/strict'
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const home = mkdtempSync(join(tmpdir(), 'session-exact-count-'))
+process.on('exit', () => rmSync(home, { recursive: true, force: true }))  // ~36 MB of fixtures per run
 process.env.HOME = home
 delete process.env.CLAUDE_CONFIG_DIR
 const dir = join(home, '.claude', 'projects', '-tmp')
