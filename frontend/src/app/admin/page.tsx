@@ -20,7 +20,8 @@ type AdminUser = {
   sandbox_id: string | null
   sandbox_status: string | null
   instance_status: string | null
-  last_seen: string | null
+  machine_state: string | null
+  last_active: string | null
 }
 
 // ── Formatting helpers ──────────────────────────────────────────
@@ -59,9 +60,9 @@ function statusColor(status: string | null): string {
   return 'var(--text-secondary)'
 }
 
-function StatusPill({ status }: { status: string | null }) {
-  const label = (status ?? 'none').toLowerCase()
-  const color = statusColor(status)
+function StatusPill({ status, stored }: { status: string | null; stored?: boolean }) {
+  const label = (status ?? 'none').toLowerCase() + (stored && status ? ' (stored)' : '')
+  const color = stored ? 'var(--text-muted)' : statusColor(status)
   return (
     <span
       className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-medium whitespace-nowrap"
@@ -200,7 +201,7 @@ export default function AdminPage() {
                     <th className="px-4 py-3 font-medium">Last sign-in</th>
                     <th className="px-4 py-3 font-medium">Machine</th>
                     <th className="px-4 py-3 font-medium">Status</th>
-                    <th className="px-4 py-3 font-medium">Last seen</th>
+                    <th className="px-4 py-3 font-medium">Last active</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -219,10 +220,10 @@ export default function AdminPage() {
                         {u.sandbox_id ?? '—'}
                       </td>
                       <td className="px-4 py-3">
-                        <StatusPill status={u.sandbox_status ?? u.instance_status} />
+                        <StatusPill status={u.machine_state ?? u.sandbox_status ?? u.instance_status} stored={!u.machine_state} />
                       </td>
                       <td className="px-4 py-3 text-[var(--text-secondary)] text-[13px] whitespace-nowrap">
-                        {fmtRelative(u.last_seen)}
+                        {fmtRelative(u.last_active)}
                       </td>
                     </tr>
                   ))}
@@ -238,17 +239,20 @@ export default function AdminPage() {
                     <p className="text-[var(--text-primary)] text-sm font-medium truncate">
                       {u.email ?? '—'}
                     </p>
-                    <StatusPill status={u.sandbox_status ?? u.instance_status} />
+                    <StatusPill status={u.machine_state ?? u.sandbox_status ?? u.instance_status} stored={!u.machine_state} />
                   </div>
                   <dl className="grid grid-cols-2 gap-x-3 gap-y-2">
                     <MobileField label="Signed up" value={fmtDate(u.created_at)} />
                     <MobileField label="Last sign-in" value={fmtRelative(u.last_sign_in_at)} />
                     <MobileField label="Machine" value={u.sandbox_id ?? '—'} mono />
-                    <MobileField label="Last seen" value={fmtRelative(u.last_seen)} />
+                    <MobileField label="Last active" value={fmtRelative(u.last_active)} />
                   </dl>
                 </div>
               ))}
             </div>
+            <p className="px-4 py-3 border-t border-[var(--border-subtle)] text-[var(--text-secondary)] text-xs leading-relaxed">
+              Last sign-in moves only when someone signs in again, so a saved session never updates it. Last active is the newest of when the app last started the machine and the machine&apos;s last start or stop (an idle machine stops about 15 minutes after use). Status is read from Fly when this page loads; &quot;(stored)&quot; means Fly could not be read and the last saved value is shown.
+            </p>
           </div>
         )}
       </div>

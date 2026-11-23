@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { requireAdmin, AdminAuthError } from '@/lib/admin'
+import { isMachinesConfigured, readMachineActivity } from '@/lib/machines'
 
 /**
  * GET /api/admin/users — the data behind the /admin users view.
@@ -56,8 +57,25 @@ export async function GET() {
     (instances ?? []).map((row) => [row.user_id as string, row]),
   )
 
+  // The stored status is only as fresh as the last write (a machine stopped by Fly's idle exit never updates
+  // it), so ask Fly for the live state. A read that fails, times out (6 s) or has no Fly to ask returns no
+  // `machine_state`, and the page then marks the stored value as stored.
+  const flyConfigured = isMachinesConfigured()
+  const live = new Map(await Promise.all(
+    (instances ?? []).map(async (row) => {
+      const id = row.sandbox_id as string | null
+      if (!id || !flyConfigured) return [row.user_id as string, null] as const
+      return [row.user_id as string, await Promise.race([readMachineActivity(id), new Promise<null>((r) => setTimeout(() => r(null), 6000))])] as const
+    }),
+  ))
+
   const users = (authUsers ?? []).map((u) => {
     const instance = instanceByUser.get(u.id as string)
+    const machine = live.get(u.id as string)
+    // Supabase records last_sign_in_at only when someone signs in again, so a saved session never moves it.
+    // "Last active" is the newest of when the app last provisioned or started the machine (last_seen) and the
+    // machine's last start or exit (Fly).
+    const activeAt = Math.max(Date.parse(instance?.last_seen as string) || 0, machine?.lastEventAt ?? 0)
     return {
       id: u.id,
       email: u.email ?? null,
@@ -66,7 +84,8 @@ export async function GET() {
       sandbox_id: instance?.sandbox_id ?? null,
       sandbox_status: instance?.sandbox_status ?? null,
       instance_status: instance?.status ?? null,
-      last_seen: instance?.last_seen ?? null,
+      machine_state: machine?.status ?? null,
+      last_active: activeAt ? new Date(activeAt).toISOString() : null,
     }
   })
 

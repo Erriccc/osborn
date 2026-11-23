@@ -44,6 +44,7 @@ interface FlyMachine {
   image_ref?: { registry: string; repository: string; tag: string }
   created_at: string
   updated_at: string
+  events?: { type: string; timestamp: number }[]
   config?: { env?: Record<string, string>; image?: string; services?: unknown[]; [key: string]: unknown }
 }
 
@@ -371,6 +372,18 @@ async function getFirstMachine(appName: string, throwOnError = false): Promise<F
     if (throwOnError) throw err
     return null
   }
+}
+
+/**
+ * A user's machine as Fly reports it right now, for the admin view: its status (as findUserSandbox
+ * maps it) and the time of its latest start or exit. Null when Fly cannot be read, so the caller
+ * keeps the stored value.
+ */
+export async function readMachineActivity(appName: string): Promise<{ status: SandboxInfo['status']; lastEventAt: number } | null> {
+  const machine = await getFirstMachine(appName)
+  if (!machine) return null
+  const lastEventAt = Math.max(0, ...(machine.events ?? []).filter((e) => e.type === 'start' || e.type === 'exit').map((e) => e.timestamp))
+  return { status: mapMachineState(machine.state), lastEventAt }
 }
 
 /**
