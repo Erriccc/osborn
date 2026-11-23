@@ -135,7 +135,7 @@ The fast brain (`fast-brain.ts`) maintains `spec.md` — reading FULL untruncate
 - `frontend/src/app/api/token/route.ts` — LiveKit JWT token generation with metadata (provider, voiceArch, sessionId, workingDirectory).
 - `frontend/src/app/api/instance/route.ts` — User instance CRUD (Supabase-backed).
 - `frontend/src/app/api/sandbox/route.ts` — Daytona sandbox CRUD + keepalive PATCH.
-- `frontend/src/app/page.tsx` — Landing page: Google/GitHub OAuth + guest connect.
+- `frontend/src/app/page.tsx` — Landing page (marketing); sign-in is `/login`.
 - `frontend/src/app/dashboard/page.tsx` — Dashboard: recent chats, settings (`connectionMode` local/cloud), agent health, profile.
 - `frontend/src/app/chat/page.tsx` — Voice chat wrapper that auto-resolves the agent URL (cloud sandbox or local) and mounts `VoiceRoom`.
 - `frontend/src/middleware.ts` — Supabase auth session middleware.
@@ -149,7 +149,7 @@ Frontend ↔ Agent communication uses LiveKit data channels:
 - **One dispatch for app commands** (#367): `handleDataReceived` only checks the sender, then runs `dispatchAction(data, {sender, reply})` in `index.ts`. A phone call's voice actions (`agent/src/phone-voice-actions.ts`: a pending-approval yes/no, approval mode, "what are you doing?", "stop that" / "stop the researcher", recent sessions, "switch to …", "what did you make?", "keep working after I hang up") run through it, limited to `PHONE_ACTION_TYPES` in `data-sender-auth.ts`; there is no HTTP route to them, so the agent's own tools cannot loosen or answer its approvals. A matched utterance never reaches the model (`takeVoiceAction` in `pipeline-direct-llm.ts`). Every pattern is a whole short command; a switch needs "switch to the X session/project/conversation" or "switch session to X", a name `pickSession` matches by session title (never the folder alone), and a yes to "Switch to <title>?" in the next turn; else the turn goes to the model. A spoken mode change is saved (there is no call-only mode) and is refused while a request is waiting. A brain parked after "keep working" on a call keeps the phone policy for its requests (`phoneRequestRoute`: denied, or held for a person, never auto-approved) until a browser or app re-attaches it. Until #362: a call can only deny, only make the mode stricter, and cannot keep working after hang-up.
 
 ### Authentication & Multi-User
-- **Supabase Auth**: Google + GitHub OAuth via `@supabase/ssr`. Callback at `/auth/callback`.
+- **Supabase Auth** via `@supabase/ssr`: the web signs in with an email code only (`EmailOtpLogin`); the mobile app also offers Google OAuth. Callback at `/auth/callback`.
 - **Database**: Supabase Postgres with RLS. Tables: `instances` (user→server URL), `agent_sessions`, `always_allow_paths`.
 - **Instance API**: `GET/POST /api/instance` — stores user's agent server URL + LiveKit room name.
 - **File uploads**: Supabase Storage bucket `osborn-storage`. Images/files uploaded → public URL sent via data channel.
@@ -224,7 +224,7 @@ Sprites are persistent Linux sandboxes (Ubuntu, Node 22, 100GB NVMe) managed by 
 - **Sandbox log capture**: `agent/Dockerfile.sandbox` entrypoint tees stdout/stderr to `/workspace/osborn.log` (volume-backed, 100 MB cap, 50 MB tail rotation on boot). `frontend/src/lib/machines.ts execInSprite()` reads this via the documented `/exec` API with `tail -n 500`. Fly Machines does NOT expose a REST `/logs` endpoint — the previous implementation returned the 404 error string as "the log content" for every disconnect-time upload to Supabase Storage.
 
 ### Frontend Routes
-- `/` — Landing/login (Google/GitHub OAuth + guest connect). Authenticated users redirect to `/dashboard`.
+- `/` — Landing page. `/login` is email-code sign-in only (`EmailOtpLogin`). Authenticated users redirect to `/dashboard`.
 - `/dashboard` — Recent conversations, agent health, settings, user profile. Click chat → `/chat`.
 - `/chat` — Auto-connects to agent, wraps VoiceRoom. Disconnect → back to `/dashboard`.
 - `/auth/callback` — Supabase OAuth code exchange.
