@@ -209,7 +209,7 @@ OPENAI_API_KEY=your-openai-key        # At least one of OpenAI or Google require
 GOOGLE_API_KEY=your-google-key        # Recommended (Gemini Flash is fast brain primary)
 SONIOX_API_KEY=your-soniox-key        # Default STT and TTS (pipeline voice)
 DEEPGRAM_API_KEY=your-deepgram-key    # Optional, only with OSBORN_STT_PROVIDER/OSBORN_TTS_PROVIDER=deepgram
-SMITHERY_API_KEY=your-smithery-key    # Optional, for cloud MCP servers
+SMITHERY_API_KEY=your-smithery-key    # Optional, cloud MCP servers (not connected yet, #501)
 RECALL_API_KEY=your-recall-key        # Optional, for Zoom/Google Meet bot
 LIVEKIT_REMOTE_EOT_URL=...            # Optional, LiveKit Cloud turn detector
 OSBORN_CWD=/path/to/project           # Optional, overrides config.workingDirectory
