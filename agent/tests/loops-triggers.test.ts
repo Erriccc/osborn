@@ -71,11 +71,8 @@ await t('exitAfterFlush: a flush that never settles still exits within the box',
 
 await t('meeting @-routing cap skip records an inferred slot_refused', async () => {
   const body = slice(idx, 'routing skipped', '    try {')
-  assert.match(body, /recordLoop\?\.\(\{ kind: 'slot_refused', id: loopIds\.meetingSkip\(pendingTarget\)/)
+  assert.match(body, /recordLoop\?\.\(\{ kind: 'slot_refused', id: loopIds\.slot\(`meeting \$\{pendingTarget\}`\)/)
   assert.match(body, /source: 'inferred', origin: 'system'/)
-  const { loopIds } = await import('../src/loops-ledger.js')
-  assert.equal(loopIds.meetingSkip('x'), loopIds.meetingSkip('x'))
-  assert.notEqual(loopIds.meetingSkip('x'), loopIds.meetingSkip('y'))
 })
 
 await t('idle exit calls the flush before exit', () => {

@@ -232,7 +232,6 @@ export const loopIds = {
   question: (toolUseId: string) => `question:${toolUseId}`,
   permission: (requestId: string) => `perm:${requestId}`,
   slot: (text: string) => `slot:${loopKey('slot', text)}`,
-  meetingSkip: (target: string) => `slot:${loopKey('slot', `meeting ${target}`)}`,
   budget: (turn: number, at: string) => `budget:${turn}:${at}`,
   openLoop: (text: string) => `open_loop:${loopKey('open_loop', text)}`,
   steward: () => 'steward',

@@ -70,7 +70,7 @@ t('question answered closes', () => {
 })
 
 t('meeting-skip slot_refused is an open inferred item, deduped per target', () => {
-  const id = L.loopIds.meetingSkip('reviewer')
+  const id = L.loopIds.slot('meeting reviewer')
   assert.ok(L.appendLoopRecord('msess', root, { kind: 'slot_refused', id, text: '@reviewer not routed: at dispatch cap', source: 'inferred', origin: 'system' }))
   assert.ok(L.appendLoopRecord('msess', root, { kind: 'slot_refused', id, text: '@reviewer not routed: at dispatch cap', source: 'inferred', origin: 'system' }))
   const line = readFileSync(L.getLoopsPath('msess', root), 'utf-8').trim().split('\n')[0]
