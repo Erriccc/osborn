@@ -11,7 +11,7 @@ The user keeps one voice conversation. When they ask for work in a different pro
 
 ```bash
 curl -sS -X POST http://localhost:8741/dispatch -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $OSBORN_SYNC_TOKEN" -H "X-Osborn-Dispatch-Key: $OSBORN_DISPATCH_KEY" \
+  -H "Authorization: Bearer $OSBORN_SYNC_TOKEN" -H "X-Osborn-Dispatch-Key: __OSBORN_DISPATCH_APPROVAL__" \
   --data-binary @- <<'EOF'
 {"project":"<folder name>","instruction":"<the task, self-contained>"}
 EOF
@@ -21,8 +21,7 @@ EOF
 
 - `project` is the project's folder name as the user said it ("osborn", "audos-com"). The newest session in that folder runs the task.
 - `instruction` must stand alone: the other session has none of this conversation. Say what to change, where, and how to know it worked.
-- The two headers come from your own environment (leave them exactly as written). Only the voice conversation has them: a background session is not given the key (a process of the same user could still read it from /proc), so never use this skill from one.
-- The call goes through the approval dialog, so the saved approval mode applies: it asks, is auto-reviewed or is allowed as for any other tool, including in a phone call or an allow-all session.
+- Keep the key header exactly as written: `__OSBORN_DISPATCH_APPROVAL__` is not a secret, it is a marker. The command always goes through the approval dialog (the saved approval mode applies, in a phone call or an allow-all session too), and only an approved command gets a one-time key swapped in. A command that skips the dialog is refused with 401/403. A background session has no approval path, so it can never dispatch; never use this skill from one.
 - Answer `{"status":"sent"}` with one short line: "Sent to <project>." Do not wait for it.
 
 ## Refusals
@@ -47,4 +46,5 @@ Status `done` means the spoke went idle, not that its checks passed: say what th
 
 - Hanging up stops the spoke; its unfinished work stays in its session and nothing is spoken back.
 - The spoke does not run the named-agent chain (tester, steward, reviewer): it runs as a plain session, so `done` means idle, not verified.
+- No time or spend budget; a spoke still working after an hour is reported as timed out and keeps running.
 - At most two spokes at once, and one dispatch per project at a time.

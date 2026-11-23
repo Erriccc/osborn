@@ -26,7 +26,6 @@ import type { EventEmitter } from 'node:events'
  */
 export const SLOT_ENV_DENY: ReadonlySet<string> = new Set([
   'OSBORN_SYNC_TOKEN',
-  'OSBORN_DISPATCH_KEY',  // /dispatch's per-boot key: only the hub may dispatch, never a spoke
   'LIVEKIT_API_SECRET',
   'LIVEKIT_API_KEY',
   'PUSHOVER_TOKEN',

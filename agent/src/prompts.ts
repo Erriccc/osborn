@@ -1750,7 +1750,7 @@ export function getNotificationInjection(text: string): string {
 }
 
 /** What the hub hears when a dispatched spoke goes idle (summary bounded; the spoke's session holds the rest). */
-export function getSpokeReport(r: { project: string; sessionId: string; status: 'done' | 'failed' | 'stopped'; summary: string }): string {
+export function getSpokeReport(r: { project: string; sessionId: string; status: 'done' | 'failed' | 'stopped' | 'timed_out'; summary: string }): string {
   const summary = r.summary.trim().slice(0, 1500) || '(the spoke gave no final message)'
   return getNotificationInjection(
     `Spoke report. Project: ${r.project}. Session: ${r.sessionId.slice(0, 8)}. Status: ${r.status}.\n` +

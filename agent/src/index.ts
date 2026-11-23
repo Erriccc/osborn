@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
 import { randomUUID, randomBytes, createHmac } from 'node:crypto'
+import { dispatchNonces } from './dispatch-nonce.js'
 import { newCanvasKey, secretMatches, withCanvasKey, canvasRouteAllowed, ttsLineSig } from './canvas-key.js'
 import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
@@ -365,10 +366,6 @@ let canvasKey: string | null = null
 // `withToken` a hidden, subscribe-only LiveKit token (`viewer-*`) to watch its
 // broadcast stream. Null when no room is live. Set from main().
 let viewTokenHook: ((withToken: boolean) => Promise<Record<string, unknown> | null>) | null = null
-// Per-boot key for POST /dispatch. The hub's Claude subprocess inherits it; background slots never get it
-// (SLOT_ENV_DENY), so a spoke cannot dispatch further spokes.
-const DISPATCH_KEY = process.env.OSBORN_DISPATCH_KEY || randomBytes(18).toString('hex')
-process.env.OSBORN_DISPATCH_KEY = DISPATCH_KEY
 // POST /dispatch (the hub's voice dispatch to a project's session). Set from main(), where the slots live.
 let dispatchHook: ((project: string, instruction: string) => Promise<{ status: number; body: Record<string, unknown> }>) | null = null
 let leaveRoomHook: ((reason: string) => Promise<void>) | null = null
@@ -1316,7 +1313,7 @@ function startApiServer(workingDir: string, port: number): void {
     // POST /dispatch { project, instruction } → { status: 'sent' } straight away; the result comes back as a hub turn.
     if (req.method === 'POST' && url.pathname === '/dispatch') {
       if (unauthorized()) return
-      const refusal = dispatchRefusal({ forwarded, host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin as string | undefined, contentType: String(req.headers['content-type'] || ''), keyOk: secretMatches(DISPATCH_KEY, req.headers['x-osborn-dispatch-key'] as string | undefined) })
+      const refusal = dispatchRefusal({ forwarded, host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin as string | undefined, contentType: String(req.headers['content-type'] || ''), keyOk: dispatchNonces.consume(req.headers['x-osborn-dispatch-key'] as string | undefined) })
       if (refusal) return reply(refusal.status, { error: refusal.error })
       void (async () => {
         try {
@@ -3228,6 +3225,7 @@ async function main() {
     await sendToFrontend({ type: 'background_session_spawned', slotId, workingDir: slotWorkingDir })
   }
 
+  const DISPATCH_REPORT_CAP_MS = 60 * 60 * 1000  // a spoke still working after an hour is reported as timed out (it keeps running)
   // When a spoke slot we spawned was freed: its last session write is ours, not a terminal's (resolveDispatchTarget).
   const spokeFreedAt = new Map<string, number>()
 
@@ -3261,16 +3259,18 @@ async function main() {
     slot.reportPending = true
     const onResult = ({ text }: { text: string }) => { if (text) last = text }
     slot.emitter.on('assistant_result', onResult)
+    const startedAt = Date.now()
     const poll = setInterval(() => {
       const gone = slots.get(slot.id) !== slot
-      if (!gone && !((slot.llm as any).busyState?.()?.idle ?? true)) return
+      const timedOut = Date.now() - startedAt > DISPATCH_REPORT_CAP_MS
+      if (!gone && !timedOut && !((slot.llm as any).busyState?.()?.idle ?? true)) return
       clearInterval(poll)
       slot.emitter.off('assistant_result', onResult)
       slot.reportPending = false
       // A hang-up or stop releases the slot on purpose; only a crash is a failure.
-      const status = !gone ? 'done' : slot.released ? 'stopped' : 'failed'
+      const status = timedOut ? 'timed_out' : !gone ? 'done' : slot.released ? 'stopped' : 'failed'
       // This dispatch made the slot, so it frees the seat (a spoke stays open only when the panel opened it).
-      if (!gone && spawned) { slots.remove(slot.id, slot); spokeFreedAt.set(slot.id, Date.now()); if (spokeFreedAt.size > 50) spokeFreedAt.delete(spokeFreedAt.keys().next().value as string); void sendToFrontend({ type: 'background_session_stopped', slotId: slot.id }); armAloneTimer() }
+      if (!gone && !timedOut && spawned) { slots.remove(slot.id, slot); spokeFreedAt.set(slot.id, Date.now()); if (spokeFreedAt.size > 50) spokeFreedAt.delete(spokeFreedAt.keys().next().value as string); void sendToFrontend({ type: 'background_session_stopped', slotId: slot.id }); armAloneTimer() }
       const hubUp = !!currentLLM && !!activeRoom && peopleIn(activeRoom) > 0
       console.log(`📬 [DISPATCH] ${project} ${status}; ${hubUp ? 'telling the hub' : 'notifying the phone'}`)
       if (hubUp) {
@@ -3280,7 +3280,7 @@ async function main() {
           currentLLM!.chat({ chatCtx: ctx })
         } catch (err) { console.warn(`⚠️ Spoke report failed: ${(err as Error).message}`) }
       } else {
-        void notifyPhone(status === 'stopped' ? `${project} was stopped before it finished (the session ended).` : `${project} ${status}: ${last.trim().slice(0, 300) || 'no final message'}`)
+        void notifyPhone(status === 'timed_out' ? `${project} is still working after an hour.` : status === 'stopped' ? `${project} was stopped before it finished (the session ended).` : `${project} ${status}: ${last.trim().slice(0, 300) || 'no final message'}`)
       }
     }, 5_000)
   }

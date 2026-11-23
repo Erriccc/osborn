@@ -272,19 +272,33 @@ function jsonRefusal(contentType: string | undefined): { status: number; error: 
   return /^application\/json\b/i.test(contentType || '') ? null : { status: 415, error: 'send JSON (Content-Type: application/json)' }
 }
 
-/** A shell command that calls the agent's POST /dispatch. Bash is in allowedTools, so canUseTool never
- *  sees it; the PreToolUse hook asks on this instead. Over-asks on any curl/wget naming /dispatch. */
-export function isDispatchCurl(command: string): boolean {
-  return /\b(curl|wget)\b/.test(command) && /\/dispatch(?![\w-])/.test(command)
+/** Stands in for the one-time key in the dispatch skill's command; canUseTool swaps it for a nonce only once approved. */
+export const DISPATCH_PLACEHOLDER = '__OSBORN_DISPATCH_APPROVAL__'
+export const hasDispatchPlaceholder = (cmd: string): boolean => cmd.includes(DISPATCH_PLACEHOLDER)
+
+/** The agent's own localhost API a spoken reply may curl without a dialog (canvas/tts/noise-cancel),
+ *  never a command carrying the dispatch placeholder (that always goes to the approval dialog). */
+export function isOwnApiCurl(cmd: string): boolean {
+  return /^\s*curl\b[^;&|]*https?:\/\/(localhost|127\.0\.0\.1):\d+\/(canvas|tts|noise-cancel)\b/.test(cmd) && !/[;&|]/.test(cmd) && !hasDispatchPlaceholder(cmd)
+}
+
+/** {project, instruction} from the skill's heredoc dispatch curl, or null for any other shape. */
+export function parseDispatchCurl(cmd: string): { project: string; instruction: string } | null {
+  if (!hasDispatchPlaceholder(cmd)) return null
+  const m = /<<'?(\w+)'?\n([\s\S]*?)\n\1\b/.exec(cmd)
+  try {
+    const j = JSON.parse(m ? m[2] : '')
+    return typeof j?.project === 'string' && typeof j?.instruction === 'string' ? { project: j.project, instruction: j.instruction } : null
+  } catch { return null }
 }
 
 /** Refusal for POST /dispatch, or null. The target slots run with permissions bypassed, so only
- *  the hub may ask: a loopback request, not forwarded, from no browser page, carrying the per-boot
- *  dispatch key (slots never get it), sending JSON.
+ *  an approved command may ask: a loopback request, not forwarded, from no browser page, carrying a
+ *  live one-time nonce (dispatch-nonce.ts), sending JSON.
  *  (The token gate, unauthorized(), has already run.) */
 export function dispatchRefusal(r: { forwarded: boolean; host?: string; remote?: string; origin?: string; contentType?: string; keyOk: boolean }): { status: number; error: string } | null {
   if (!localNoBrowser(r)) return { status: 403, error: 'dispatch only takes a request from this machine, not from a browser page' }
-  if (!r.keyOk) return { status: 403, error: 'dispatch is for the voice conversation only (missing or wrong X-Osborn-Dispatch-Key)' }
+  if (!r.keyOk) return { status: 403, error: 'dispatch is for the voice conversation only (a command the user approved carries a one-time key)' }
   return jsonRefusal(r.contentType)
 }
 
