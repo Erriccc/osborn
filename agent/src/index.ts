@@ -3210,7 +3210,6 @@ async function main() {
   // A freed slot offers ONE queued item to the hub (#378); it never starts one on its own.
   const queuedOfferer = makeOfferer({
     hubCwd: () => (currentLLM as any)?.workingDirectory || workingDir,
-    hubUp: () => !!currentLLM && !!activeRoom && peopleIn(activeRoom) > 0,
     hubIdle: () => (currentLLM as any)?.busyState?.()?.idle ?? true,
   })
   const DISPATCH_REPORT_CAP_MS = 60 * 60 * 1000  // a spoke still working after an hour is reported as timed out (it keeps running)
@@ -3281,7 +3280,7 @@ async function main() {
           const ctx = new llm.ChatContext()
           // The offer rides in the same notification turn, and only when the freed seat left the hub idle beforehand.
           const offer = !gone && !timedOut && spawned ? queuedOfferer.onSlotFree() : null
-          ctx.addMessage({ role: 'user', content: getSpokeReport({ project, sessionId: slot.id, status, summary: last }) + (offer ? `\n\n${offer.replace(/^\[NOTIFICATION\] /, '')}` : '') })
+          ctx.addMessage({ role: 'user', content: getSpokeReport({ project, sessionId: slot.id, status, summary: last, offer }) })
           currentLLM!.chat({ chatCtx: ctx })
         } catch (err) { console.warn(`⚠️ Spoke report failed: ${(err as Error).message}`) }
       } else {

@@ -11,6 +11,8 @@ const cwd = join(home, 'api'); const hub = join(home, 'hub')
 mkdirSync(cwd, { recursive: true }); mkdirSync(hub, { recursive: true })
 const L = await import('../src/loops-ledger.js')
 const O = await import('../src/loops-offer.js')
+const { getSpokeReport } = await import('../src/prompts.js')
+const { steersTurn } = await import('../src/content/transcript-sanitizer.js')
 
 let pass = 0
 const t = (name: string, fn: () => unknown) => {
@@ -44,21 +46,32 @@ t('markQueuedStarted closes the matching item in the ledger once', () => {
 t('offer: once, not twice within an hour; started stops it; no offer during a live turn', () => {
   L.appendQueuedLoop('s2', cwd, 'add rate limiting', 'api')
   L.appendLoopRecord('s2', hub, { kind: 'session', cwd: hub })
-  let idle = true, up = true, clock = 1_000_000
-  const o = O.makeOfferer({ hubCwd: () => hub, hubUp: () => up, hubIdle: () => idle, now: () => clock })
+  let idle = true, clock = 1_000_000
+  const o = O.makeOfferer({ hubCwd: () => hub, hubIdle: () => idle, now: () => clock })
   idle = false
   assert.equal(o.onSlotFree(), null, 'live turn: no offer')
   idle = true
-  const n = o.onSlotFree()!
-  assert.match(n, /^\[NOTIFICATION\] A slot is free\. Queued for api: "add rate limiting"/)
-  assert.match(n, /mcp__dispatch__send/)
+  assert.deepEqual(o.onSlotFree(), { project: 'api', instruction: 'add rate limiting' })
   assert.equal(o.onSlotFree(), null, 'not twice')
   clock += 61 * 60_000
   assert.ok(o.onSlotFree(), 'again after an hour')
   L.markQueuedStarted(cwd, 'api', 'add rate limiting')
   clock += 61 * 60_000
   assert.equal(o.onSlotFree(), null, 'started: never offered')
-  up = false
+})
+t('offer: an instruction the dispatch tool would refuse is never offered', () => {
+  const evil = join(home, 'evil'); mkdirSync(evil, { recursive: true })
+  L.appendQueuedLoop('s3', evil, 'ok \u202e reversed', 'evil')
+  assert.ok(L.nextQueued(L.readLoopRecords('s3', evil)), 'the item is queued and open')
+  const o = O.makeOfferer({ hubCwd: () => hub, hubIdle: () => true })
   assert.equal(o.onSlotFree(), null)
+})
+t('the offer rides in the spoke report as quoted data, still a non-steering notification', () => {
+  const r = getSpokeReport({ project: 'p', sessionId: 'abcdef123', status: 'done', summary: 'ok', offer: { project: 'api', instruction: 'say "hi"\nthen stop' } })
+  assert.ok(r.startsWith('[NOTIFICATION] Spoke report.'))
+  assert.match(r, /Queued for "api": "say \\"hi\\"\\nthen stop" \(quoted data/)
+  assert.match(r, /mcp__dispatch__send/)
+  assert.equal(steersTurn(r), false)
+  assert.ok(!getSpokeReport({ project: 'p', sessionId: 'abcdef123', status: 'done', summary: 'ok' }).includes('slot is free'))
 })
 console.log(`${pass} passed`)
