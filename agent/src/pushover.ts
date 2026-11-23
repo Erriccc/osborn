@@ -72,11 +72,14 @@ interface PendingPush {
 const pending = new Map<string, PendingPush>()
 /** An approval push went out and is still waiting for its answer. */
 export const phonePushPending = (): boolean => [...pending.values()].some(p => !p.settled)
-/** Mark a push answered and forget it (its expiry timer too). */
+/** Mark a push answered and forget it (its expiry timer too); cancel its Pushover receipt
+ *  so the watch stops buzzing on every exit (a cancel after an ack is harmless). */
 function dropPush(record: PendingPush): void {
   record.settled = true
   if (record.expiryTimer) clearTimeout(record.expiryTimer)
   pending.delete(record.qid)
+  const cfg = pushoverConfig()
+  if (cfg && record.receipt) cancelReceipt(cfg.token, record.receipt)
 }
 
 /** Registered by index.ts: resolves the permission request the push was armed for. */
@@ -321,9 +324,7 @@ export function settlePermissionPush(requestId: string | undefined): void {
   for (const record of [...pending.values()]) {
     if (record.settled || record.requestId !== requestId) continue
     dropPush(record)
-    const cfg = pushoverConfig()
-    if (cfg && record.receipt) cancelReceipt(cfg.token, record.receipt)
-    console.log(`⌚️ Watch bridge: request answered elsewhere, push cancelled (${record.toolName})`)
+    console.log(`⌚️ Watch bridge: request settled or closed, push cancelled (${record.toolName})`)
   }
 }
 
@@ -357,8 +358,6 @@ async function settleExpired(record: PendingPush): Promise<void> {
     } else {
       console.log(`⌚️ Watch bridge: unacknowledged at expiry → deny ${record.toolName}`)
       resultHandler?.(false, record.toolName, record.requestId)
-      // Cancel remaining emergency retries so the wrist stops buzzing.
-      cancelReceipt(cfg.token, record.receipt)
     }
   } catch (e) {
     // Poll failed — settle deny; the record is dropped either way.

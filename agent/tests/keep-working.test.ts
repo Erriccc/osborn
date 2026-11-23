@@ -4,7 +4,7 @@ import assert from 'node:assert'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { notifyPhone, armPermissionPush, settlePermissionPush, phonePushPending } from '../src/pushover.js'
+import { notifyPhone, armPermissionPush, settlePermissionPush, handleWatchAck, phonePushPending } from '../src/pushover.js'
 
 const run = async () => {
   // notifyPhone: nothing configured → no request, false.
@@ -54,6 +54,24 @@ const run = async () => {
   settlePermissionPush('r2')
   settlePermissionPush('r2') // idempotent
   assert.equal(reqs.filter(r => r.url.endsWith('/cancel.json')).length, 2)
+
+  // An ntfy Deny/Approve answer cancels the Pushover receipt too, exactly once.
+  process.env.NTFY_URL = 'https://ntfy.example'
+  process.env.NTFY_TOPIC = 't'
+  const sent: { url: string; body: string }[] = []
+  ;(globalThis as any).fetch = async (url: string, init: any) => {
+    sent.push({ url: String(url), body: String(init?.body ?? '') })
+    return { ok: true, json: async () => ({ receipt: 'rcptN' }) }
+  }
+  await armPermissionPush({ toolName: 'Bash', description: 'run pwd', requestId: 'r3' })
+  const ntfyMsg = JSON.parse(sent.find(r => r.url === 'https://ntfy.example')!.body)
+  const qid = decodeURIComponent(ntfyMsg.actions[1].url.split('/').pop()!.split('?')[0])
+  assert.equal(handleWatchAck(qid, undefined, false), true)
+  assert.equal(sent.filter(r => r.url.endsWith('/receipts/rcptN/cancel.json')).length, 1, 'ntfy answer cancels the receipt')
+  assert.equal(handleWatchAck(qid, undefined, false), false)
+  settlePermissionPush('r3')
+  assert.equal(sent.filter(r => r.url.endsWith('/cancel.json')).length, 1, 'a repeat cancels nothing more')
+  assert.equal(phonePushPending(), false)
 
   // Billing guards (index.ts is not importable in a test): keep-working starts only
   // after the hang-up released the agents and armed the room teardown.
