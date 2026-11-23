@@ -57,19 +57,24 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   server is listening.
 - **`/act` response**: `effect {changed, noop, urlBefore, urlAfter, titleAfter,
   scrollBefore, scrollAfter}`, `warning`, `result.did`, `brainModel`, `tokens {prompt, completion, reasoning, total}` and `modelMs` (model use of this act, also on the task in `manifest.json`; a cached replay normally reports 0, more than 0 means Stagehand re-asked the model to heal it; an engine scroll reports 0). Failures (the first three carry `tokens` and `modelMs` too):
-  **Vision retry** (on by default): when the DOM brain finds nothing to match (a
-  canvas, an embedded frame) the engine makes ONE screenshot-based attempt
-  (Stagehand `agent({mode:'hybrid'})`, one step, same lock and timeout fence as
-  the act) and reports `effect.fallback:'vision'` (also on the manifest task);
-  `effect.changed` is judged as usual, its tokens and `modelMs` are counted in
-  the act's totals, and it is never written to `knowledge/<host>/actions.json`.
-  A failed or empty retry returns the original `noop` with `effect.visionNote`
-  (never a 500). Opt out for one call with `"vision":false` in the body, or for
-  the whole engine with env `OSBORN_NO_VISION_RETRY=1`. The brain model is the
-  engine's own (Gemini Flash by default; Stagehand warns that models outside its
-  hybrid list may click less accurately).
   `noop` (`ok:false`, nothing on the page matched), `brain_error` (502, provider
   message), `brain_unavailable` (503), `bad_request` (400), `too_large` (413).
+- **Vision retry** (on by default): when the DOM brain finds nothing to match (a
+  canvas, an embedded frame) the engine makes ONE screenshot-based attempt
+  (Stagehand `agent({mode:'hybrid'})`, same action lock and timeout fence as the
+  act, its time capped by what is left of the lock). It has a 2-step budget:
+  take a screenshot, then make one interaction (about three model calls with
+  Stagehand's forced final `done`). An interaction before the first screenshot,
+  or one whose tool reported failure, does not count. It reports
+  `effect.fallback:'vision'` (also on the manifest task); `effect.changed` is
+  judged as usual, and it is never written to `knowledge/<host>/actions.json`.
+  `modelMs` includes it (wall time). `tokens` are under-counted for it: the
+  `done` call is not in Stagehand's metrics. A failed, blind or empty retry
+  returns the original `noop` with `effect.visionNote` (never a 500). Opt out for
+  one call with `"vision":false` in the body, or for the whole engine with env
+  `OSBORN_NO_VISION_RETRY=1`. The brain model is the engine's own (Gemini Flash
+  by default; Stagehand warns that models outside its hybrid list may click less
+  accurately).
 - **Async**: `POST /act|/say {"async":true}` → 202 `{job, resultUrl}`;
   `GET /result?id=<job>` → 202 `{done:false, runningSec}` or 200
   `{done:true, status, ...the synchronous response}`.

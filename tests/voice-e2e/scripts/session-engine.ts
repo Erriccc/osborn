@@ -69,7 +69,7 @@ import { startLiveStream } from '../lib/live-stream'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, AUDIO_DECODE_CAP_MS, decodeBudgetMs, recordingAge, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
-import { shouldRetryWithVision, summarizeVision, visionGate, visionInstruction } from '../lib/vision-retry'
+import { shouldRetryWithVision, summarizeVision, VISION_MAX_STEPS, visionGate, visionInstruction } from '../lib/vision-retry'
 import { metricsDelta, NO_USAGE, readTotals, type ActUsage, type MetricsTotals } from '../lib/brain-metrics'
 import { actWithCache, brainPageFor, BRAIN_GONE, fencedCall, forgetCached, withTimeout, zombieGate } from '../lib/step-cache'
 import { openTab, switchTab, closeTab, ownDefaultTab } from '../lib/tabs'
@@ -486,7 +486,7 @@ async function main() {
     : reviving ? 'the brain is re-initializing — retry in a few seconds; /eval, /tab and /shot still work'
     : `brain unavailable — ${brainError ?? 'detached'}. POST /brain to re-init; /eval, /tab and /shot still work`
   // `run` swaps the call under the fence (the vision retry); the default is the cached act.
-  const brain = async (i: string, p: Page = active, run?: (sh: Stagehand, signal: AbortSignal) => ReturnType<typeof actWithCache>) => {
+  const brain = async (i: string, p: Page = active, run?: (sh: Stagehand, signal: AbortSignal) => ReturnType<typeof actWithCache>, maxMs?: number) => {
     if (BRAIN_STUB) return { cached: false, healed: false, did: 'stub: no action performed' }
     await zombies.wait(zombieBudget(), 'act')
     if (!stagehand || !brainAlive) throw new Error(brainDownMsg())
@@ -501,7 +501,7 @@ async function main() {
     const q = `"${i.slice(0, 60)}"`
     try {
       return await fencedCall((signal) => run ? run(sh, signal) : actWithCache(sh, p, i, signal), {
-        timeoutMs: BRAIN_TIMEOUT_MS, settleMs: SETTLE_MS, why,
+        timeoutMs: maxMs ? Math.min(BRAIN_TIMEOUT_MS, maxMs) : BRAIN_TIMEOUT_MS, settleMs: SETTLE_MS, why,
         onTimeout: (call) => {
           // A replacement brain has its own CDP connection; the revive that made it closed this one.
           if (stagehand !== sh) { zombies.track(call); return }
@@ -1528,18 +1528,23 @@ async function main() {
           // the original no-op, with a note.
           let visionUsed = false
           let visionNote: string | null = null
+          let blind = false
           const gate = visionGate(body)
-          if (shouldRetryWithVision(r, gate, BRAIN_STUB)) {
+          // Bounded by what is left of the lock (less the settle wait a timeout needs), not a fresh full budget.
+          const visionMs = zombieBudget() - SETTLE_MS
+          if (shouldRetryWithVision(r, gate) && visionMs < 10000) visionNote = 'no time left on the action lock for a screenshot-based retry'
+          else if (shouldRetryWithVision(r, gate)) {
             try {
               const v = await brain(body.instruction, page, async (sh, signal) => {
                 signal.throwIfAborted()
-                const on = await brainPageFor(sh as any, page)
-                const res = await sh.agent({ mode: 'hybrid' }).execute({ instruction: visionInstruction(body.instruction), maxSteps: 1, ...(on ? { page: on as any } : {}) })
+                const on = await brainPageFor(sh, page)
+                const res = await sh.agent({ mode: 'hybrid' }).execute({ instruction: visionInstruction(body.instruction), maxSteps: VISION_MAX_STEPS, ...(on ? { page: on as any } : {}) })
                 const s = summarizeVision(res)
+                if (s.blind) blind = true
                 return { cached: false, healed: false, noop: !s.acted, did: s.acted ? s.did : null }
-              })
+              }, visionMs)
               if (!v.noop) { r = v; visionUsed = true; mark(`act[${driver}]: DOM brain found nothing — ${v.did}`) }
-              else visionNote = 'a screenshot-based retry also found nothing to act on'
+              else visionNote = blind ? 'the screenshot-based retry acted without looking at the screen first, so it was not counted' : 'a screenshot-based retry also found nothing to act on'
             } catch (e) {
               visionNote = `the screenshot-based retry failed: ${((e as Error).message || String(e)).slice(0, 120)}`
               mark(`act[${driver}]: vision retry failed — ${visionNote}`)
@@ -1599,7 +1604,7 @@ async function main() {
           if (r?.noop) warning = `the brain found nothing on the page matching this instruction — no action was performed${visionNote ? ` (${visionNote})` : ''}`
           else if (changed === false) {
             warning = scrollIntent
-              ? 'the scroll did not move the page or any scrollable panel (also tried a mouse-wheel gesture) — the page may already be at its limit, or the scrollable area is elsewhere; name the panel to scroll'
+              ? `the scroll did not move the page or any scrollable panel ${visionUsed ? '' : '(also tried a mouse-wheel gesture) '}— the page may already be at its limit, or the scrollable area is elsewhere; name the panel to scroll`
               : `${visionUsed ? 'the screenshot-based retry acted, but ' : ''}the action ran but nothing observable changed on the page (url, title, scroll, form values${textVolatile ? '; visible text was ignored because this page animates on its own' : ', text length'}) — verify with /eval or the clip; fine for clipboard/background effects, otherwise rephrase the instruction`
             if (before) forgetCached(before.url, String(body.instruction))
           }
