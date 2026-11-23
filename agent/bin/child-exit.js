@@ -2,9 +2,7 @@
 // how its child ended, and pass stop signals on to it.
 import os from 'os'
 
-// A child killed by a signal (a heap-OOM SIGABRT, an OOM-killer SIGKILL) exits
-// with code null. `code || 0` made that a clean exit, so Fly's on-failure
-// restart policy never restarted the machine. Use the shell's 128 + signal.
+// A child killed by a signal has code null: exit 128+signo so Fly's on-failure restart fires.
 export function exitCodeFor(code, signal) {
   if (typeof code === 'number') return code
   if (signal) return 128 + (os.constants.signals[signal] || 1)
@@ -18,6 +16,6 @@ export function superviseChild(child, { name = 'agent', proc = process } = {}) {
   })
   child.on('exit', (code, signal) => proc.exit(exitCodeFor(code, signal)))
   for (const sig of ['SIGINT', 'SIGTERM']) {
-    proc.on(sig, () => { try { child.kill(sig) } catch {} })
+    proc.on(sig, () => { child.kill(sig) })
   }
 }
