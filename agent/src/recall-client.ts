@@ -112,8 +112,10 @@ export class RecallClient extends EventEmitter {
     const cast = opts?.castUrl && /^https?:\/\//.test(opts.castUrl)
       ? { output_media: { camera: { kind: 'webpage', config: { url: opts.castUrl } } } }
       : {}
-    if (opts?.castUrl && !Object.keys(cast).length) console.log(`⚠️ castUrl ignored (not http(s)): ${opts.castUrl}`)
-    else if (Object.keys(cast).length) console.log(`📺 Meeting cast enabled — bot camera = ${opts!.castUrl}`)
+    // The cast URL can carry a per-meeting key (`k`): logs are uploaded, so never print it.
+    const castLog = (opts?.castUrl ?? '').replace(/([?&])k=[^&#]*/, '$1k=…')
+    if (opts?.castUrl && !Object.keys(cast).length) console.log(`⚠️ castUrl ignored (not http(s)): ${castLog}`)
+    else if (Object.keys(cast).length) console.log(`📺 Meeting cast enabled — bot camera = ${castLog}`)
     // 0.9.84: LIVE transcript via realtime_endpoints. The v0.9.44 rewrite
     // removed this and left only 30s polling of the batch download_url — but
     // that URL is a POST-PROCESSING artifact (empty until the meeting ends),

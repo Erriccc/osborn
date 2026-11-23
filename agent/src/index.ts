@@ -27,7 +27,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
-import { randomUUID, randomBytes, createHmac, timingSafeEqual } from 'node:crypto'
+import { randomUUID, randomBytes, createHmac } from 'node:crypto'
+import { newCanvasKey, secretMatches, withCanvasKey } from './canvas-key.js'
 import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
 
@@ -356,6 +357,8 @@ let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null
 // the browser voice experience (2026-08-01 quality architecture; replaces the
 // synth-file chain when connected). Set from main() where the room name lives.
 let canvasTokenHook: (() => Promise<{ token: string; url: string; room: string } | null>) | null = null
+// Per-meeting key the canvas page presents to /canvas-token (canvas-key.ts); null when no meeting is live.
+let canvasKey: string | null = null
 // Read-only room view (#383): what the live session is doing, and with
 // `withToken` a hidden, subscribe-only LiveKit token (`viewer-*`) to watch its
 // broadcast stream. Null when no room is live. Set from main().
@@ -510,10 +513,7 @@ function verifyEditorToken(tok: string | null | undefined): boolean {
   if (dot < 0) return false
   const exp = Number(tok.slice(0, dot))
   if (!Number.isFinite(exp) || exp < Date.now()) return false
-  const expected = createHmac('sha256', secret).update(`editor:${exp}`).digest('base64url')
-  const got = tok.slice(dot + 1)
-  if (got.length !== expected.length) return false
-  try { return timingSafeEqual(Buffer.from(got), Buffer.from(expected)) } catch { return false }
+  return secretMatches(createHmac('sha256', secret).update(`editor:${exp}`).digest('base64url'), tok.slice(dot + 1))
 }
 
 // Cancellation-generation guard for startCodeServer(). Incremented by stopIde()
@@ -796,7 +796,11 @@ function startApiServer(workingDir: string, port: number): void {
     }
 
     if (req.method === 'GET' && url.pathname === '/canvas-token') {
-      // Listen-only LiveKit credentials for the meeting canvas (see hook doc).
+      // Listen-only LiveKit credentials for the meeting canvas (see hook doc). The token hears every
+      // broadcast in the room, so only the live meeting's canvas page (its per-meeting key) gets one.
+      if (!secretMatches(canvasKey, url.searchParams.get('k'))) {
+        res.writeHead(401, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Unauthorized' })); return
+      }
       const out = canvasTokenHook ? await canvasTokenHook() : null
       if (!out) { res.writeHead(503, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no active room' })); return }
       res.writeHead(200, { 'Content-Type': 'application/json' })
@@ -3361,6 +3365,7 @@ async function main() {
   const MEETING_MAX_MS = Math.max(10, Number(process.env.OSBORN_MEETING_MAX_MIN) || 180) * 60 * 1000  // default 3h
   let meetingMaxTimer: ReturnType<typeof setTimeout> | null = null
   const endMeeting = async (reason: string, opts: { leaveBot?: boolean } = {}): Promise<void> => {
+    canvasKey = null  // the canvas page's /canvas-token key dies with the meeting
     const botId = activeMeetingBotId
     if (!botId) return
     console.log(`🏁 Meeting ended (${reason}) — bot ${botId}`)
@@ -4471,6 +4476,14 @@ async function main() {
     } catch {}
   })
 
+  /** Claude sign-in events (claude-auth.ts) for the room. The captured sign-in token goes only to the
+   *  controlling user, whose frontend persists it; the room gets the event without it. */
+  function sendAuthEvent(type: string, payload: unknown, send: typeof sendToFrontend = sendToFrontend): void {
+    const { token, ...rest } = payload as { token?: string }
+    void send({ type, ...rest })
+    if (token && controllingUserIdentity) void send({ type, ...rest, token }, controllingUserIdentity)
+  }
+
   /** Publishes to the frontend (to one participant when `to` is given). Resolves false
    *  when nothing was sent (no room, over the hard size cap, or a publish error). */
   async function sendToFrontend(data: object, to?: string): Promise<boolean> {
@@ -5475,7 +5488,7 @@ async function main() {
         // paths (both dispatch ensureClaudeAuth in the same participant handler).
         const pid = participant?.identity
         if (typeof pid === 'string' && pid.startsWith('user-')) {
-          const replayed = replayInFlightAuth((type, payload) => sendToFrontend({ type, ...payload as object }))
+          const replayed = replayInFlightAuth(sendAuthEvent)
           if (replayed) console.log(`🔑 Re-delivered pending Claude auth prompt to ${pid} on TrackSubscribed`)
         }
       } catch {}
@@ -5717,9 +5730,7 @@ async function main() {
     // In cloud deployments (Fly.io), this triggers OAuth flow on first boot:
     // captures login URL → sends to frontend → user clicks → gets code → pastes in frontend → auth completes
     try {
-      const authResult = await ensureClaudeAuth((type, payload) => {
-        sendToFrontend({ type, ...payload as object })
-      })
+      const authResult = await ensureClaudeAuth(sendAuthEvent)
       // If auth flow is running, store the submitCode handler for the DataReceived handler
       if (authResult.submitCode && authResult.done) {
         pendingAuthSubmitCode = authResult.submitCode
@@ -6731,9 +6742,7 @@ async function main() {
         // On-demand Claude sign-in. When a fallback key exists the join path
         // skips the blocking OAuth (claude_auth_optional), so this is the only
         // way to start it. Owner-gated via CONTROL_MESSAGE_TYPES.
-        const authSend = (type: string, payload: unknown) => {
-          sendToFrontend({ type, ...payload as object })
-        }
+        const authSend = (type: string, payload: unknown) => sendAuthEvent(type, payload, sendToFrontend)
         if (pendingAuthSubmitCode && !isOnDemandAuthInFlight()) {
           // The join-path flow is already running — re-deliver its state.
           console.log('🔑 claude_auth_start: join-path flow in flight — replaying state')
@@ -7394,7 +7403,8 @@ async function main() {
               const canvasUrl = /^https:\/\//.test(webhookBase)
                 ? `${osbornFrontendUrl()}/meeting-canvas?agent=${encodeURIComponent(webhookBase)}`
                 : undefined
-              const castUrl = (data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || canvasUrl
+              canvasKey = newCanvasKey()
+              const castUrl = withCanvasKey((data.castUrl as string) || process.env.OSBORN_MEETING_CAST_URL || canvasUrl, canvasKey)
               const botId = await recallJoin.joinMeeting(meetingUrl, webhookBase, { castUrl })
               const sessionId = currentLLM?.sessionId || currentResumeSessionId || 'default'
               recallJoin.registerBot(botId, sessionId)
@@ -7471,6 +7481,7 @@ async function main() {
               armMeetingMaxTimer(botId)
             } catch (err: any) {
               console.error('❌ Recall.ai join error:', err)
+              canvasKey = null  // no meeting: nothing may use the key minted for it
               await sendToFrontend({ type: 'meeting_error', message: err.message })
             }
           }
@@ -7518,7 +7529,8 @@ async function main() {
             ? `https://${flyAppHost}/editor`
             : `http://${flyAppHost}/editor`) + tokQs
           console.log(`✅ IDE proxy ready: ${process.env.FLY_APP_NAME ? `https://${flyAppHost}/editor` : ideUrl}${editorTok ? ' (token-gated)' : ''}`)
-          await sendToFrontend({ type: 'ide_ready', url: ideUrl })
+          // The URL carries the editor token (remote code execution on this machine): only the requester gets it.
+          await sendToFrontend({ type: 'ide_ready', url: ideUrl }, opts.sender)
         } catch (err: any) {
           console.error('❌ start_ide error:', err)
           // Clean up any partial state.
