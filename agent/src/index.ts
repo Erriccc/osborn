@@ -28,6 +28,8 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
 import { randomUUID, randomBytes, createHmac } from 'node:crypto'
+import { dispatchFieldsOk, resolveDispatchTarget, spokePhoneNotice } from './dispatch.js'
+import { dispatchServers } from './dispatch-tool.js'
 import { newCanvasKey, secretMatches, withCanvasKey, canvasRouteAllowed, ttsLineSig } from './canvas-key.js'
 import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
@@ -58,7 +60,7 @@ import { statusManager } from './status-manager.js'
 import { loopIds } from './loops-ledger.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
-import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED } from './prompts.js'
+import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled, launchLoopsFlush, flushLastSessionThenExit } from './content/lens-launch.js'
 import { hasContentModelKey } from './content/content-llm.js'
@@ -3200,6 +3202,93 @@ async function main() {
     await sendToFrontend({ type: 'background_session_spawned', slotId, workingDir: slotWorkingDir })
   }
 
+  const DISPATCH_REPORT_CAP_MS = 60 * 60 * 1000  // a spoke still working after an hour is reported as timed out (it keeps running)
+  // When a spoke slot we spawned was freed: its last session write is ours, not a terminal's (resolveDispatchTarget).
+  const spokeFreedAt = new Map<string, number>()
+
+  // Push an instruction into a background slot (spawning it first if needed). With `report`, the hub
+  // hears the result when the slot goes idle. A cold slot first answers its kickoff, so the Instances panel path
+  // now waits up to a minute for it and then fails with 'Slot did not start within a minute' (the slot stays held until hang-up).
+  async function dispatchToSlot(targetSessionId: string, instruction: string, opts: { cwd?: string; report?: { project: string } } = {}): Promise<{ ok: boolean; error?: string }> {
+    const fail = (error: string) => { void sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error }); return { ok: false, error } }
+    const focusedId = currentLLM?.sessionId || currentResumeSessionId || null
+    if (targetSessionId === focusedId) return fail('Target is the focused session — use the normal path')
+    const spawned = !slots.has(targetSessionId)
+    if (spawned) {
+      try { await spawnBackgroundSession(targetSessionId, opts.cwd) } catch (err) { return fail(err instanceof Error ? err.message : String(err)) }
+    }
+    const slot = slots.get(targetSessionId)
+    if (!slot || !slot.emitter || !slot.sdkOptions) return fail('Slot not ready')
+    if (opts.report) {
+      if (slot.reportPending) return fail('That project is already working on an earlier dispatch')
+      slot.reportPending = true  // claimed before any await, so a second call cannot slip in
+    }
+    // A cold slot first answers its [BACKGROUND_INIT] kickoff; the instruction waits for that, so the two cannot merge into one turn.
+    for (let i = 0; !slot.kickoffDone && i < 300; i++) {
+      if (slots.get(targetSessionId) !== slot) { slot.reportPending = false; return fail('Slot stopped before it started') }
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    if (!slot.kickoffDone) { slot.reportPending = false; return fail('Slot did not start within a minute') }
+    slot.dispatchInFlight = true
+    if (opts.report) reportSlotWhenIdle(slot, opts.report.project, spawned)
+    // Reuse the cold-start emitter — pushMessage's fast path ignores a fresh emitter once the
+    // subprocess exists (see spawnBackgroundSession). NO priority override: slot work is foreground
+    // turn work, and a 'now' dispatch would abort the previous instruction mid-flight. Instructions queue/fold.
+    slot.llm.pushMessage(instruction, slot.sdkOptions, { onSessionId: () => {}, onCheckpoint: () => {}, eventEmitter: slot.emitter })
+    void sendToFrontend({ type: 'background_dispatched', sessionId: targetSessionId, instruction })
+    return { ok: true }
+  }
+
+  // The slot's whole turn (writer chain included) is over when busyState().idle, as keepWorkingAfterLeave
+  // reads it. The report is a hub turn when a person is in the room, else a phone notice.
+  function reportSlotWhenIdle(slot: SessionSlot, project: string, spawned: boolean): void {
+    let last = ''
+    slot.reportPending = true
+    const onResult = ({ text }: { text: string }) => { if (text) last = text }
+    slot.emitter.on('assistant_result', onResult)
+    const startedAt = Date.now()
+    const poll = setInterval(() => {
+      const gone = slots.get(slot.id) !== slot
+      const timedOut = Date.now() - startedAt > DISPATCH_REPORT_CAP_MS
+      if (!gone && !timedOut && !((slot.llm as any).busyState?.()?.idle ?? true)) return
+      clearInterval(poll)
+      slot.emitter.off('assistant_result', onResult)
+      slot.reportPending = false
+      // A hang-up or stop releases the slot on purpose; only a crash is a failure.
+      const status = timedOut ? 'timed_out' : !gone ? 'done' : slot.released ? 'stopped' : 'failed'
+      // This dispatch made the slot, so it frees the seat (a spoke stays open only when the panel opened it).
+      if (!gone && !timedOut && spawned) { slots.remove(slot.id, slot); spokeFreedAt.set(slot.id, Date.now()); if (spokeFreedAt.size > 50) spokeFreedAt.delete(spokeFreedAt.keys().next().value as string); void sendToFrontend({ type: 'background_session_stopped', slotId: slot.id }); armAloneTimer() }
+      const hubUp = !!currentLLM && !!activeRoom && peopleIn(activeRoom) > 0
+      console.log(`📬 [DISPATCH] ${project} ${status}; ${hubUp ? 'telling the hub' : 'notifying the phone'}`)
+      if (hubUp) {
+        try {
+          const ctx = new llm.ChatContext()
+          ctx.addMessage({ role: 'user', content: getSpokeReport({ project, sessionId: slot.id, status, summary: last }) })
+          currentLLM!.chat({ chatCtx: ctx })
+        } catch (err) { console.warn(`⚠️ Spoke report failed: ${(err as Error).message}`) }
+      } else {
+        void notifyPhone(spokePhoneNotice(project, status, last))
+      }
+    }, 5_000)
+  }
+
+  // The hub's `dispatch` tool (dispatch.ts, dispatch-tool.ts): an in-process MCP tool, so a call is structured
+  // input that the permission dialog describes as it will run. Not in allowedTools, so canUseTool and the
+  // approval mode apply. Handed to the hub's ClaudeLLM as `hubTools` (createDirectSession); a slot gets none.
+  async function dispatchByName(project: string, instruction: string): Promise<string> {
+    if (!dispatchFieldsOk(project, instruction)) return 'Not sent: project and instruction must be plain text with no control characters.'
+    invalidateSessionListCache()  // the cache can be minutes old and the live-elsewhere check compares mtimes
+    const pick = resolveDispatchTarget(project.trim(), await listAllClaudeSessions(1000), {
+      seat: (id) => slots.admit(id), slotState: targetSlotState, dirExists: existsSync, ownWriteAt: (id) => spokeFreedAt.get(id),
+    })
+    if (!pick.ok) return `Not sent: ${pick.error}`
+    const cwd = await resolveCwdForSession(pick.sessionId, pick.cwd)
+    if (!cwd) return `Not sent: the ${pick.project} session's folder is gone.`
+    const sent = await dispatchToSlot(pick.sessionId, instruction.trim(), { cwd, report: { project: pick.project } })
+    return sent.ok ? `Sent to ${pick.project}. Its result comes back as a notification.` : `Not sent: ${sent.error}`
+  }
+  const hubTools = dispatchServers(dispatchByName)
+
   let localParticipant: LocalParticipant | null = null
   let agentState = 'initializing'
   // Session-level always-allow list ("Always" in the browser, keypad 3 on a call): approved without prompting
@@ -4681,6 +4770,7 @@ async function main() {
       workingDirectory: workingDir,
       sessionBaseDir,
       mcpServers,
+      hubTools,
       resumeSessionId,
       voiceMode: 'direct',
       skipTTSQueue: true,
@@ -5829,6 +5919,7 @@ async function main() {
         workingDirectory: workingDir,
         sessionBaseDir,
         mcpServers,
+        hubTools,
         resumeSessionId,
         voiceMode: 'direct',
         skipTTSQueue: true,
@@ -6335,6 +6426,7 @@ async function main() {
                 workingDirectory: workingDir,
                 sessionBaseDir,
                 mcpServers,
+                hubTools,
                 resumeSessionId: recoverySessionId,
                 voiceMode: 'direct',
                 skipTTSQueue: true,
@@ -7691,33 +7783,12 @@ async function main() {
         }
       }
       else if (data.type === 'dispatch_background') {
-        // P1: push an instruction into a background slot (spawning it cold-start
-        // first if needed), then notify the frontend when the turn completes.
         const targetSessionId = data.targetSessionId as string | undefined
         const instruction = data.instruction as string | undefined
         if (!targetSessionId || !instruction) {
           await sendToFrontend({ type: 'background_session_error', slotId: targetSessionId ?? null, error: 'dispatch_background requires targetSessionId + instruction' })
         } else {
-          const focusedId = currentLLM?.sessionId || currentResumeSessionId || null
-          if (targetSessionId === focusedId) {
-            await sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error: 'Target is the focused session — use the normal path' })
-          } else {
-            const doDispatch = () => {
-              const slot = slots.get(targetSessionId)
-              if (!slot || !slot.emitter || !slot.sdkOptions) { void sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error: 'Slot not ready' }); return }
-              slot.dispatchInFlight = true
-              // Reuse the cold-start emitter — pushMessage's fast path ignores a
-              // fresh emitter once the subprocess exists (see spawnBackgroundSession).
-              // NO priority override here (adversarial finding #4): slot work is
-              // FOREGROUND turn work — a 'now' dispatch would abort the previous
-              // instruction mid-flight and corrupt dispatchInFlight accounting.
-              // Instructions queue/fold like before.
-              slot.llm.pushMessage(instruction, slot.sdkOptions, { onSessionId: () => {}, onCheckpoint: () => {}, eventEmitter: slot.emitter })
-              void sendToFrontend({ type: 'background_dispatched', sessionId: targetSessionId, instruction })
-            }
-            if (slots.has(targetSessionId)) doDispatch()
-            else spawnBackgroundSession(targetSessionId).then(doDispatch).catch((err) => { void sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error: err instanceof Error ? err.message : String(err) }) })
-          }
+          await dispatchToSlot(targetSessionId, instruction)
         }
       }
       else if (data.type === 'stop_background_session') {

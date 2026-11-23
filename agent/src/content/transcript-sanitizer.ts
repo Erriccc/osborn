@@ -107,6 +107,15 @@ export { redactSecrets, detectSecrets } from './secret-rules.js'
 // pipeline-direct-llm.ts (read-only) and against the live JSONL.
 // ============================================================================
 
+/** The inner ClaudeLLM's steer check: a push with priority 'now' aborts the live turn, so meeting chunks, any
+ *  [SYSTEM note and spoke reports ([NOTIFICATION]) never carry it. */
+export const steersTurn = (userText: string): boolean =>
+  !(userText.startsWith('[MEETING') || userText.startsWith('[SYSTEM') || /^\[NOTIFICATION\]/.test(userText))
+
+/** The pipeline wrapper's guards (no voice action, no session tail, no interruption enrichment, no fast brain):
+ *  meeting chunks and spoke reports. A typed "[SYSTEM design] fix login" is still an ordinary turn there. */
+export const isAmbientTurn = (userText: string): boolean => userText.startsWith('[MEETING') || /^\[NOTIFICATION\]/.test(userText)
+
 /** Rule 1 — leading markers whose entries are DROPPED whole. */
 const DROP_PREFIXES: RegExp[] = [
   /^<task-notification>/,
