@@ -76,7 +76,7 @@ t('the placeholder marks the skill\'s command; other curls do not carry it', () 
   for (const c of ['curl -X POST http://localhost:8741/canvas -d x', 'curl http://localhost:8741/tts?text=hi']) assert.equal(hasDispatchPlaceholder(c), false, c)
 })
 const H = dispatchBodyHash
-const skillCmd = (body: string, extra = '') => `curl -sS -X POST http://localhost:8741/dispatch -H 'Content-Type: application/json' -H "Authorization: Bearer $OSBORN_SYNC_TOKEN" -H "X-Osborn-Dispatch-Key: ${DISPATCH_PLACEHOLDER}" ${extra}\\\n  --data-binary @- <<'EOF'\n${body}\nEOF\n`
+const skillCmd = (body: string, extra = '') => `curl -sS -X POST http://localhost:8741/dispatch -H 'Content-Type: application/json' -H "Authorization: Bearer $OSBORN_SYNC_TOKEN" -H "X-Osborn-Dispatch-Key: ${DISPATCH_PLACEHOLDER}" ${extra} --data-binary @- <<'EOF'\n${body}\nEOF\n`
 t('a nonce is for one approved body, works once, expires; an unknown key is refused', () => {
   let now = 1000
   const st = createNonceStore({ ttlMs: 100, cap: 2, now: () => now })
@@ -103,7 +103,11 @@ t('only the skill\'s exact command is parsed; every other placeholder shape is n
   const bad = [decoy, echo, two, skillCmd('{"project":"a","instruction":"b"}', '--json x'), skillCmd('{"project":"a","instruction":"b"}', '-d @/etc/passwd'),
     skillCmd('{"project":"a","instruction":"b"}').replace('/dispatch', '/dispatch;id'), skillCmd('{"project":"a","instruction":"b"}') + 'rm -rf x',
     skillCmd('{"project":"a","instruction":"b"}').replace('$OSBORN_SYNC_TOKEN', '$(id)'), skillCmd('not json'), skillCmd('{"project":1,"instruction":"b"}'),
-    skillCmd('{"project":"a","instruction":"b"}').replace('localhost:8741', 'evil.com')]
+    skillCmd('{"project":"a","instruction":"b"}').replace('localhost:8741', 'evil.com'),
+    skillCmd('1').replace("<<'EOF'\n1\nEOF", "<<'1'\n{\"project\":\"a\",\"instruction\":\"b\"}\n1"), skillCmd('{"project":"a","instruction":"b"}').replace("'EOF'", "'true'").replace('\nEOF', '\ntrue'),
+    skillCmd('{"project":"a","instruction":"b"}', 'x\\"y'), skillCmd('{"project":"a","instruction":"b"}', '"-o" "/tmp/x"'), skillCmd('{"project":"a","instruction":"b"}', '"--url" "http://x"'), skillCmd('{"project":"a","instruction":"b"}', "'-K' cfg"),
+    skillCmd('{"project":"a","instruction":"b\\nEOF\\nrm"}').replace('\\n', '\n'),
+    skillCmd('{"project":"a\\u0000","instruction":"b"}')]
   bad.forEach((c, i) => assert.equal(parseDispatchCurl(c), null, `bad #${i}`))
 })
 t('the own-API auto-approve never covers a command with the placeholder, and still covers canvas/tts/noise-cancel', () => {
@@ -113,8 +117,13 @@ t('the own-API auto-approve never covers a command with the placeholder, and sti
   const bad = [`curl http://localhost:8741/tts?text=hi\ncurl -X POST http://localhost:8741/dispatch ${key}`, `curl http://localhost:8741/tts/../dispatch ${key}`, `curl http://localhost:8741/canvas http://localhost:8741/dispatch ${key}`, `curl http://localhost:8741/tts ${key} -d x`, `curl http://localhost:8741/canvas -H "X: /tts" ${key}`]
   for (const c of bad) assert.equal(isOwnApiCurl(c), false, c)
 })
+t('two different bodies never share a hash, and control characters are refused', () => {
+  assert.notEqual(H('a\0b', 'c'), H('a', 'b\0c'))
+  assert.notEqual(H('a', 'b'), H('a\0', 'b'))
+  assert.equal(parseDispatchCurl(skillCmd('{"project":"a","instruction":"line1\\nline2"}'))?.instruction, 'line1\nline2', 'newline is fine')
+})
 t('the dispatch dialog names the project and the instruction', () => {
-  const cmd = "curl -sS -X POST http://localhost:8741/dispatch -H 'Content-Type: application/json' -H \"X-Osborn-Dispatch-Key: __OSBORN_DISPATCH_APPROVAL__\" \\\n  --data-binary @- <<'EOF'\n{\"project\":\"osborn\",\"instruction\":\"don't break the build\"}\nEOF\n"
+  const cmd = "curl -sS -X POST http://localhost:8741/dispatch -H 'Content-Type: application/json' -H \"Authorization: Bearer $OSBORN_SYNC_TOKEN\" -H \"X-Osborn-Dispatch-Key: __OSBORN_DISPATCH_APPROVAL__\" --data-binary @- <<'EOF'\n{\"project\":\"osborn\",\"instruction\":\"don't break the build\"}\nEOF\n"
   assert.deepEqual(parseDispatchCurl(cmd), { project: 'osborn', instruction: "don't break the build" })
   assert.equal(describePermission('Bash', { command: cmd }), "Start a background session in osborn: don't break the build")
   assert.match(speakablePermission('Bash', { command: cmd }), /start a background session in osborn/)

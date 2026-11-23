@@ -29,7 +29,7 @@ import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
 import { randomUUID, randomBytes, createHmac } from 'node:crypto'
 import { dispatchNonces, dispatchRefusal, DISPATCH_KEY_REFUSAL } from './dispatch.js'
-import { dispatchBodyHash } from './dispatch-command.js'
+import { dispatchBodyHash, dispatchFieldsOk } from './dispatch-command.js'
 import { newCanvasKey, secretMatches, withCanvasKey, canvasRouteAllowed, ttsLineSig } from './canvas-key.js'
 import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
@@ -1322,6 +1322,7 @@ function startApiServer(workingDir: string, port: number): void {
           if (raw === null) return reply(413, { error: 'instruction too long' })
           const { project, instruction } = JSON.parse(raw || '{}') as { project?: unknown; instruction?: unknown }
           if (typeof project !== 'string' || typeof instruction !== 'string' || !project.trim() || !instruction.trim()) return reply(400, { error: 'send {project, instruction} as strings' })
+          if (!dispatchFieldsOk(project, instruction)) return reply(400, { error: 'project and instruction cannot contain control characters' })
           // The key is for the body the user approved: a leaked or reused key with another body is refused.
           if (!dispatchNonces.consume(req.headers['x-osborn-dispatch-key'] as string | undefined, dispatchBodyHash(project, instruction))) return reply(DISPATCH_KEY_REFUSAL.status, { error: DISPATCH_KEY_REFUSAL.error })
           if (!dispatchHook) return reply(503, { error: 'the agent is still starting' })
