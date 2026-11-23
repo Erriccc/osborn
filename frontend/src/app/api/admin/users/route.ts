@@ -79,7 +79,7 @@ export async function GET() {
       sandbox_status: instance?.sandbox_status ?? null,
       instance_status: instance?.status ?? null,
       last_seen: instance?.last_seen ?? null,
-      machine_state: machine ? (machine.state === 'started' ? 'running' : machine.state) : null,
+      machine_state: machine?.status ?? null,
       last_active: activeTimes.length ? activeTimes.reduce((a, b) => (a > b ? a : b)) : null,
     }
   })

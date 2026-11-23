@@ -375,20 +375,15 @@ async function getFirstMachine(appName: string, throwOnError = false): Promise<F
 }
 
 /**
- * A user's machine as Fly reports it right now, for the admin view: `started` when any of its
- * machines runs, else the first one's state, and the time of its latest start or exit. Null when
- * Fly cannot be read, so the caller keeps the stored value.
+ * A user's machine as Fly reports it right now, for the admin view: its status (as findUserSandbox
+ * maps it) and the time of its latest start or exit. Null when Fly cannot be read, so the caller
+ * keeps the stored value.
  */
-export async function readMachineActivity(appName: string): Promise<{ state: string; lastEventAt: string | null } | null> {
-  try {
-    const machines = await api<FlyMachine[]>('GET', `/v1/apps/${appName}/machines`)
-    if (!machines?.length) return null
-    const state = machines.some((m) => m.state === 'started') ? 'started' : machines[0].state
-    const at = Math.max(0, ...machines.flatMap((m) => (m.events ?? []).filter((e) => e.type === 'start' || e.type === 'exit').map((e) => e.timestamp)))
-    return { state, lastEventAt: at ? new Date(at).toISOString() : null }
-  } catch {
-    return null
-  }
+export async function readMachineActivity(appName: string): Promise<{ status: SandboxInfo['status']; lastEventAt: string | null } | null> {
+  const machine = await getFirstMachine(appName)
+  if (!machine) return null
+  const at = Math.max(0, ...(machine.events ?? []).filter((e) => e.type === 'start' || e.type === 'exit').map((e) => e.timestamp))
+  return { status: mapMachineState(machine.state), lastEventAt: at ? new Date(at).toISOString() : null }
 }
 
 /**

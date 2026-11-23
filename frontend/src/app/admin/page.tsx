@@ -246,7 +246,7 @@ export default function AdminPage() {
                     <MobileField label="Signed up" value={fmtDate(u.created_at)} />
                     <MobileField label="Last sign-in" value={fmtRelative(u.last_sign_in_at)} />
                     <MobileField label="Machine" value={u.sandbox_id ?? '—'} mono />
-                    <MobileField label="Last seen" value={fmtRelative(u.last_active ?? u.last_seen)} />
+                    <MobileField label="Last active" value={fmtRelative(u.last_active ?? u.last_seen)} />
                   </dl>
                 </div>
               ))}
