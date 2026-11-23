@@ -281,11 +281,11 @@ process.on('uncaughtException', (error) => {
 })
 
 // Stop signals (Fly stop, Ctrl+C; bin/cli.js forwards both): file the last session's open
-// follow-through items, then exit 0. Repeats are ignored so a second signal cannot cut the flush.
+// follow-through items, then exit 0. A second signal (a repeated Ctrl+C) quits at once.
 let stopSignalled = false
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
   process.on(sig, () => {
-    if (stopSignalled) return
+    if (stopSignalled) process.exit(sig === 'SIGINT' ? 130 : 143)
     stopSignalled = true
     console.log(`⏻ ${sig}: flushing follow-through, then exiting`)
     void flushLastSessionThenExit(`signal_${sig}`, 0, 1500)

@@ -63,7 +63,7 @@ await t('index registers SIGINT and SIGTERM handlers that flush', () => {
   assert.match(idx, /for \(const sig of \['SIGINT', 'SIGTERM'\] as const\)/)
   const body = slice(idx, "for (const sig of ['SIGINT', 'SIGTERM'] as const)", '\n}\n')
   assert.match(body, /flushLastSessionThenExit\(`signal_\$\{sig\}`, 0, 1500\)/)
-  assert.match(body, /if \(stopSignalled\) return/)
+  assert.match(body, /if \(stopSignalled\) process\.exit\(sig === 'SIGINT' \? 130 : 143\)/, 'a second signal quits at once')
 })
 
 await t('the abort path records pending permissions and cut-off sub-agents before closing (killCurrentLLM → abortQuery → closeSession)', () => {

@@ -60,14 +60,16 @@ export async function POST(request: Request) {
       results.push({ key: item.key, action: 'error' })
       continue
     }
-    // Daily cap per account, one hit per item sent to GitHub; already over it → 429 before any write.
-    if (accountLimiter.limited(userId)) {
+    // Daily cap per account, counted per issue actually created (a dedup skip costs nothing);
+    // already over it → 429 before any write.
+    if (accountLimiter.atLimit(userId)) {
       if (!sent) return NextResponse.json({ error: 'daily limit reached' }, { status: 429 })
       results.push({ key: item.key, action: 'error' })
       continue
     }
     sent++
     const r = await fileFollowUp(repo, item)
+    if (r.ok && r.action === 'created') accountLimiter.limited(userId)
     results.push(r.ok ? { key: item.key, action: r.action, url: r.url } : { key: item.key, action: 'error' })
   }
   return NextResponse.json({ results })

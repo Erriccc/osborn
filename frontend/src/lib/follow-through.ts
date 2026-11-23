@@ -55,6 +55,8 @@ export function cleanItem(raw: unknown): FollowUpItem | null {
   if (typeof o.origin !== 'string' || !ORIGINS.has(o.origin)) return null
   const text = redactSecrets(scrubPaths(o.text))
     .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '<email>')
+    // Another item's dedup marker in this text would make that item look already filed.
+    .replace(/osborn-fp-/gi, 'osborn-fp ')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, MAX_TEXT)

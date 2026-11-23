@@ -17,6 +17,10 @@ export function createRateLimiter({ limit, windowMs, maxKeys }: { limit: number;
       while (hits.size > maxKeys) hits.delete(hits.keys().next().value!)
       return false
     },
+    /** True when key is at the limit; records nothing. */
+    atLimit(key: string, now = Date.now()): boolean {
+      return (hits.get(key) ?? []).filter((t) => now - t < windowMs).length >= limit
+    },
     size: () => hits.size,
   }
 }

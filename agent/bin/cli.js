@@ -3,7 +3,7 @@
 import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import { readFileSync, existsSync, lstatSync, symlinkSync } from 'fs'
+import { readFileSync, existsSync, lstatSync, symlinkSync, mkdirSync, openSync } from 'fs'
 import os from 'os'
 import { superviseChild } from './child-exit.js'
 
@@ -140,8 +140,16 @@ function spawnLoopsFlush() {
     const worker = agentEntry('content/loops-flush-worker')
     let w
     try {
-      if (worker?.src) w = spawn(tsxPath, [worker.src, '--last'], { detached: true, stdio: 'ignore', env: process.env })
-      else if (worker?.dist) w = spawn('node', [worker.dist, '--last'], { detached: true, stdio: 'ignore', env: process.env })
+      // stderr to the same log launchLoopsFlush uses (lens-launch.ts), so this path leaves a trace.
+      let log = 'ignore'
+      try {
+        const dir = join(process.env.CLAUDE_CONFIG_DIR || join(os.homedir(), '.claude'), 'osb-loops')
+        mkdirSync(dir, { recursive: true })
+        log = openSync(join(dir, 'follow-through.log'), 'a', 0o600)
+      } catch {}
+      const opts = { detached: true, stdio: ['ignore', 'ignore', log], env: process.env }
+      if (worker?.src) w = spawn(tsxPath, [worker.src, '--last'], opts)
+      else if (worker?.dist) w = spawn('node', [worker.dist, '--last'], opts)
       else return resolve(false)
     } catch { return resolve(false) }
     const timer = setTimeout(() => resolve(false), 2000)

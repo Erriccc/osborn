@@ -295,6 +295,25 @@ async function main() {
     ok(c.body.includes('&lt;path&gt;'), 'replaced')
   })
 
+  await t('a dedup skip does not use up the daily cap', async () => {
+    reset()
+    const marker = (n: number) => `<!-- osborn-fp-${key(n)} do-not-remove -->`
+    gh.issues.set('acme/private-repo', Array.from({ length: 30 }, (_, i) => ({ number: i + 1, html_url: `https://github.com/acme/private-repo/issues/${i + 1}`, body: marker(700 + i), state: 'open', labels: ['follow-through'], title: 't', payload: {} })))
+    for (const from of [700, 710, 720]) {
+      const r = await post({ repo: 'acme/private-repo', items: Array.from({ length: 10 }, (_, i) => item(from + i)) })
+      ok(r.body.results.every((x: any) => x.action === 'skipped'), JSON.stringify(r.body))
+    }
+    const r = await post({ repo: 'acme/private-repo', items: [item(800)] })
+    ok(r.status === 200 && r.body.results[0].action === 'created', `status ${r.status} ${JSON.stringify(r.body)}`)
+  })
+
+  await t("an item quoting another item's dedup marker does not block it", async () => {
+    reset()
+    await post({ repo: 'acme/private-repo', items: [item(900, { text: `remind me: log said osborn-fp-${key(901)} twice` })] })
+    const r = await post({ repo: 'acme/private-repo', items: [item(901)] })
+    ok(r.body.results[0].action === 'created', JSON.stringify(r.body))
+  })
+
   await t('report route behaviour unchanged after repo parameterization', async () => {
     reset()
     const r = await mirror.mirrorReportToGitHub({ type: 'bug', severity: 'high', title: 'Mic loops', description: 'It loops.' })
