@@ -200,7 +200,7 @@ signed-in streaming chat → `/api/content/chat`), `/blog`, `/use-cases(+/[slug]
 **Ruling:** responsive-marketing treatment only; no per-page mobile work beyond globals.
 
 ### 2.18 `/meeting-canvas` — **➖ bot-only.** Rendered by Recall.ai as the bot's camera
-tile. APIs: EventSource `${agent}/canvas-stream`, Web Audio (webkitAudioContext) TTS
+tile. APIs: EventSource `${agent}/canvas-stream?k=<meeting key>`, Web Audio (webkitAudioContext) TTS
 queue, `{kind:'stop'}` interrupt, speechSynthesis. No human mobile navigation reaches
 it. Mapped, zero mobile work.
 

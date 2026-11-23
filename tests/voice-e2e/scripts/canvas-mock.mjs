@@ -1,5 +1,5 @@
 // Minimal stand-in for the agent's canvas endpoints, to test the frontend
-// /meeting-canvas page locally without deploying. Mirrors index.ts exactly:
+// /meeting-canvas page locally without deploying. Mirrors index.ts (without its key check):
 //   GET  /canvas-stream  → SSE, resync latest 'show' on connect
 //   POST /canvas         → broadcast an event to all connected canvases
 import { createServer } from 'http'

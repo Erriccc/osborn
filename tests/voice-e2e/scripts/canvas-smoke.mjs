@@ -10,7 +10,7 @@ const post = (body) => fetch(`${AGENT}/canvas`, { method: 'POST', headers: { 'Co
 
 const browser = await chromium.launch({ channel: 'chrome', headless: true })
 const page = await browser.newPage({ viewport: { width: 1280, height: 720 } })
-const url = `${FRONTEND}/meeting-canvas?agent=${encodeURIComponent(AGENT)}`
+const url = `${FRONTEND}/meeting-canvas?agent=${encodeURIComponent(AGENT)}${process.env.CANVAS_KEY ? `&k=${encodeURIComponent(process.env.CANVAS_KEY)}` : ''}`
 console.log('opening', url)
 await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 }) // SSE keeps network open → don't wait for idle
 await page.waitForTimeout(3000) // let EventSource connect
