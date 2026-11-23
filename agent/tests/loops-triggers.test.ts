@@ -43,8 +43,35 @@ await t('killWarm path (grace and keep_working_cap) reaches the flush', () => {
 await t('soft recycle calls the flush before exit', () => {
   assert.match(idx, /flushLastSessionThenExit\('mem_soft', 0, 1500\)/)
   assert.doesNotMatch(idx, /setTimeout\(\(\) => process\.exit\(0\), 1500\)/)
-  // Hard recycle exits 1, which bin/cli.js treats as abnormal and flushes itself (cli-signals.test.ts).
-  assert.match(idx, /setTimeout\(\(\) => process\.exit\(1\), 1500\)/)
+  // Both paths flush now: the in-process flush here, and bin/cli.js onAbnormalExit --last where
+  // `exec osborn` runs through cli.js (cli-signals.test.ts). The per-session lock and filed records
+  // serialize them. agent/Dockerfile runs src/index.ts with no cli.js wrapper, so there the
+  // in-process flush is the only one.
+  assert.match(idx, /flushLastSessionThenExit\('mem_hard', 1, 1500, 3000\)/)
+  const hard = slice(idx, 'usedMB >= RECYCLE_HARD_MB', 'else if')
+  assert.ok(hard.indexOf("type: 'agent_recycling'") > 0 && hard.indexOf("type: 'agent_recycling'") < hard.indexOf('mem_hard'), 'notice first')
+})
+
+await t('exitAfterFlush: flushes then exits with the code; a throwing flush still exits', async () => {
+  const { exitAfterFlush } = await import('../src/content/lens-launch.js')
+  const calls: string[] = []
+  await exitAfterFlush({ flush: async () => { calls.push('flush') }, exit: (c) => calls.push(`exit${c}`), code: 1, delayMs: 5, boxMs: 200 })
+  await new Promise(r => setTimeout(r, 40))
+  assert.deepEqual(calls.slice(0, 2), ['flush', 'exit1'])
+  const c2: number[] = []
+  await exitAfterFlush({ flush: async () => { throw new Error('boom') }, exit: (c) => c2.push(c), code: 1, delayMs: 5, boxMs: 200 })
+  await new Promise(r => setTimeout(r, 40))
+  assert.equal(c2[0], 1)
+})
+
+await t('exitAfterFlush: a flush that never settles still exits within the box', async () => {
+  const { exitAfterFlush } = await import('../src/content/lens-launch.js')
+  const codes: number[] = []
+  void exitAfterFlush({ flush: () => new Promise<void>(() => {}), exit: (c) => codes.push(c), code: 1, delayMs: 5, boxMs: 60 })
+  await new Promise(r => setTimeout(r, 40))
+  assert.equal(codes.length, 0, 'not before the box (the flush is still pending)')
+  for (let i = 0; i < 50 && !codes.length; i++) await new Promise(r => setTimeout(r, 100))
+  assert.deepEqual(codes, [1])
 })
 
 await t('idle exit calls the flush before exit', () => {
