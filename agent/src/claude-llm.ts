@@ -1592,7 +1592,7 @@ export class ClaudeLLM extends llm.LLM {
   /**
    * A real user turn (main thread): the raw prompt as evidence, the user's own asks as
    * explicit items (mic only), the last-session pointer, and once per instance the
-   * recap of items filed while the user was away. Returns the recap text ('' if none).
+   * recap of earlier open items (filed or not). Returns the recap text ('' if none).
    */
   noteUserTurn(prompt: string, sessionId?: string | null): string {
     try {

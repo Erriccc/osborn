@@ -350,7 +350,7 @@ const UNFILED_RANK: Partial<Record<LoopKind, number>> = { queued: 0, question: 1
 export interface RecapItem { text: string; url?: string }
 
 /**
- * Not-yet-recapped items across this project's sessions, at most `max` in all: filed ones first (newest
+ * Not-yet-recapped foreground items across this project's sessions, at most `max` in all: filed ones first (newest
  * first), then the still-open unfiled ones (queued, questions, other loops; newest first within a rank).
  * `skipSession` is the live session: what it just recorded is not "earlier". Appends `recapped` for each
  * item returned, so each is recapped once. Ledger text is untrusted: the caller quotes it as data.
@@ -361,7 +361,8 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
     const unfiled: Array<{ sessionId: string; item: LoopItem }> = []
     for (const { sessionId, path } of ledgersIn(projectOsbDir(workingDir))) {
       for (const item of foldLoops(readLoopRecordsAt(path)).values()) {
-        if (item.recapped) continue
+        // Foreground items only, as for filing: a background slot keeps its ledger local.
+        if (item.recapped || !item.fg) continue
         if (item.filedUrl) filed.push({ sessionId, item })
         else if (item.open && item.text && sessionId !== skipSession) unfiled.push({ sessionId, item })
       }
