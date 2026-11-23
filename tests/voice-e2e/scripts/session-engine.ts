@@ -66,6 +66,7 @@ import { freemem } from 'os'
 import { installReactiveMic, speakText, warmUpSpeech, isNoMic } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
+import { artifactMissing } from '../lib/artifact-missing'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, AUDIO_DECODE_CAP_MS, decodeBudgetMs, recordingAge, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
 import { hearSince, hearFromWav } from '../lib/converse'
@@ -1318,6 +1319,7 @@ async function main() {
         }
         if (!file || !existsSync(file)) {
           // A clip that failed after the reply carries its reason (#299).
+          if (path === '/artifact') { const m = artifactMissing(n, runParam, t, !!file && existsSync(file)); return json(res, { ...m, ok: false }, 404) }
           const failed = path === '/clip' ? t?.clipError : null
           return json(res, { error: failed ? `task ${n}'s clip failed: ${failed}` : `no ${path.slice(1)} for task ${n}${runParam ? ` in run ${runParam}` : ''} — GET /runs lists runs`, ...(failed ? { clipError: failed } : {}) }, 404)
         }
