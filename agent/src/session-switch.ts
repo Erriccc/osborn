@@ -18,8 +18,9 @@
  * session is never 'close'd here; it is 'background'.
  */
 
-import { dirname, isAbsolute } from 'node:path'
+import { basename, dirname, isAbsolute } from 'node:path'
 import { projectPathToSlug } from './session-access.js'
+import type { AdmitResult } from './slot-manager.js'
 
 export interface SessionSwitchState {
   /** Session id the live query reported via SDK init (null until the first init). */
@@ -191,6 +192,39 @@ export async function resolveSessionCwd(
   let c: string | null | undefined = null
   try { c = await deps.lookupCwd(sessionId) } catch { c = null }
   return c && deps.exists(sessionId, c) ? c : null
+}
+
+// ── Voice dispatch: project name → the spoke session to run ────────────────
+
+/** Flat shape: the agent builds without strictNullChecks, so a union would not narrow. */
+export interface DispatchTarget { ok: boolean; sessionId?: string; cwd?: string; project?: string; status?: 400 | 404 | 409; error?: string }
+
+const projectKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '')
+
+/**
+ * The newest session whose project folder name matches `project` (case and punctuation ignored).
+ * Two different folders with that name are ambiguous; the focused session, a busy slot or a full
+ * slot cap are refused with 409. `sessions` is listAllClaudeSessions' output.
+ */
+export function resolveDispatchTarget(
+  project: string,
+  sessions: Array<{ sessionId: string; cwd: string; timestamp: Date }>,
+  deps: { seat: (id: string) => AdmitResult; slotState: (id: string) => 'none' | 'idle' | 'busy' },
+): DispatchTarget {
+  const want = projectKey(project || '')
+  if (!want) return { ok: false, status: 400, error: 'name the project to send this to' }
+  const hits = sessions.filter((s) => s.cwd && projectKey(basename(s.cwd)) === want)
+    .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
+  if (!hits.length) return { ok: false, status: 404, error: `no session found for a project called "${project}"` }
+  const folders = [...new Set(hits.map((h) => h.cwd))]
+  if (folders.length > 1) return { ok: false, status: 400, error: `"${project}" matches ${folders.length} folders (${folders.join(', ')}); say which one` }
+  const pick = hits[0]
+  const seat = deps.seat(pick.sessionId)
+  if (!seat.ok) {
+    if (seat.reason !== 'duplicate') return { ok: false, status: 409, error: seat.error }
+    if (deps.slotState(pick.sessionId) === 'busy') return { ok: false, status: 409, error: `${basename(pick.cwd)} is still working on an earlier task` }
+  }
+  return { ok: true, sessionId: pick.sessionId, cwd: pick.cwd, project: basename(pick.cwd) }
 }
 
 /**

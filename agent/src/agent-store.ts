@@ -260,8 +260,19 @@ export function storeWriteRefusal(r: {
     if (r.publicDeploy || !isThisMachine(r)) return { status: 403, error: 'the store needs the sync token or a request from this machine (a machine reachable from outside must set OSBORN_SYNC_TOKEN)' }
     if (!storeWriteOriginAllowed(r.origin, r.frontendUrl)) return { status: 403, error: 'the store is refused from this site' }
   }
-  if (!r.read && !/^application\/json\b/i.test(r.contentType || '')) return { status: 415, error: 'send JSON (Content-Type: application/json)' }
-  return null
+  return r.read ? null : jsonRefusal(r.contentType)
+}
+
+function jsonRefusal(contentType: string | undefined): { status: number; error: string } | null {
+  return /^application\/json\b/i.test(contentType || '') ? null : { status: 415, error: 'send JSON (Content-Type: application/json)' }
+}
+
+/** Refusal for POST /dispatch, or null. The target slots run with permissions bypassed, so only
+ *  this machine's own tools may ask: a loopback request, not forwarded, from no browser page, sending JSON.
+ *  (The token gate, unauthorized(), has already run.) */
+export function dispatchRefusal(r: { forwarded: boolean; host?: string; remote?: string; origin?: string; contentType?: string }): { status: number; error: string } | null {
+  if (!isThisMachine(r) || r.origin) return { status: 403, error: 'dispatch only takes a request from this machine, not from a browser page' }
+  return jsonRefusal(r.contentType)
 }
 
 // ── SKILL.md and agent .md front matter ───────────────────────────────────────
