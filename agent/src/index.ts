@@ -76,6 +76,7 @@ import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
 import { AGENT_SELF_IDENTITY, CONNECT_ROOM_MAX_BODY, PHONE_ACTION_TYPES, PHONE_KEYPAD_APPROVALS_ENABLED, PHONE_TOOLS_ENABLED, checkControlSender, handlePhoneKeypad, isPhoneCallLive, isViewerIdentity, roomOccupants, VIEWER_IDENTITY_PREFIX, isPhoneRoomName, phoneAnswerAllowed, phoneRequestRoute, planConnectRoom, readBodyCapped, resolveJoin, userIdFromMetadata } from './data-sender-auth.js'
+import { SlotRegistry, buildSlotEnv, cleanUpSlotOnFailure, type SessionSlot as SlotRecord } from './slot-manager.js'
 import { PHONE_CODE_HANGUP_GRACE_MS, PHONE_CODE_TIMEOUT_MS, addCodeDigit, checkPhoneCode, heldCode, isPhoneLinePlayer as isLinePlayer, offerPhoneCode, phoneCallerAdmission, phoneCodeAction, removePhoneCaller } from './phone-code.js'
 import { alwaysScope, answerPending, answerPendingWithoutId, approvalModeAnnouncement, approvalModeLabel, autoApproval, describePermission, isAlwaysAllowed, isApprovalMode, newSessionAllows, phoneApprovalPrompt, speakablePermission, type ApprovalMode, type PermissionAnswer } from './approval-policy.js'
 import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeChanged, sayOutputs, saySessions, sayStatus, saySwitchOutcome, type SessionChoice, type VoiceAction } from './phone-voice-actions.js'
@@ -2507,17 +2508,9 @@ async function main() {
   // The focused session (currentLLM / currentSession / currentAgent /
   // activeRoom) is untouched by everything below.
   // ============================================================
-  interface SessionSlot {
-    id: string
-    llm: ReturnType<typeof createClaudeLLM>
-    isFocused: boolean
-    workingDir: string
-    emitter?: import('node:events').EventEmitter
-    sdkOptions?: any
-    dispatchInFlight?: boolean
-    kickoffDone?: boolean  // the [BACKGROUND_INIT] ack's assistant_result has been consumed
-  }
-  const slots = new Map<string, SessionSlot>()
+  type SessionSlot = SlotRecord<ReturnType<typeof createClaudeLLM>>
+  // Cap: OSBORN_MAX_BG_SLOTS (default 2, at most 8). The live foreground session can never become a slot.
+  const slots = new SlotRegistry<SessionSlot>({ foregroundId: () => currentLLM?.sessionId || currentResumeSessionId || null })
   let focusedSlotId: string | null = null  // reserved for future focused-slot wiring; not used yet
 
   // P1 host-agent anchor: the dashboard-started session that owns the room's env + keeps it alive.
@@ -2556,8 +2549,7 @@ async function main() {
     hostActive = false
     hostSessionId = null
     hostWorkingDir = null
-    for (const [, s] of slots) { try { (s.llm as any).abortQuery?.(); (s.llm as any).abortAgent?.() } catch {} }
-    slots.clear()
+    slots.releaseAll()
   }
 
   const armAloneTimer = () => {
@@ -3033,12 +3025,13 @@ async function main() {
   // tagged with the slot id so the frontend can distinguish them.
   // ============================================================
   async function spawnBackgroundSession(sessionId: string, bgWorkingDir?: string): Promise<void> {
-    // Hard cap: focused session + background slots must not exceed 3 total.
-    // slots Map holds ONLY background slots; focused session is separate.
-    if (slots.size >= 2) {
-      const msg = `Background session cap reached (${slots.size}/2 slots in use). Kill an existing background slot before spawning a new one.`
-      console.warn(`⚠️ spawnBackgroundSession: ${msg}`)
-      await sendToFrontend({ type: 'background_session_error', slotId: sessionId, error: msg })
+    // Foreground, duplicate and cap checks (slots.admit); add() below follows with no await between.
+    // Never background the LIVE foreground session: two Claude processes appending to the same
+    // session JSONL corrupt the transcript.
+    const seat = slots.admit(sessionId)
+    if (!seat.ok) {
+      console.warn(`⚠️ spawnBackgroundSession: ${seat.error}`)
+      await sendToFrontend({ type: 'background_session_error', slotId: sessionId, error: seat.error })
       return
     }
 
@@ -3061,8 +3054,7 @@ async function main() {
 
     // Register slot BEFORE cold-starting so list_slots is accurate from the
     // first moment even if the subprocess takes a few seconds to init.
-    const slot: SessionSlot = { id: slotId, llm: bgLLM, isFocused: false, workingDir: slotWorkingDir }
-    slots.set(slotId, slot)
+    const slot = slots.add({ id: slotId, llm: bgLLM, isFocused: false, workingDir: slotWorkingDir })
 
     // Dedicated EventEmitter for this background slot's SDK events.
     // Forwards every event to the frontend data channel tagged with slotId.
@@ -3085,15 +3077,14 @@ async function main() {
     bgEmitter.on('session_id', ({ sessionId: sid }: { sessionId: string }) => {
       sendToFrontend({ type: 'background_session_ready', slotId, sessionId: sid }).catch(() => {})
     })
-    bgEmitter.on('session_resume_failed', ({ requestedSessionId, actualSessionId }: any) => {
-      console.error(`❌ Background slot ${slotId.substring(0, 8)}: resume failed — requested ${requestedSessionId?.substring(0, 8)} got ${actualSessionId?.substring(0, 8)}`)
-      sendToFrontend({ type: 'background_session_error', slotId, error: 'Session resume failed' }).catch(() => {})
-    })
-    // Cold-start crash in the background consumer (claude-llm #startBackgroundConsumer
-    // catch): surface it so the frontend's "Spawning…" clears instead of hanging forever.
-    bgEmitter.on('consumer_error', ({ message }: any) => {
-      console.error(`❌ Background slot ${slotId.substring(0, 8)}: consumer error — ${message}`)
-      sendToFrontend({ type: 'background_session_error', slotId, error: String(message || 'Background session failed to start') }).catch(() => {})
+    // A failed resume or a crash in the background consumer (claude-llm #startBackgroundConsumer
+    // catch): abort the slot and drop it so it stops holding a cap seat, then tell the frontend so
+    // its "Spawning…" clears instead of hanging forever.
+    cleanUpSlotOnFailure(bgEmitter, slots, slot, ({ kind, error, data }) => {
+      if (kind === 'session_resume_failed') console.error(`❌ Background slot ${slotId.substring(0, 8)}: resume failed — requested ${data?.requestedSessionId?.substring(0, 8)} got ${data?.actualSessionId?.substring(0, 8)}`)
+      else console.error(`❌ Background slot ${slotId.substring(0, 8)}: consumer error — ${data?.message}`)
+      sendToFrontend({ type: 'background_session_error', slotId, error }).catch(() => {})
+      armAloneTimer()
     })
     // P1: a real dispatch finished — notify the frontend. The [BACKGROUND_INIT]
     // ack also fires assistant_result, so gate on dispatchInFlight to skip it.
@@ -3119,11 +3110,8 @@ async function main() {
     // env: CLAUDE_CODE_DISABLE_AUTO_MEMORY prevents concurrent subprocesses
     // from racing the shared ~/.claude/CLAUDE.md memory file.
     // CLAUDE_CONFIG_DIR is intentionally NOT overridden — shared config is fine.
-    const bgEnv: Record<string, string> = {}
-    for (const [k, v] of Object.entries(process.env)) {
-      if (v !== undefined) bgEnv[k] = v
-    }
-    bgEnv['CLAUDE_CODE_DISABLE_AUTO_MEMORY'] = '1'
+    // Platform secrets (LiveKit keys, sync token, Supabase admin keys, Fly tokens, anything
+    // named SECRET/PRIVATE_KEY) are stripped from the slot's copy (buildSlotEnv).
     // Claude Code refuses bypassPermissions / --dangerously-skip-permissions when the
     // process runs as root — and every Fly machine runs Osborn as root, so without this
     // EVERY headless background spawn dies on launch. IS_SANDBOX=1 is Claude Code's
@@ -3133,7 +3121,7 @@ async function main() {
     // and intentionally run on the machine's Claude subscription (Tier 1), same as the
     // foreground session — the "never use the subscription" rule is reserved for the
     // future autonomous cron/event background primitive, not these.
-    bgEnv['IS_SANDBOX'] = '1'
+    const bgEnv = buildSlotEnv(process.env)
 
     const bgSdkOptions = {
       cwd: slotWorkingDir,
@@ -4163,8 +4151,7 @@ async function main() {
   }
 
   function findSlotKey(sessionId: string): string | undefined {
-    if (slots.has(sessionId)) return sessionId
-    return [...slots.keys()].find(k => k.startsWith(sessionId) || sessionId.startsWith(k))
+    return slots.findKey(sessionId)
   }
 
   function targetSlotState(sessionId: string): 'none' | 'idle' | 'busy' {
@@ -4317,9 +4304,7 @@ async function main() {
       if (plan.stopSlotFirst) {
         const key = findSlotKey(target)
         if (key) {
-          const slot = slots.get(key)!
-          try { (slot.llm as any).abortQuery?.(); (slot.llm as any).abortAgent?.() } catch {}
-          slots.delete(key)
+          slots.remove(key)
           console.log(`🗑️ Stopped idle background slot ${key.slice(0, 8)} before switching to it`)
           await sendToFrontend({ type: 'background_session_stopped', slotId: key })
         }
@@ -4404,7 +4389,7 @@ async function main() {
         })
       }
       if (plan.stopSlotFirst) {
-        const bg = [...slots.values()].map(s => ({ id: s.id, isFocused: s.isFocused, workingDir: s.workingDir, hasSession: s.llm.hasSession?.() ?? false }))
+        const bg = slots.list()
         await sendToFrontend({ type: 'slots_list', slots: [{ id: target, isFocused: true, workingDir: cwd, hasSession: false }, ...bg] })
       }
       injectSessionIndexIntoChatCtx(currentAgent, target, cwd)
@@ -7625,23 +7610,8 @@ async function main() {
             slotId: null,
             error: 'No eligible session found to spawn as background slot',
           })
-        } else if (slots.has(resolvedSessionId)) {
-          await sendToFrontend({
-            type: 'background_session_error',
-            slotId: resolvedSessionId,
-            error: `Session ${resolvedSessionId.substring(0, 8)} is already running as a background slot`,
-          })
-        } else if (resolvedSessionId === (currentLLM?.sessionId || currentResumeSessionId)) {
-          // Never background the session that's LIVE in the foreground. Pre-IS_SANDBOX this
-          // failed harmlessly on the root check; post-fix it would SUCCEED, putting two
-          // Claude processes appending to the same session JSONL concurrently → transcript
-          // corruption. Refuse it explicitly.
-          await sendToFrontend({
-            type: 'background_session_error',
-            slotId: resolvedSessionId,
-            error: `Session ${resolvedSessionId.substring(0, 8)} is the active foreground session — pick a different session to background`,
-          })
         } else {
+          // Already-a-slot and live-foreground refusals happen in spawnBackgroundSession (slots.admit).
           spawnBackgroundSession(resolvedSessionId, bgDir).catch((err) => {
             console.error('❌ spawnBackgroundSession failed:', err instanceof Error ? err.message : err)
             sendToFrontend({
@@ -7689,21 +7659,18 @@ async function main() {
         const sid = data.sessionId as string | undefined
         let key: string | undefined
         if (sid) {
-          if (slots.has(sid)) key = sid
-          else key = [...slots.keys()].find(k => k === sid || k.startsWith(sid) || sid.startsWith(k))
+          key = slots.findKey(sid)
         }
         if (!key) {
           await sendToFrontend({ type: 'background_session_error', slotId: sid ?? null, error: 'No matching background instance to stop' })
         } else {
-          const slot = slots.get(key)!
-          try { (slot.llm as any).abortQuery?.(); (slot.llm as any).abortAgent?.() } catch {}
-          slots.delete(key)
+          slots.remove(key)
           console.log(`🗑️ Stopped background slot ${key.substring(0, 8)}`)
           await sendToFrontend({ type: 'background_session_stopped', slotId: key })
           // Authoritative refresh so the panel drops the row.
           const focusedId2 = currentLLM?.sessionId || currentResumeSessionId || null
           const focusedEntry2 = currentLLM ? [{ id: focusedId2 || '(pending)', isFocused: true, workingDir, hasSession: currentLLM.hasSession?.() ?? false }] : []
-          const bgEntries2 = [...slots.values()].map(s => ({ id: s.id, isFocused: s.isFocused, workingDir: s.workingDir, hasSession: s.llm.hasSession?.() ?? false }))
+          const bgEntries2 = slots.list()
           await sendToFrontend({ type: 'slots_list', slots: [...focusedEntry2, ...bgEntries2] })
           // If that was the last background agent and no host anchor, let the room idle-exit.
           armAloneTimer()
@@ -7720,12 +7687,7 @@ async function main() {
               hasSession: currentLLM.hasSession?.() ?? false,
             }]
           : []
-        const bgEntries = [...slots.values()].map(s => ({
-          id: s.id,
-          isFocused: s.isFocused,
-          workingDir: s.workingDir,
-          hasSession: s.llm.hasSession?.() ?? false,
-        }))
+        const bgEntries = slots.list()
         await sendToFrontend({
           type: 'slots_list',
           slots: [...focusedEntry, ...bgEntries],
