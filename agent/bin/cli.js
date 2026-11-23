@@ -85,20 +85,26 @@ if (args.includes('start')) {
   args.splice(args.indexOf('dev'), 1)
 }
 
-// Use src/index.ts (dev) if available, otherwise dist/index.js (npm install)
-const srcPath = join(__dirname, '..', 'src', 'index.ts')
-const distPath = join(__dirname, '..', 'dist', 'index.js')
+const tsxPath = join(__dirname, '..', 'node_modules', '.bin', 'tsx')
 
+/** An agent entry: src/<rel>.ts (dev, run via tsx) if available, otherwise dist/<rel>.js (npm install), else null. */
+function agentEntry(rel) {
+  const src = join(__dirname, '..', 'src', `${rel}.ts`)
+  if (existsSync(src)) return { src }
+  const dist = join(__dirname, '..', 'dist', `${rel}.js`)
+  return existsSync(dist) ? { dist } : null
+}
+
+const entry = agentEntry('index')
 let child
-if (existsSync(srcPath)) {
+if (entry?.src) {
   // Dev mode: run via tsx
-  const tsxPath = join(__dirname, '..', 'node_modules', '.bin', 'tsx')
-  child = spawn(tsxPath, [srcPath, mode, ...args], {
+  child = spawn(tsxPath, [entry.src, mode, ...args], {
     stdio: 'inherit',
     cwd: join(__dirname, '..'),
     env: process.env,
   })
-} else if (existsSync(distPath)) {
+} else if (entry?.dist) {
   // Production: run compiled JS directly.
   // HEAP-OOM CRASH FIX (0.9.261): long heavy sessions (big context + many
   // sub-agents) grew the MAIN process past its default V8 old-space limit
@@ -112,7 +118,7 @@ if (existsSync(srcPath)) {
   // memory use and cause a system OOM instead).
   const heapMB = Math.max(3072, Math.floor((os.totalmem() / (1024 * 1024)) * 0.5))
   console.log(`[cli] main agent --max-old-space-size=${heapMB}MB (machine RAM ${Math.round(os.totalmem() / (1024 * 1024))}MB)`)
-  child = spawn('node', [`--max-old-space-size=${heapMB}`, distPath, mode, ...args], {
+  child = spawn('node', [`--max-old-space-size=${heapMB}`, entry.dist, mode, ...args], {
     stdio: 'inherit',
     cwd: join(__dirname, '..'),
     env: process.env,
@@ -127,6 +133,42 @@ child.on('error', (err) => {
   process.exit(1)
 })
 
-child.on('exit', (code) => {
-  process.exit(code || 0)
+// Stop signals (Fly stop, Ctrl+C) go to the agent, which files its open follow-through
+// items before it exits (#378). `stopping` marks the stop as intended (#450).
+let stopping = false
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    stopping = true
+    try { child.kill(sig) } catch {}
+  })
+}
+
+/**
+ * The agent died without filing (heap-OOM abort, kill, crash): file the last
+ * foreground session's open items from a detached worker. Resolves once the
+ * worker has spawned (or failed, or 2s passed); never throws.
+ */
+function spawnLoopsFlush() {
+  return new Promise((resolve) => {
+    const worker = agentEntry('content/loops-flush-worker')
+    let w
+    try {
+      if (worker?.src) w = spawn(tsxPath, [worker.src, '--last'], { detached: true, stdio: 'ignore', env: process.env })
+      else if (worker?.dist) w = spawn('node', [worker.dist, '--last'], { detached: true, stdio: 'ignore', env: process.env })
+      else return resolve(false)
+    } catch { return resolve(false) }
+    const timer = setTimeout(() => resolve(false), 2000)
+    w.once('spawn', () => { clearTimeout(timer); w.unref(); resolve(true) })
+    w.once('error', () => { clearTimeout(timer); resolve(false) })
+  })
+}
+
+child.on('exit', (code, signal) => {
+  // An intended stop that the agent finished (it flushed in its own signal handler).
+  if (stopping && code === 0) process.exit(0)
+  const abnormal = signal != null || (code != null && code !== 0)
+  if (!stopping && !abnormal) process.exit(0)
+  // Signalled child: 128 + signal number, so on-failure restart applies (a null code used to exit 0).
+  const exitCode = stopping ? 0 : signal ? 128 + (os.constants.signals[signal] ?? 0) : code
+  spawnLoopsFlush().finally(() => process.exit(exitCode))
 })

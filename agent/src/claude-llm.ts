@@ -12,7 +12,7 @@ import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUse
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
-import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, PHONE_TOOLS_DENIED } from './prompts.js'
+import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, PHONE_TOOLS_DENIED } from './prompts.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
 import { appendCompactionRecord, countTranscriptRows } from './compaction-log.js'
@@ -24,6 +24,8 @@ import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
+import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, type LoopRecordInput } from './loops-ledger.js'
+import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
 
@@ -193,6 +195,9 @@ export interface ClaudeLLMOptions {
   /** Test seam: replaces the SDK `query()` for the persistent session (cold start
    * + primeResume). Production never sets it. */
   queryFn?: typeof query
+  /** Follow-through (#378): the foreground voice session. Only its open items are ever filed;
+   * background slots and headless sessions keep theirs local. */
+  followThrough?: boolean
 }
 
 /**
@@ -1319,6 +1324,13 @@ export class ClaudeLLM extends llm.LLM {
   // call, see PHONE_TOOLS_ENABLED). Read at each tool call, so it applies mid-session.
   #phoneCall: boolean = false
 
+  // Follow-through ledger (#378): per-session `session` line written once, user-turn
+  // counter, last TodoWrite list per agent, recap injected once per instance.
+  #loopSessionsSeen = new Set<string>()
+  #loopTurn = 0
+  #todoSnapshots = new Map<string, Map<string, string>>()
+  #loopRecapDone = false
+
   constructor(opts: ClaudeLLMOptions = {}) {
     super()
 
@@ -1352,6 +1364,7 @@ export class ClaudeLLM extends llm.LLM {
       // `onPermissionRequest` is handled separately via its own private field
       // and does NOT need to be in this literal.
       onCompactionEvent: opts.onCompactionEvent,
+      followThrough: !!opts.followThrough,
     }
     this.#eventEmitter = opts.eventEmitter || new EventEmitter()
     if (opts.queryFn) this.#queryFn = opts.queryFn
@@ -1393,7 +1406,9 @@ export class ClaudeLLM extends llm.LLM {
           message: message || 'User denied permission',
         })
       }
+      const settledId = this.#pendingPermission.requestId
       this.#pendingPermission = null
+      this.recordLoop({ kind: 'permission_settled', id: loopIds.permission(settledId), by: 'user' })
       return true
     }
     return false
@@ -1554,6 +1569,56 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   get phoneCall(): boolean { return this.#phoneCall }
+
+  /** Append one follow-through ledger line for this session (never throws). */
+  recordLoop(rec: LoopRecordInput, sessionId?: string | null): void {
+    const sid = sessionId || this.#sessionId
+    const cwd = this.#opts.workingDirectory
+    if (!sid || !cwd) return
+    const fg = !!this.#opts.followThrough
+    if (!this.#loopSessionsSeen.has(sid)) {
+      this.#loopSessionsSeen.add(sid)
+      appendLoopRecord(sid, cwd, { kind: 'session', cwd, fg })
+    }
+    appendLoopRecord(sid, cwd, { turn: this.#loopTurn, ...rec, fg })
+  }
+
+  /**
+   * A real user turn (main thread): the raw prompt as evidence, the user's own asks as
+   * explicit items (mic only), the last-session pointer, and once per instance the
+   * recap of items filed while the user was away. Returns the recap text ('' if none).
+   */
+  noteUserTurn(prompt: string, sessionId?: string | null): string {
+    try {
+      this.#loopTurn++
+      const origin = classifyPromptOrigin(prompt, { phone: this.#phoneCall })
+      let text = String(prompt || '')
+      const truncated = Buffer.byteLength(text) > MAX_PROMPT_BYTES
+      if (truncated) text = Buffer.from(text).subarray(0, MAX_PROMPT_BYTES).toString('utf-8')
+      this.recordLoop({ kind: 'prompt', text, origin, ...(truncated ? { truncated: true } : {}) }, sessionId)
+      if (origin === 'user_mic') {
+        for (const ask of extractAsks(prompt)) this.recordLoop({ kind: 'ask', id: loopIds.ask(ask), text: ask, source: 'explicit', origin }, sessionId)
+      }
+      const sid = sessionId || this.#sessionId
+      const cwd = this.#opts.workingDirectory
+      if (!this.#opts.followThrough || !sid || !cwd) return ''
+      writeLastSession(sid, cwd)
+      if (this.#loopRecapDone) return ''
+      this.#loopRecapDone = true
+      return getFollowThroughRecap(takeLoopsRecap(cwd))
+    } catch {
+      return ''
+    }
+  }
+
+  /** TodoWrite: diff the agent's list by content and record new items and status changes. */
+  noteTodoWrite(agentKey: string, todos: unknown, sessionId?: string | null): void {
+    const { next, changes } = diffTodos(this.#todoSnapshots.get(agentKey), Array.isArray(todos) ? todos : [])
+    this.#todoSnapshots.set(agentKey, next)
+    for (const c of changes) {
+      this.recordLoop({ kind: c.from ? 'todo_status' : 'todo', id: loopIds.todo(c.content), text: c.content, status: c.to, source: 'inferred', origin: 'tool' }, sessionId)
+    }
+  }
 
   // Steer-priority suppression state (adversarial findings #1/#8): a 'now'
   // message aborts the running turn, so never stamp it while that turn is
@@ -2033,6 +2098,14 @@ export class ClaudeLLM extends llm.LLM {
    * Call on disconnect, session switch, or recovery.
    */
   closeSession(): void {
+    // Follow-through: sub-agents still tracked here never reach SubagentStop, and a pending
+    // permission closed by the abort was never answered. Both stay open in the ledger.
+    for (const [agentId, type] of this.#typeByAgentId) {
+      this.recordLoop({ kind: 'dispatch_severed', id: loopIds.dispatch(agentId), text: `Unfinished ${type} run (cut off)`, source: 'inferred', origin: 'tool' })
+    }
+    if (this.#pendingPermission) {
+      this.recordLoop({ kind: 'permission_settled', id: loopIds.permission(this.#pendingPermission.requestId), by: 'abort' })
+    }
     if (this.#messageChannel) {
       this.#messageChannel.close()
     }
@@ -2460,6 +2533,8 @@ export class ClaudeLLM extends llm.LLM {
         return new Promise<PermResult>((resolve) => {
           const requestId = crypto.randomUUID()
           this.#pendingPermission = { toolName, input, requestId, resolve }
+          const what = String((input as any)?.command ?? (input as any)?.file_path ?? (input as any)?.url ?? '').replace(/\s+/g, ' ').slice(0, 80)
+          this.recordLoop({ kind: 'permission_pending', id: loopIds.permission(requestId), text: `Approval never given: ${toolName}${what ? ` ${what}` : ''}`, source: 'inferred', origin: 'tool' })
           console.log(`⚠️ Permission request: ${toolName} (${requestId.slice(0, 8)})`)
           this.#eventEmitter.emit('permission_request', { toolName, input, requestId })
         })
@@ -2753,6 +2828,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // reaches it. Disabled when OSBORN_TOOL_HARD_CEILING=0.
                 if (TOOL_HARD_CEILING > 0 && turnToolCallCount > TOOL_HARD_CEILING) {
                   console.log(`🛑 Runaway safety limit (${turnToolCallCount}/${TOOL_HARD_CEILING}) — DENYING ${toolName}.`)
+                  if (turnToolCallCount === TOOL_HARD_CEILING + 1) this.#llmRef.recordLoop({ kind: 'budget_denied', id: loopIds.budget(turnToolCallCount, new Date().toISOString()), text: `Work cut off by the tool-call limit (${toolName})`, source: 'inferred', origin: 'system' }, input?.session_id)
                   this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: `Runaway safety limit (${turnToolCallCount} tool calls this turn). Wrap up or delegate remaining work via Task.` })
                   return {
                     hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' },
@@ -2841,6 +2917,10 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // SubagentStart can pair agent_id → tool_use_id → task_id (stopTask).
                 this.#llmRef.noteTaskDispatch((input as any)?.tool_use_id, st || undefined)
               }
+              if (toolName === 'AskUserQuestion' && input?.tool_use_id) {
+                const q = String((toolInput as any)?.questions?.[0]?.question ?? '').replace(/\s+/g, ' ').trim()
+                if (q) this.#llmRef.recordLoop({ kind: 'question', id: loopIds.question(String(input.tool_use_id)), text: `Unanswered question: ${q}`, source: 'inferred', origin: 'tool' }, input?.session_id)
+              }
               this.#eventEmitter.emit('tool_use', { name: toolName, input: toolInput, agentRole: agentType || 'main', agentId: input?.agent_id })
               // Consume an armed spoken-progress nudge on this allowed main-agent tool call:
               // inject it as NON-BLOCKING additionalContext (the model reads it; the tool still
@@ -2865,6 +2945,22 @@ class ClaudeLLMStream extends llm.LLMStream {
                 console.log('[LIFECYCLE-PROBE] PostToolUse on', toolName, 'agent_id=', agentId, 'ts=', Date.now())
               }
               this.#eventEmitter.emit('tool_result', { name: toolName, input: toolInput, response: toolResponse, agentRole: agentTypePost || 'main', agentId: input?.agent_id })
+              // Follow-through ledger (#378): todo and task lists, answered questions. Never throws.
+              try {
+                const sid = input?.session_id
+                if (toolName === 'TodoWrite') this.#llmRef.noteTodoWrite(String(input?.agent_id || 'main'), (toolInput as any)?.todos, sid)
+                else if (toolName === 'TaskCreate') {
+                  const taskId = (toolResponse as any)?.task?.id
+                  const subject = String((toolInput as any)?.subject ?? '').trim()
+                  if (taskId && subject) this.#llmRef.recordLoop({ kind: 'task', id: loopIds.task(String(taskId)), text: subject, status: 'pending', source: 'inferred', origin: 'tool' }, sid)
+                } else if (toolName === 'TaskUpdate') {
+                  const taskId = (toolInput as any)?.taskId
+                  const status = (toolInput as any)?.status
+                  if (taskId && typeof status === 'string') this.#llmRef.recordLoop({ kind: 'task_status', id: loopIds.task(String(taskId)), status, ...((toolInput as any)?.subject ? { text: String((toolInput as any).subject) } : {}), source: 'inferred', origin: 'tool' }, sid)
+                } else if (toolName === 'AskUserQuestion' && input?.tool_use_id) {
+                  this.#llmRef.recordLoop({ kind: 'question_answered', id: loopIds.question(String(input.tool_use_id)) }, sid)
+                }
+              } catch { /* ledger must never break a tool call */ }
               // Pattern #1 verifier chaining has MOVED to the SubagentStop hook below. Reason:
               // sub-agents run with run_in_background:true, so PostToolUse-on-Task fires at
               // DISPATCH (placeholder tool_response), not completion — injecting the "now verify"
@@ -2914,6 +3010,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                 if (!fromSubagent && sid && this.#opts.workingDirectory) {
                   this.#llmRef.triggerStoreUpdate(sid, this.#opts.workingDirectory)
                 }
+                // Follow-through ledger (#378): raw prompt + the user's own asks; recap once.
+                const loopRecap = fromSubagent ? '' : this.#llmRef.noteUserTurn(String(input?.prompt || ''), sid)
 
                 // Recall is best-effort and must never approach the SDK's 30s hook budget.
                 // buildRecallInjection is already self-bounding — the query embed has a tight
@@ -2937,7 +3035,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // whole block already lands after the cached tools→system→history
                 // prefix, but ordering volatile content last keeps any future
                 // cache_control breakpoint inside this block useful too.
-                const additionalContext = [reminder, recalled, machineNudge].filter(Boolean).join('\n\n')
+                const additionalContext = [reminder, recalled, loopRecap, machineNudge].filter(Boolean).join('\n\n')
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [counters reset; speak-cadence ${SPEAK_CADENCE_N}]`)
                 return {
                   hookSpecificOutput: {
@@ -3046,6 +3144,15 @@ class ClaudeLLMStream extends llm.LLMStream {
                   console.log(`🧠 PostCompact: HANDOFF_STATE present (${handoff.length} chars) — not written to disk`)
                   progress('Parsed handoff state', `${handoff.length} chars`)
                 }
+
+                // ── OPEN_LOOPS — model-extracted open items go to the follow-through ledger (inferred) ──
+                try {
+                  for (const line of extractSection('=== OPEN_LOOPS ===').split('\n')) {
+                    const item = line.replace(/^\s*[-*•\d.)]+\s*/, '').trim()
+                    if (item.length < 6 || /^none\b/i.test(item)) continue
+                    this.#llmRef.recordLoop({ kind: 'open_loop', id: loopIds.openLoop(item), text: item.slice(0, 200), source: 'inferred', origin: 'system' }, this.#sessionId)
+                  }
+                } catch { /* never breaks compaction */ }
 
                 // ── Section 2: DECISIONS — append project-scoped decisions ──
                 try {
@@ -3279,6 +3386,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               // Pair this agent_id with its dispatching tool_use_id (per-flow stop chain).
               this.#llmRef.claimTaskDispatch(input?.agent_id, at0 ? String(at0) : undefined)
               this.#eventEmitter.emit('agent_started', { agent_type: input?.agent_type, agent_id: input?.agent_id, task })
+              if (input?.agent_id) this.#llmRef.recordLoop({ kind: 'dispatch_started', id: loopIds.dispatch(String(input.agent_id)), text: `Unfinished ${at0 || 'agent'} run${task ? `: ${task}` : ''}`, source: 'inferred', origin: 'tool' }, input?.session_id)
               // Record the dispatch as LIVE so the frontend can reconcile orphaned
               // "running" rows against statusManager.getActiveDispatchIds(). Without a
               // start-time entry the manager only knew about dispatches at completion,
@@ -3297,12 +3405,16 @@ class ClaudeLLMStream extends llm.LLMStream {
               const msg = String(input?.last_assistant_message ?? '')
               const aid = input?.agent_id ?? ('sa-' + Date.now())
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
+              if (input?.agent_id) this.#llmRef.recordLoop({ kind: 'dispatch_stopped', id: loopIds.dispatch(String(input.agent_id)) }, input?.session_id)
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
               // Steward verdict card (#221): parsed, kept in the session's sidecar, sent to the chat.
               const atRole = roleOf(at, this.#opts.agentRoles, NAMED_AGENTS)
               const verdict = atRole && ROLES[atRole].verdict
                 ? parseStewardVerdict(msg, undefined, this.#opts.workingDirectory ? githubIssueBase(this.#opts.workingDirectory) : undefined) : null
               if (verdict) {
+                this.#llmRef.recordLoop(verdict.verdict === 'BLOCK'
+                  ? { kind: 'steward_block', id: loopIds.steward(), text: `Steward blocked the change: ${String(verdict.summary || '').slice(0, 160)}`, source: 'inferred', origin: 'tool' }
+                  : { kind: 'steward_clear', id: loopIds.steward() }, input?.session_id)
                 this.#recordSteward(verdict)
                 this.#eventEmitter.emit('steward_verdict', verdict)
               } else if (atRole && ROLES[atRole].resultCard) {

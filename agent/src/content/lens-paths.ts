@@ -81,11 +81,12 @@ export function findTranscriptBySessionId(sessionId: string, preferDir?: string 
 }
 
 /**
- * Acquire the per-project lock. Returns false if a FRESH (<15 min) lock exists.
- * Stale locks are replaced. Exclusive-create avoids a check-then-write race.
+ * Acquire the per-project lock (or another lock file in `dir`, with its own TTL).
+ * Returns false if a FRESH lock exists. Stale locks are replaced. Exclusive-create
+ * avoids a check-then-write race.
  */
-export function acquireLock(projectDir: string, now = Date.now()): boolean {
-  const p = join(projectDir, LOCK_FILE)
+export function acquireLock(projectDir: string, now = Date.now(), file = LOCK_FILE, ttlMs = LOCK_TTL_MS): boolean {
+  const p = join(projectDir, file)
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const fd = openSync(p, 'wx', 0o600)
@@ -95,7 +96,7 @@ export function acquireLock(projectDir: string, now = Date.now()): boolean {
     } catch (e: any) {
       if (e?.code !== 'EEXIST') return false
       try {
-        if (now - statSync(p).mtimeMs < LOCK_TTL_MS) return false
+        if (now - statSync(p).mtimeMs < ttlMs) return false
         rmSync(p, { force: true }) // stale → replace once
       } catch {
         return false
@@ -105,9 +106,9 @@ export function acquireLock(projectDir: string, now = Date.now()): boolean {
   return false
 }
 
-export function releaseLock(projectDir: string): void {
+export function releaseLock(projectDir: string, file = LOCK_FILE): void {
   try {
-    rmSync(join(projectDir, LOCK_FILE), { force: true })
+    rmSync(join(projectDir, file), { force: true })
   } catch {
     /* ignore */
   }
@@ -444,6 +445,30 @@ export function readLiveSessions(maxAgeMs = 3 * 60_000, home = libraryHomeDir())
     if (Date.now() - statSync(path).mtimeMs > maxAgeMs) return null
     const o = JSON.parse(readFileSync(path, 'utf-8'))
     return Array.isArray(o?.ids) ? o.ids.map(String) : null
+  } catch {
+    return null
+  }
+}
+
+// ── Follow-through (#378): the last foreground session, for exit paths that have no brain ──
+
+/** Read by bin/cli.js's abnormal-exit flush and the agent's stop-signal / recycle / idle-exit flush. */
+function lastSessionPath(): string {
+  return join(claudeDir(), 'osb-loops', 'last-session.json')
+}
+
+export function writeLastSession(id: string, cwd: string): void {
+  try {
+    const p = lastSessionPath()
+    mkdirSync(dirname(p), { recursive: true })
+    writePrivateAtomic(p, JSON.stringify({ id, cwd, at: new Date().toISOString() }))
+  } catch { /* best-effort */ }
+}
+
+export function readLastSession(): { id: string; cwd: string } | null {
+  try {
+    const o = JSON.parse(readFileSync(lastSessionPath(), 'utf-8'))
+    return typeof o?.id === 'string' && typeof o?.cwd === 'string' ? { id: o.id, cwd: o.cwd } : null
   } catch {
     return null
   }

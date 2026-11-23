@@ -1,0 +1,121 @@
+// Follow-through (#378): every trigger reaches the flush, and the capture hooks are wired.
+// Source-anchored (like tests/regression/mem-recycle.ts) plus one real detached spawn.
+// Run: npx tsx agent/tests/loops-triggers.test.ts
+import assert from 'node:assert/strict'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { fileURLToPath } from 'node:url'
+
+const here = dirname(fileURLToPath(import.meta.url))
+const src = (f: string) => readFileSync(join(here, '..', 'src', f), 'utf-8')
+const idx = src('index.ts')
+const llm = src('claude-llm.ts')
+const launch = src('content/lens-launch.ts')
+
+let pass = 0
+const t = async (name: string, fn: () => unknown) => {
+  try { await fn(); pass++; console.log('ok   ', name) }
+  catch (e: any) { console.log('FAIL ', name, '\n     ', String(e?.message ?? e).split('\n')[0]); process.exitCode = 1 }
+}
+/** The body of a function/arrow from its anchor to the next anchor. */
+const slice = (s: string, from: string, to: string) => {
+  const a = s.indexOf(from)
+  assert.ok(a >= 0, `anchor not found: ${from}`)
+  const b = s.indexOf(to, a + from.length)
+  return s.slice(a, b < 0 ? undefined : b)
+}
+
+await t('launchLibraryOnSessionEnd launches the loops flush first, before the lens lock', () => {
+  const body = slice(launch, 'export function launchLibraryOnSessionEnd(', '\n}\n')
+  const flush = body.indexOf('launchLoopsFlush(')
+  const lens = body.indexOf('launchCompactionLens(')
+  assert.ok(flush > 0 && lens > 0 && flush < lens, 'flush must come before launchCompactionLens')
+})
+
+await t('killWarm path (grace and keep_working_cap) reaches the flush', () => {
+  const kill = slice(idx, 'const killWarm = (reason: string): void => {', '\n  }\n')
+  assert.match(kill, /launchLibraryOnSessionEnd\(warmSessionId/)
+  assert.match(slice(idx, 'const freeWarm = (reason: string): void => {', '\n  }\n'), /killWarm\(reason\)/)
+  assert.match(idx, /freeWarm\('keep_working_cap'\)/)
+})
+
+await t('soft recycle calls the flush before exit', () => {
+  assert.match(idx, /flushLastSessionThenExit\('mem_soft', 0, 1500\)/)
+  assert.doesNotMatch(idx, /setTimeout\(\(\) => process\.exit\(0\), 1500\)/)
+  // Hard recycle exits 1, which bin/cli.js treats as abnormal and flushes itself (cli-signals.test.ts).
+  assert.match(idx, /setTimeout\(\(\) => process\.exit\(1\), 1500\)/)
+})
+
+await t('idle exit calls the flush before exit', () => {
+  const body = slice(idx, 'const armIdleExitTimer = (reason: string) => {', '\n  }\n')
+  assert.match(body, /flushLastSessionThenExit\('idle_exit', 0, 2000\)/)
+  assert.doesNotMatch(body, /process\.exit\(/)
+})
+
+await t('slot cap refusal appends slot_refused', () => {
+  const body = slice(idx, 'async function spawnBackgroundSession(', 'const slotWorkingDir')
+  assert.match(body, /kind: 'slot_refused'/)
+  assert.ok(body.indexOf("kind: 'slot_refused'") < body.indexOf('return'), 'recorded before the early return')
+})
+
+await t('index registers SIGINT and SIGTERM handlers that flush', () => {
+  assert.match(idx, /for \(const sig of \['SIGINT', 'SIGTERM'\] as const\)/)
+  const body = slice(idx, "for (const sig of ['SIGINT', 'SIGTERM'] as const)", '\n}\n')
+  assert.match(body, /flushLastSessionThenExit\(`signal_\$\{sig\}`, 0, 1500\)/)
+  assert.match(body, /if \(stopSignalled\) return/)
+})
+
+await t('the abort path records pending permissions and cut-off sub-agents before closing (killCurrentLLM → abortQuery → closeSession)', () => {
+  assert.match(slice(llm, '  abortQuery(): void {', '\n  }\n'), /this\.closeSession\(\)/)
+  const close = slice(llm, '  closeSession(): void {', '\n  }\n')
+  const sev = close.indexOf("kind: 'dispatch_severed'")
+  const perm = close.indexOf("by: 'abort'")
+  const clear = close.indexOf('this.#typeByAgentId.clear()')
+  assert.ok(sev > 0 && perm > 0 && clear > sev && clear > perm, 'recorded before the tracking maps are cleared')
+})
+
+await t('UserPromptSubmit appends the raw prompt (main thread only)', () => {
+  const ups = slice(llm, 'UserPromptSubmit: [{', 'PreCompact: [{')
+  assert.match(ups, /const loopRecap = fromSubagent \? '' : this\.#llmRef\.noteUserTurn\(String\(input\?\.prompt \|\| ''\), sid\)/)
+  assert.match(ups, /\[reminder, recalled, loopRecap, machineNudge\]/)
+  assert.match(slice(llm, '  noteUserTurn(', '\n  }\n'), /kind: 'prompt'/)
+})
+
+await t('SubagentStart and SubagentStop append dispatch lines', () => {
+  assert.match(slice(llm, 'SubagentStart: [{', 'SubagentStop: [{'), /kind: 'dispatch_started'/)
+  assert.match(slice(llm, 'SubagentStop: [{', 'TaskCreated: [{'), /kind: 'dispatch_stopped'/)
+})
+
+await t('TodoWrite, TaskCreate and TaskUpdate are captured at PostToolUse', () => {
+  const post = slice(llm, 'PostToolUse: [{', 'UserPromptSubmit: [{')
+  assert.match(post, /toolName === 'TodoWrite'/)
+  assert.match(post, /toolName === 'TaskCreate'/)
+  assert.match(post, /toolName === 'TaskUpdate'/)
+})
+
+await t('only the foreground voice sessions opt into filing; background slots do not', () => {
+  assert.equal((idx.match(/followThrough: true,/g) || []).length, 3)
+  const slot = slice(idx, 'const bgLLM = createClaudeLLM({', '})')
+  assert.doesNotMatch(slot, /followThrough/)
+  assert.match(llm, /followThrough: !!opts\.followThrough/)
+})
+
+await t('next start drains unfiled ledgers', () => {
+  assert.match(idx, /launchLoopsFlush\('drain', 'startup'\)/)
+})
+
+await t('launchLoopsFlush resolves only after the detached worker has spawned', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'loops-trigger-test-'))
+  process.env.CLAUDE_CONFIG_DIR = home
+  const { launchLoopsFlush } = await import('../src/content/lens-launch.js')
+  const r = await launchLoopsFlush({ sessionId: 'nope', cwd: home }, 'test')
+  assert.equal(r, 'spawned')
+  process.env.OSBORN_FOLLOW_THROUGH = 'off'
+  assert.equal(await launchLoopsFlush('drain', 'test'), 'disabled')
+  delete process.env.OSBORN_FOLLOW_THROUGH
+  assert.match(slice(launch, 'export function launchLoopsFlush(', '\n}\n'), /child\.once\('spawn', \(\) => \{[\s\S]*child\.unref\(\)/)
+  rmSync(home, { recursive: true, force: true })
+})
+
+console.log(`\n${pass} passed`)

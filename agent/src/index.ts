@@ -54,11 +54,12 @@ import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fast
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
+import { loopIds } from './loops-ledger.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
-import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled } from './content/lens-launch.js'
+import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled, launchLoopsFlush, flushLastSessionThenExit } from './content/lens-launch.js'
 import { hasContentModelKey } from './content/content-llm.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
 import { storeExists, openStore, recentRows } from './session-store.js'
@@ -277,6 +278,18 @@ process.on('uncaughtException', (error) => {
   }
   console.error('❌ Uncaught Exception:', error)
 })
+
+// Stop signals (Fly stop, Ctrl+C; bin/cli.js forwards both): file the last session's open
+// follow-through items, then exit 0. Repeats are ignored so a second signal cannot cut the flush.
+let stopSignalled = false
+for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+  process.on(sig, () => {
+    if (stopSignalled) return
+    stopSignalled = true
+    console.log(`⏻ ${sig}: flushing follow-through, then exiting`)
+    void flushLastSessionThenExit(`signal_${sig}`, 0, 1500)
+  })
+}
 
 // ============================================================
 // HTTP API SERVER - Exposes session data to cloud-deployed frontend
@@ -2628,8 +2641,8 @@ async function main() {
       const empty = !activeRoom || peopleIn(activeRoom) === 0
       if (stillIdle && empty && !agentsActive()) {
         console.log(`⏻ [IDLE-EXIT] still idle after grace — exiting 0 so Fly stops the machine (billing stops; next Resume boots it)`)
-        // Give the log tee a beat to flush, then stop the machine.
-        setTimeout(() => process.exit(0), 2000)
+        // File open follow-through items, give the log tee a beat to flush, then stop the machine.
+        void flushLastSessionThenExit('idle_exit', 0, 2000)
       } else {
         console.log(`⏻ [IDLE-EXIT] aborted — status=${livekitState.status} participants=${peopleIn(activeRoom)}`)
       }
@@ -2725,6 +2738,7 @@ async function main() {
   setTimeout(() => {
     try {
       launchLibrarySweep(liveSessionIds(), 'startup')
+      void launchLoopsFlush('drain', 'startup')
     } catch { /* fail-open */ }
   }, 120_000).unref()
 
@@ -2951,7 +2965,7 @@ async function main() {
       } else if (usedMB >= RECYCLE_SOFT_MB && safeToRecycle()) {
         recycling = true
         console.warn(`♻️ [MEM] SOFT recycle: heapUsed ${usedMB}MB ≥ ${RECYCLE_SOFT_MB}MB and idle — stopping cleanly; next connect boots a fresh process and resumes`)
-        setTimeout(() => process.exit(0), 1500)   // exit(0): machine stops (same as idle-exit); next Resume boots fresh
+        void flushLastSessionThenExit('mem_soft', 0, 1500)   // exit(0): machine stops (same as idle-exit); next Resume boots fresh
       }
     } catch { /* probe must never break the agent */ }
   }, 15_000).unref()
@@ -3038,6 +3052,7 @@ async function main() {
     if (slots.size >= 2) {
       const msg = `Background session cap reached (${slots.size}/2 slots in use). Kill an existing background slot before spawning a new one.`
       console.warn(`⚠️ spawnBackgroundSession: ${msg}`)
+      ;(currentLLM as any)?.recordLoop?.({ kind: 'slot_refused', id: loopIds.slot(sessionId), text: `Background session was refused (cap reached): ${sessionId.slice(0, 8)}`, source: 'inferred', origin: 'system' })
       await sendToFrontend({ type: 'background_session_error', slotId: sessionId, error: msg })
       return
     }
@@ -4644,6 +4659,7 @@ async function main() {
       voiceMode: 'direct',
       skipTTSQueue: true,
       onCompactionEvent: buildOnCompactionEvent(),
+      followThrough: true,
       ...userAgentOptions(),
     })
     // Apply turbo to the freshly created LLM so the main model also picks it up.
@@ -5783,6 +5799,7 @@ async function main() {
         resumeSessionId,
         voiceMode: 'direct',
         skipTTSQueue: true,
+        followThrough: true,
         ...userAgentOptions(),
         // PipelineDirectOptions extends ClaudeLLMOptions; passing this through
         // forwards it into the inner `new ClaudeLLM(opts)`. Without this,
@@ -6288,6 +6305,7 @@ async function main() {
                 resumeSessionId: recoverySessionId,
                 voiceMode: 'direct',
                 skipTTSQueue: true,
+                followThrough: true,
                 ...userAgentOptions(),
                 getChatHistory: () => getChatHistory(20).map(t => ({ role: t.role, content: t.text })),
                 getResearchContext: () => {

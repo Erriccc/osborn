@@ -2,9 +2,8 @@
 // "What to return") parsed into the fields the chat card shows, and kept in a sidecar next to
 // compactions.jsonl so a reload rebuilds the card where it happened.
 import { execFileSync } from 'child_process'
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs'
-import { dirname, join } from 'path'
-import { getStorePath } from './session-store.js'
+import { getSidecarPath } from './session-store.js'
+import { appendJsonlLine, readJsonlLines } from './jsonl-sidecar.js'
 import { redactSecrets } from './content/secret-rules.js'
 
 export type StewardVerdictKind = 'CLEAN' | 'REFACTORED' | 'BLOCK'
@@ -204,25 +203,15 @@ export function stewardServedRecords(records: StewardRecord[], n = 50): StewardR
 
 /** Sidecar path: next to session.db and compactions.jsonl. */
 export function getStewardLogPath(sessionId: string, workingDir: string): string {
-  return join(dirname(getStorePath(sessionId, workingDir)), 'steward.jsonl')
+  return getSidecarPath(sessionId, workingDir, 'steward.jsonl')
 }
 
 export function appendStewardRecord(sessionId: string, workingDir: string, v: StewardRecord): void {
-  const p = getStewardLogPath(sessionId, workingDir)
-  mkdirSync(dirname(p), { recursive: true })
-  appendFileSync(p, JSON.stringify(v) + '\n', 'utf-8')
+  appendJsonlLine(getStewardLogPath(sessionId, workingDir), JSON.stringify(v))
 }
 
 /** Every recorded verdict, gate event and agent result for a session, file order. Missing file or torn lines are skipped. */
 export function readStewardRecords(sessionId: string, workingDir: string): StewardRecord[] {
-  const p = getStewardLogPath(sessionId, workingDir)
-  if (!existsSync(p)) return []
-  const out: StewardRecord[] = []
-  for (const line of readFileSync(p, 'utf-8').split('\n')) {
-    try {
-      const o = JSON.parse(line)
-      if (o && (typeof o.verdict === 'string' || typeof o.gate === 'string' || (typeof o.agent === 'string' && typeof o.result === 'string')) && typeof o.at === 'string') out.push(o)
-    } catch { /* blank or torn line */ }
-  }
-  return out
+  return readJsonlLines(getStewardLogPath(sessionId, workingDir)).filter((o: any): o is StewardRecord =>
+    !!o && (typeof o.verdict === 'string' || typeof o.gate === 'string' || (typeof o.agent === 'string' && typeof o.result === 'string')) && typeof o.at === 'string')
 }

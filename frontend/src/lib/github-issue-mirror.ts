@@ -145,44 +145,53 @@ export function buildDuplicateComment(report: MirrorReport): string {
   return lines.join('\n')
 }
 
-// Best-effort: make sure the `user-report` label exists so these are filterable
-// apart from the automation's traced findings. Cached per process; failures are
+// Best-effort: make sure a label exists so these are filterable apart from the
+// automation's traced findings. Cached per repo per process; failures are
 // non-fatal (the issue still files, the label is just dropped by GitHub).
-let labelEnsured = false
-async function ensureUserReportLabel(tok: string): Promise<void> {
-  if (labelEnsured) return
-  labelEnsured = true // optimistic — don't retry every call even on failure
+const labelsEnsured = new Map<string, Set<string>>()
+async function ensureLabel(tok: string, repo: string, label: { name: string; color: string; description: string }, timeoutMs?: number): Promise<void> {
+  const done = labelsEnsured.get(repo) ?? new Set<string>()
+  labelsEnsured.set(repo, done)
+  if (done.has(label.name)) return
+  done.add(label.name) // optimistic — don't retry every call even on failure
   try {
-    await fetch(`${GITHUB_API}/repos/${REPO}/labels`, {
+    await fetch(`${GITHUB_API}/repos/${repo}/labels`, {
       method: 'POST',
       headers: ghHeaders(tok),
-      body: JSON.stringify({
-        name: USER_REPORT_LABEL,
-        color: '0e8a16',
-        description: 'Filed by a user via the in-app report form',
-      }),
+      body: JSON.stringify(label),
+      ...withTimeout(timeoutMs),
     }) // 201 created or 422 already-exists — either is fine
   } catch {
     // ignore
   }
 }
 
-// Find an OPEN issue already tracking this fingerprint. Returns its number, or null.
-async function findOpenDuplicate(tok: string, fp: string): Promise<number | null> {
-  const tokenStr = fingerprintToken(fp)
-  const q = `repo:${REPO} is:issue is:open in:body "${tokenStr}"`
+type IssueHit = { number: number; url: string }
+type IssueRow = { number: number; html_url?: string; body?: string; pull_request?: unknown; state?: string; state_reason?: string | null }
+const withTimeout = (ms?: number): { signal?: AbortSignal } => (ms ? { signal: AbortSignal.timeout(ms) } : {})
+const hitOf = (repo: string, it: IssueRow): IssueHit => ({ number: it.number, url: it.html_url || `https://github.com/${repo}/issues/${it.number}` })
+
+// Find an issue already tracking `tokenStr`: OPEN only ('open'), or open or closed as not planned
+// ('open-or-dismissed': a follow-up the user dismissed is never filed again; one closed as done
+// may be filed again if the item comes back open).
+async function findDuplicate(tok: string, repo: string, tokenStr: string, mode: 'open' | 'open-or-dismissed', timeoutMs?: number): Promise<IssueHit | null> {
+  const q = `repo:${repo} is:issue${mode === 'open' ? ' is:open' : ''} in:body "${tokenStr}"`
   const url = `${GITHUB_API}/search/issues?per_page=5&q=${encodeURIComponent(q)}`
   try {
-    const res = await fetch(url, { headers: ghHeaders(tok) })
+    const res = await fetch(url, { headers: ghHeaders(tok), ...withTimeout(timeoutMs) })
     if (!res.ok) return null
-    const data = (await res.json()) as { items?: Array<{ number: number; body?: string; pull_request?: unknown }> }
+    const data = (await res.json()) as { items?: IssueRow[] }
     const items = Array.isArray(data.items) ? data.items : []
     // Confirm the marker is really in the body (search is fuzzy) and it's an issue.
-    const hit = items.find((it) => !it.pull_request && typeof it.body === 'string' && it.body.includes(tokenStr))
-    return hit ? hit.number : null
+    const hit = items.find((it) => !it.pull_request && typeof it.body === 'string' && it.body.includes(tokenStr) && (mode === 'open' || blocksRefiling(it)))
+    return hit ? hitOf(repo, hit) : null
   } catch {
     return null
   }
+}
+
+async function findOpenDuplicate(tok: string, fp: string): Promise<number | null> {
+  return (await findDuplicate(tok, REPO, fingerprintToken(fp), 'open'))?.number ?? null
 }
 
 // Mirror a single report to GitHub. Never throws — the caller's DB write already
@@ -210,7 +219,7 @@ export async function mirrorReportToGitHub(report: MirrorReport): Promise<Mirror
       return { ok: true, action: 'commented', issueNumber: dup, url: `https://github.com/${REPO}/issues/${dup}` }
     }
 
-    await ensureUserReportLabel(tok)
+    await ensureLabel(tok, REPO, { name: USER_REPORT_LABEL, color: '0e8a16', description: 'Filed by a user via the in-app report form' })
     const { title, body, labels } = buildIssueContent(report)
     const res = await fetch(`${GITHUB_API}/repos/${REPO}/issues`, {
       method: 'POST',
@@ -230,5 +239,169 @@ async function safeText(res: Response): Promise<string> {
     return (await res.text()).slice(0, 200)
   } catch {
     return ''
+  }
+}
+
+// ── Follow-through (#378): open items from a voice session, filed inert ─────────
+//
+// Filed through /api/follow-through (sync-token auth), into a repo the route has
+// already checked against FOLLOW_THROUGH_REPO_ALLOWLIST. A follow-up is a record,
+// never a work order: no assignees, only the labels below, @-mentions neutralized
+// so no watching bot or person is pinged, and a body that says so.
+
+export const FOLLOW_UP_SOURCES = ['explicit', 'inferred'] as const
+export const FOLLOW_UP_ORIGINS = ['user_mic', 'meeting', 'phone', 'tool', 'system'] as const
+
+export interface FollowUpItem {
+  /** The agent's loopKey: 12 hex. */
+  key: string
+  kind: string
+  /** Already redacted and path-scrubbed by the route; a short paraphrase. */
+  text: string
+  source: (typeof FOLLOW_UP_SOURCES)[number]
+  origin: (typeof FOLLOW_UP_ORIGINS)[number]
+  turn?: number
+}
+
+export const FOLLOW_THROUGH_LABEL = 'follow-through'
+const PROPOSED_LABEL = 'osborn:proposed'
+const NOTED_LABEL = 'osborn:noted'
+/** The only labels a follow-up issue may carry. */
+export const FOLLOW_UP_LABELS: readonly string[] = [FOLLOW_THROUGH_LABEL, PROPOSED_LABEL, NOTED_LABEL]
+const LABEL_SPECS: Record<string, { color: string; description: string }> = {
+  [FOLLOW_THROUGH_LABEL]: { color: 'c5def5', description: 'Open item kept by Osborn follow-through; a record, not a work order' },
+  [PROPOSED_LABEL]: { color: 'fef2c0', description: 'The user asked for this in their own words; not yet agreed' },
+  [NOTED_LABEL]: { color: 'ededed', description: 'Inferred by Osborn; not asked for or agreed' },
+}
+
+/** `@name` → `@\u200dname` so GitHub links no one and no bot reacts to a mention. */
+function neutralizeMentions(s: string): string {
+  return (s ?? '').replace(/@(?=[A-Za-z0-9_-])/g, '@\u200d')
+}
+
+/** `<` and `>` as entities so item text never renders as HTML in the issue body. */
+const escapeHtml = (s: string): string => s.replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+/**
+ * No live markdown: links and images (`](`, `![`) are broken up, and `owner/repo#N`, `#N` and
+ * `GH-N` cross-references get a zero-width joiner after `#` (or `-`), so an item never links
+ * to, mentions in the timeline of, or closes another issue.
+ */
+function neutralizeMarkdown(s: string): string {
+  return (s ?? '')
+    .replace(/!\[/g, '!\u200d[')
+    .replace(/\]\(/g, ']\u200d(')
+    .replace(/#(?=\d)/g, '#\u200d')
+    .replace(/\bGH-(?=\d)/gi, (m) => `${m}\u200d`)
+}
+
+/** A follow-up issue already on GitHub blocks a new one while open, or once closed as not planned. */
+const blocksRefiling = (it: IssueRow): boolean => it.state !== 'closed' || it.state_reason === 'not_planned'
+
+/** Per GitHub call: the agent's request gives up after 15s and the route files items one by one. */
+const FOLLOW_UP_FETCH_MS = 5_000
+
+/** Explicit only when the user said it into the mic in their own words. */
+export const isUserExplicit = (item: Pick<FollowUpItem, 'source' | 'origin'>): boolean =>
+  item.source === 'explicit' && item.origin === 'user_mic'
+
+const KIND_LABEL: Record<string, string> = {
+  ask: 'Something you asked for',
+  todo: 'Unfinished todo', todo_status: 'Unfinished todo', task: 'Unfinished task', task_status: 'Unfinished task',
+  dispatch_started: 'Unfinished agent run', dispatch_severed: 'Unfinished agent run',
+  question: 'Unanswered question', permission_pending: 'Approval never given', permission_settled: 'Approval never given',
+  slot_refused: 'Refused background session',
+  budget_denied: 'Work cut off', steward_block: 'Blocked change', open_loop: 'Open item',
+}
+
+// Pure: shape the inert follow-up issue.
+function buildFollowUpContent(item: FollowUpItem): { title: string; body: string; labels: string[]; assignees: string[] } {
+  const explicit = isUserExplicit(item)
+  const text = neutralizeMarkdown(neutralizeMentions(trim(item.text, 200))) || 'Open item'
+  const title = `[follow-up] ${trim(text, 120)}`
+  const lines: string[] = []
+  lines.push(`**${KIND_LABEL[item.kind] ?? 'Open item'}**`)
+  lines.push('')
+  lines.push(escapeHtml(text))
+  lines.push('')
+  lines.push(explicit
+    ? 'Source: the user asked for this in their own words. Proposed, not agreed.'
+    : `Source: inferred by Osborn (${item.origin === 'user_mic' ? 'from the conversation' : `from ${item.origin}`}), not asked for or agreed.`)
+  if (typeof item.turn === 'number' && item.turn > 0) lines.push(`Turn ${Math.floor(item.turn)} · ${new Date().toISOString().slice(0, 10)}`)
+  lines.push('')
+  lines.push('<sub>Follow-up record, not a work order. Filed automatically by Osborn follow-through; reply or close to dismiss.</sub>')
+  lines.push(`<!-- ${fingerprintToken(item.key)} do-not-remove -->`)
+  return { title, body: lines.join('\n'), labels: [FOLLOW_THROUGH_LABEL, explicit ? PROPOSED_LABEL : NOTED_LABEL], assignees: [] }
+}
+
+// Search can lag behind a just-created issue; the newest follow-through issues by label are listed directly too.
+async function findFollowUpByLabel(tok: string, repo: string, tokenStr: string): Promise<IssueHit | null> {
+  try {
+    const url = `${GITHUB_API}/repos/${repo}/issues?labels=${encodeURIComponent(FOLLOW_THROUGH_LABEL)}&state=all&sort=created&direction=desc&per_page=50`
+    const res = await fetch(url, { headers: ghHeaders(tok), ...withTimeout(FOLLOW_UP_FETCH_MS) })
+    if (!res.ok) return null
+    const rows = (await res.json()) as IssueRow[]
+    const hit = Array.isArray(rows) ? rows.find((it) => !it.pull_request && typeof it.body === 'string' && it.body.includes(tokenStr) && blocksRefiling(it)) : undefined
+    return hit ? hitOf(repo, hit) : null
+  } catch {
+    return null
+  }
+}
+
+export type FollowUpResult = { ok: true; action: 'created' | 'skipped'; url: string } | { ok: false; error: string }
+
+/** Repo visibility: true = private. Unknown (no token, error, not found) counts as public. */
+export async function repoIsPrivate(repo: string): Promise<boolean> {
+  const tok = token()
+  if (!tok) return false
+  try {
+    const res = await fetch(`${GITHUB_API}/repos/${repo}`, { headers: ghHeaders(tok), ...withTimeout(FOLLOW_UP_FETCH_MS) })
+    if (!res.ok) return false
+    const data = (await res.json()) as { private?: unknown }
+    return data?.private === true
+  } catch {
+    return false
+  }
+}
+
+export const githubConfigured = (): boolean => token() !== null
+
+// One create per (repo, key) at a time in this server process.
+const inFlight = new Map<string, Promise<FollowUpResult>>()
+
+/**
+ * File one follow-up into `repo`, skipping when an issue already carries its key and is open or
+ * was closed as not planned (dismissed). A key closed as completed may be filed again. Never throws.
+ */
+export function fileFollowUp(repo: string, item: FollowUpItem): Promise<FollowUpResult> {
+  const k = `${repo}#${item.key}`
+  const running = inFlight.get(k)
+  if (running) return running
+  const p = fileFollowUpOnce(repo, item).finally(() => inFlight.delete(k))
+  inFlight.set(k, p)
+  return p
+}
+
+async function fileFollowUpOnce(repo: string, item: FollowUpItem): Promise<FollowUpResult> {
+  const tok = token()
+  if (!tok) return { ok: false, error: 'GITHUB_TOKEN not configured' }
+  const tokenStr = fingerprintToken(item.key)
+  try {
+    const dup = (await findFollowUpByLabel(tok, repo, tokenStr)) ?? (await findDuplicate(tok, repo, tokenStr, 'open-or-dismissed', FOLLOW_UP_FETCH_MS))
+    if (dup) return { ok: true, action: 'skipped', url: dup.url }
+    const { title, body, labels } = buildFollowUpContent(item)
+    for (const name of labels) await ensureLabel(tok, repo, { name, ...LABEL_SPECS[name] }, FOLLOW_UP_FETCH_MS)
+    // No `assignees` field: a follow-up is never assigned to anyone.
+    const res = await fetch(`${GITHUB_API}/repos/${repo}/issues`, {
+      method: 'POST',
+      headers: ghHeaders(tok),
+      body: JSON.stringify({ title, body, labels }),
+      ...withTimeout(FOLLOW_UP_FETCH_MS),
+    })
+    if (!res.ok) return { ok: false, error: `create failed: ${res.status} ${await safeText(res)}` }
+    const created = (await res.json()) as { number: number; html_url: string }
+    return { ok: true, action: 'created', url: created.html_url }
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : 'follow-up failed' }
   }
 }

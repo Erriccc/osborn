@@ -41,7 +41,8 @@ check('R2', /getHeapStatistics\(\)\.heap_size_limit/.test(block),
 const softIdx = block.indexOf('RECYCLE_SOFT_MB && safeToRecycle()')
 check('R3a', softIdx > 0, 'SOFT tier requires safeToRecycle() in the same condition')
 const softBranch = block.slice(softIdx, softIdx + 500)
-check('R3b', /process\.exit\(0\)/.test(softBranch) && !/process\.exit\(1\)/.test(softBranch),
+// The soft tier exits 0 through the follow-through flush (#378): flushLastSessionThenExit(reason, 0, delay).
+check('R3b', /process\.exit\(0\)|flushLastSessionThenExit\('mem_soft', 0,/.test(softBranch) && !/process\.exit\(1\)|flushLastSessionThenExit\([^)]*, 1,/.test(softBranch),
   'SOFT tier exits 0 (machine stops like idle-exit) — never exit(1)')
 const safeFn = anchoredSlice(idx, 'const safeToRecycle = ', { endAnchor: 'agentsActive()' })
 check('R3c', /remoteParticipants\.size === 0/.test(safeFn) && /voiceQueue\.length === 0/.test(safeFn) && /userState !== 'speaking'/.test(safeFn),
