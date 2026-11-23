@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { readFileSync, existsSync, lstatSync, symlinkSync } from 'fs'
 import os from 'os'
+import { superviseChild } from './child-exit.js'
 
 // On Fly machines, home is /root (ephemeral) but sessions live on /workspace/.claude.
 // Recreate the symlink on every startup so sessions survive image updates.
@@ -122,11 +123,4 @@ if (existsSync(srcPath)) {
   process.exit(1)
 }
 
-child.on('error', (err) => {
-  console.error('Failed to start agent:', err.message)
-  process.exit(1)
-})
-
-child.on('exit', (code) => {
-  process.exit(code || 0)
-})
+superviseChild(child, { name: 'agent' })
