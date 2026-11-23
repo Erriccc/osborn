@@ -1,6 +1,6 @@
 ---
 name: org-migration
-description: Runbook for migrating the whole osborn Fly fleet from one Fly org to another — apps, volumes, per-user ~/.claude data (sessions + DBs + indexes), the voice-e2e engine, and the Supabase + Railway + sync pointers — headless, with a wipe-proof zero-downtime cutover. Use when moving to a new Fly organization, especially when the source org is billing-frozen (starts blocked) or you only have API tokens (no interactive login / no WireGuard). Admin/ops only — needs both orgs' Fly tokens, the Supabase service-role key, and Railway access, so this is intentionally NOT bundled into user sandboxes.
+description: Runbook for migrating the whole osborn Fly fleet from one Fly org to another — apps, volumes, per-user ~/.claude data (sessions + DBs + indexes), the voice-e2e engine, and the Supabase + Railway + sync pointers — headless, with a wipe-proof zero-downtime cutover. Use when moving to a new Fly organization, especially when the source org is frozen (machine starts are refused) or you only have API tokens (no interactive login / no WireGuard). Admin/ops only — needs both orgs' Fly tokens, the Supabase service-role key, and Railway access, so this is intentionally NOT bundled into user sandboxes.
 ---
 
 # Osborn Fly cross-org migration (runbook)
@@ -10,19 +10,27 @@ Move the entire fleet from a SOURCE Fly org to a DEST Fly org. Proven 2026-11-23
 
 **This is an operator runbook, not a shipped capability.** It lives in the repo's
 dev-time `.claude/skills` (NOT `agent/.claude/skills`, which seeds into every user
-sandbox via `frontend/Dockerfile.sandbox`). The concrete, working scripts from the
-reference run live outside the repo in `~/Developer/osborn-fleet-backup/kelechi-*.py`
-(and `.sh`) — read those for exact commands; the commands below are the minimal spine.
+sandbox via the npm package → `frontend/Dockerfile.sandbox`). The env-driven tool
+`scripts/migrate.py` runs the phases; the exact 2026-11-23 reference scripts also live at
+`~/Developer/osborn-fleet-backup/kelechi-*`.
 
-## Inputs
-- **SOURCE org Fly token** (may be billing-frozen — reads / `exec` / autostart still work)
-- **DEST org Fly token** (`fly apps create <name>` with NO `--org`; drive volumes/machines
-  via the Machines REST API — the macaroon 401s on legacy GraphQL `whoami`/`volumes destroy`)
-- **Supabase** `NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` (bypasses RLS)
-- **Railway** `railway` CLI logged in + linked to the frontend service
+## Inputs (env for `scripts/migrate.py`)
+- `SRC_FLY_TOKEN` — SOURCE org token (a frozen source is fine — reads / `exec` / autostart work)
+- `DST_FLY_TOKEN` — DEST org token (`fly apps create <name>` NO `--org`; drive via Machines
+  REST API — the macaroon 401s on legacy GraphQL `whoami`/`volumes destroy`)
+- `SUPABASE_URL` + `SUPABASE_KEY` — service-role key (audit + cutover; bypasses RLS)
+- **Railway** `railway` CLI logged in + linked to the frontend service (for the cutover)
+- optional: `DST_SANDBOX_APP`=osborn-sandbox4, `DST_SUFFIX`=-k, `FRONTEND_DIR`, `RAILWAY_SERVICE`
+
+## Tool — `scripts/migrate.py <subcommand>`
+`list` · `image <ver>` · `infra <src-app>` · `data <src-app>` · `roll <ver> [apps…]` ·
+`audit` · `cutover-plan` · `cutover-commit`. `infra` records a namemap; `cutover-*` resolve
+through it (idempotent, re-run-safe). `data` pulls `~/.claude` **and copies the Claude login
+files** (phase 3). Railway staging + the deploy are manual (phase 6). `migrate.py help` prints
+the full contract. Reuse for a new org pair = just set the two tokens.
 
 ## Hard-won facts (read first)
-- **Billing-frozen source still starts via fly-proxy autostart** — hit
+- **A frozen source still starts via fly-proxy autostart** — hit
   `https://<app>.fly.dev/sessions/manifest` and it boots (explicit `fly machine start`
   403s). The Machines REST **`exec`** endpoint works on any running machine in both orgs.
 - **`fly ssh`/WireGuard do NOT work from a headless token-only session** (6pn UDP). Use
@@ -50,10 +58,13 @@ reference run live outside the repo in `~/Developer/osborn-fleet-backup/kelechi-
    OSBORN_SYNC_TOKEN`), then
    `curl https://<src>.fly.dev/sessions/export -o /workspace/_exp.tgz && tar xzf … -C
    /workspace/.claude`. **Only `~/.claude` matters** — real `/workspace` is ~9.6 G but
-   ~90% is junk that self-heals (`swapfile` ~8 G, `.npm-global` ~1.5 G, `.cache`). The two
-   tiny files `/sessions/export` misses (`~/.osborn/secrets.json`, `~/.claude.json`) are
-   belt-and-suspenders — phase 2 already copies secrets via the machine config env. Verify
-   source vs dest counts. Dormant machines with no reachable token → skip, they self-heal.
+   ~90% is junk that self-heals (`swapfile` ~8 G, `.npm-global` ~1.5 G, `.cache`). But
+   `/sessions/export` MISSES files `migrate.py data` copies separately (base64-over-`exec`):
+   **`~/.claude/.credentials.json` — the Claude OAuth login; without it the dest agent can't
+   auth to Claude and silently falls back to a non-Claude model** — plus `~/.claude.json` /
+   `~/.claude/.config.json` config (and `~/.osborn/secrets.json` is belt-and-suspenders since
+   phase 2 copies secrets via the config env). Verify source vs dest counts. Dormant machines
+   with no reachable token → skip, they self-heal.
    Run with bounded parallelism (~4–5). (NOT laptop-relay: single POST times out on 2 GB,
    chunked finalize loses `/tmp` chunks on autostop.)
 4. **Engine** — rebuild `osborn-voice-e2e` into the dest org (Playwright image), create the
@@ -76,7 +87,8 @@ reference run live outside the repo in `~/Developer/osborn-fleet-backup/kelechi-
    to the source token + redeploy).
 
 ## Reference implementation
-The exact 2026-11-23 scripts (build-image, replicate-infra, m2m-data, replicate-engine,
-cutover) are in `~/Developer/osborn-fleet-backup/kelechi-*.py` (+ `.sh`) — they read the
-two org tokens from the `.env` source/dest sections. Generalizing them to env-var inputs
-and an admin UI/background runner is tracked in the productization issue.
+`scripts/migrate.py` is THE tool — read it before running (each subcommand shows the exact
+Machines-API / Railway commands). Its read subcommands (`list`/`audit`/`cutover-plan`) are
+validated; it mirrors the proven 2026-11-23 run whose one-off scripts are kept at
+`~/Developer/osborn-fleet-backup/kelechi-*` as a rollback reference only (not maintained —
+don't edit both). An admin UI / background runner is tracked in the productization issue.
