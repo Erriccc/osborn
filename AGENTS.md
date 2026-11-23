@@ -32,7 +32,7 @@ Frontend deploys to Railway (nixpacks, Node 24). Build: `cd frontend && npm inst
 
 ### Required Environment
 
-Agent needs: `agent/.env` with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, `SONIOX_API_KEY` (default STT and TTS, `config.ts` `DEFAULT_CONFIG`), and at least one of `OPENAI_API_KEY` / `GOOGLE_API_KEY`. Optional: `DEEPGRAM_API_KEY` only when `OSBORN_STT_PROVIDER`/`OSBORN_TTS_PROVIDER` selects Deepgram. Optional: `SMITHERY_API_KEY` for cloud-hosted MCP servers (YouTube, GitHub via Smithery). Optional: `RECALL_API_KEY` for Zoom/Google Meet bot integration via Recall.ai.
+Agent needs: `agent/.env` with `LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`, `ANTHROPIC_API_KEY`, `SONIOX_API_KEY` (default STT and TTS, `config.ts` `DEFAULT_CONFIG`), and at least one of `OPENAI_API_KEY` / `GOOGLE_API_KEY`. Optional: `DEEPGRAM_API_KEY` only when `OSBORN_STT_PROVIDER`/`OSBORN_TTS_PROVIDER` selects Deepgram. Optional: `SMITHERY_API_KEY` for cloud-hosted MCP servers (YouTube, GitHub via Smithery; not connected to sessions yet, #501). Optional: `RECALL_API_KEY` for Zoom/Google Meet bot integration via Recall.ai.
 
 Frontend needs: `frontend/.env.local` with `NEXT_PUBLIC_LIVEKIT_URL`, `LIVEKIT_API_KEY`, `LIVEKIT_API_SECRET`. For cloud sandbox provisioning (optional): `DAYTONA_API_KEY`, `DAYTONA_API_URL`, `DAYTONA_PROXY_DOMAIN`, `DAYTONA_REGION`, plus the platform infra keys forwarded into sandboxes (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, `SONIOX_API_KEY`, `DEEPGRAM_API_KEY`, `RECALL_API_KEY`, `SMITHERY_API_KEY`).
 
@@ -115,7 +115,7 @@ The fast brain (`fast-brain.ts`) maintains `spec.md` — reading FULL untruncate
 - `agent/src/meeting-output.html` — Output Media webpage for Recall.ai bot audio (WebSocket client served at `GET /meeting-output`).
 
 **Frontend:**
-- `frontend/src/components/VoiceRoom.tsx` — Main UI component (~2000 lines): voice visualization, chat (with `MessageContent` for inline images and download cards), permission UI, session management, MCP toggles, always-visible files panel with session artifact persistence, Codex OAuth modal, meeting join controls.
+- `frontend/src/components/VoiceRoom.tsx` — Main UI component (~2000 lines): voice visualization, chat (with `MessageContent` for inline images and download cards), permission UI, session management, always-visible files panel with session artifact persistence, Codex OAuth modal, meeting join controls.
 - `frontend/src/components/MarkdownMessage.tsx` — Markdown renderer with syntax highlighting (highlight.js + rehype). `CodeBlock` accepts `React.ReactNode` children (not `String()`) to preserve rehype-highlight spans. `extractText()` walks React tree for copy button. Exports `MermaidBlock` for inline mermaid diagrams.
 - `frontend/src/components/SessionBrowser.tsx` — Past session browser, scans across all Codex projects.
 - `frontend/src/components/FilesExplorerModal.tsx` — Full-screen files explorer modal with type badges, copy/copy-all, and inline rendering of plans/diagrams/notes/HTML.
@@ -237,7 +237,7 @@ Sprites are persistent Linux sandboxes (Ubuntu, Node 22, 100GB NVMe) managed by 
 
 ### MCP Server System
 
-MCP servers extend Codex with external tools (GitHub, YouTube, etc.). Three transport types:
+**Status (#501): the configured MCP servers (`config.yaml`, catalog toggles) are NOT passed to the SDK query**, so the UI shows a note instead of toggles; the backend below is kept but inert. MCP servers would extend Codex with external tools (GitHub, YouTube, etc.). Three transport types:
 - **stdio** (local): Spawns a local process (`npx -y @modelcontextprotocol/server-...`). No auth needed.
 - **http** (cloud): Standard Streamable HTTP MCP endpoints. **Note:** Codex Agent SDK has a known bug (#18296, #7290) where `type: 'http'` forces OAuth discovery on all HTTP servers, ignoring configured auth headers. As a workaround, Smithery servers use the `sdk` proxy (see below).
 - **sdk** (in-process proxy): Used for Smithery cloud servers via `smithery-proxy.ts`. Uses `@smithery/api/mcp` `createConnection()` to get a working `StreamableHTTPClientTransport`, connects an MCP `Client`, lists remote tools, then wraps them in a local `McpServer` passed as `{ type: 'sdk', name, instance }` to the Codex SDK.
@@ -255,7 +255,7 @@ MCP servers extend Codex with external tools (GitHub, YouTube, etc.). Three tran
 - `parseSmitheryUrl(url)` — Extracts `{namespace, connectionId}` from `api.smithery.ai/connect/.../mcp` URLs
 - `isSmitheryUrl(url)` — Checks if a URL is a Smithery Connect endpoint
 
-**Toggle flow**: Frontend sends `mcp_toggle` → `index.ts` checks if Smithery URL → if yes, `createSmitheryProxy()` builds `type: 'sdk'` config → `currentLLM.enableMcpServer(key, config)` → next `query()` call includes the server
+**Toggle flow** (no client sends it): `mcp_toggle` → `index.ts` checks if Smithery URL → if yes, `createSmitheryProxy()` builds `type: 'sdk'` config → `currentLLM.enableMcpServer(key, config)` → stored on the `ClaudeLLM`, but not currently passed to any `query()` (#501)
 
 **Init logging**: `ClaudeLLMStream.run()` logs `✅ MCP server <name>: connected` or `❌ MCP server <name>: <status>` from the SDK's system init message.
 

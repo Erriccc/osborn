@@ -198,8 +198,8 @@ export function ControlMenu({
                 setNewSkillContent={setNewSkillContent}
               />}
 
-              {/* MCP servers are not passed to sessions (#501): a note, not toggles that do nothing */}
-              <p className="text-center py-4 text-gray-500 text-xs">MCP servers are not connected to sessions yet</p>
+              {/* The catalog/config.yaml MCP servers are not passed to sessions (#501): a note, not toggles that do nothing */}
+              <p className="text-center py-4 text-gray-500 text-xs">The Osborn MCP catalog is not connected to sessions yet</p>
             </div>
           )}
 
