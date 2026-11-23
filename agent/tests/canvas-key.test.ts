@@ -71,7 +71,7 @@ assert.equal(ask({ ...local, remote: '::1' }), true, 'loopback over IPv6')
 assert.equal(ask({ ...local, forwarded: true }), false, 'a tunnelled request is not this machine')
 assert.equal(ask({ ...local, host: 'm.fly.dev' }), false, 'a public name is not this machine')
 assert.equal(ask({ ...local, origin: 'https://evil.example' }), false, 'a web page in a browser on this machine')
-for (const r of ['/canvas', '/canvas-stream', '/tts', '/report-bug']) {
+for (const r of ['/canvas', '/canvas-stream', '/tts', '/report-bug', '/noise-cancel']) {
   const i = src.indexOf(`url.pathname === '${r}') {`)
   assert.ok(src.slice(i, i + 140).includes('canvasRefused()'), `${r} checks access first`)
 }

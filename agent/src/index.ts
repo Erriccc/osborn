@@ -715,7 +715,7 @@ function startApiServer(workingDir: string, port: number): void {
       return false
     }
 
-    // Who may call the canvas routes and /report-bug: canvasRouteAllowed (canvas-key.ts). The meeting key opens only /canvas-stream and /tts, the two the canvas page uses.
+    // Who may call the canvas routes, /noise-cancel and /report-bug: canvasRouteAllowed (canvas-key.ts). The meeting key opens only /canvas-stream and /tts, the two the canvas page uses.
     const canvasRefused = (): boolean => {
       const ok = canvasRouteAllowed({
         bearerOk,
@@ -1314,6 +1314,7 @@ function startApiServer(workingDir: string, port: number): void {
     // (verified in the 2026-10-21 Uber session). Auto-approved for the agent via
     // the canvas/tts localhost curl allowance in claude-llm.ts canUseTool.
     if (req.method === 'POST' && url.pathname === '/noise-cancel') {
+      if (canvasRefused()) return
       let body = ''
       req.on('data', (c) => { body += c })
       req.on('end', () => {

@@ -17,4 +17,6 @@ The meeting cast chain: **cast your tab** (`POST /tab {"op":"cast","i":n}`) → 
 - **The sanctioned path**: run the engine on its Fly machine — `:8080` is already public, stable, uncapped.
 
 ## Browse requests while casting
+A driver posting `/canvas` (or `/tts`, `/noise-cancel`) from another machine needs the owner's Bearer token (`Authorization: Bearer <token>`); only a request from the agent's own machine with no browser origin goes without one.
+
 When the canvas is in `stream` mode, "pull up X / show them Y" means: make the STREAMED BROWSER go there (`/act` or `/tab navigate` on the engine). Do NOT flip the canvas to link/web mode — that silently replaces the live browser feed with a static card (observed failure: a "PULLING UP youtube.com" card replaced the stream mid-meeting).
