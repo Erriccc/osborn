@@ -72,7 +72,7 @@ t('offer: re-adding does not reset the offer cap', () => {
   const o = O.makeOfferer({ hubIdle: () => true, now: () => clock })
   o.add('api', 'again'); assert.ok(o.onSlotFree())
   o.add('api', 'again'); clock += 61 * 60_000
-  assert.ok(o.onSlotFree(), 'second offer')
+  assert.ok(o.onSlotFree(), 'second offer'); clock += 61 * 60_000
   assert.equal(o.onSlotFree(), null, 'a re-add did not give it a third')
 })
 t('the offer rides in the spoke report as quoted data, still a non-steering notification', () => {
