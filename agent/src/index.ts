@@ -2981,7 +2981,8 @@ async function main() {
         recycling = true
         console.warn(`♻️ [MEM] HARD recycle: heapUsed ${usedMB}MB ≥ ${RECYCLE_HARD_MB}MB (95% of ${HEAP_LIMIT_MB}MB) — restarting process NOW to pre-empt an OOM crash; client auto-rejoin + resume recovers`)
         sendToFrontend({ type: 'agent_recycling', reason: 'memory_hard', heapMB: usedMB }).catch(() => {})
-        setTimeout(() => process.exit(1), 1500)   // exit(1): on-failure policy RESTARTS the process (machine stays up)
+        // exit(1): on-failure policy RESTARTS the process (machine stays up). Best-effort flush, hard-boxed at 3s.
+        void flushLastSessionThenExit('mem_hard', 1, 1500, 3000)
       } else if (usedMB >= RECYCLE_SOFT_MB && safeToRecycle()) {
         recycling = true
         console.warn(`♻️ [MEM] SOFT recycle: heapUsed ${usedMB}MB ≥ ${RECYCLE_SOFT_MB}MB and idle — stopping cleanly; next connect boots a fresh process and resumes`)
@@ -3338,6 +3339,7 @@ async function main() {
         console.log(`🎯 [meeting-addr] routing addressed turn → @${pendingTarget} via Task directive (dispatches ${active}/${cap})`)
       } else {
         console.log(`🎯 [meeting-addr] @${pendingTarget} routing skipped — at concurrency cap (${active}/${cap}); orchestrator handles it`)
+        ;(currentLLM as any)?.recordLoop?.({ kind: 'slot_refused', id: loopIds.meetingSkip(pendingTarget), text: `@${pendingTarget} not routed: at dispatch cap`, source: 'inferred', origin: 'system' })
       }
     }
     try {

@@ -52,10 +52,10 @@ check('R3c', /remoteParticipants\.size === 0/.test(safeFn) && /voiceQueue\.lengt
 const hardIdx = block.indexOf('usedMB >= RECYCLE_HARD_MB')
 check('R4a', hardIdx > 0, 'HARD tier present')
 const hardBranch = block.slice(hardIdx, block.indexOf('else if', hardIdx))
-check('R4b', /process\.exit\(1\)/.test(hardBranch) && !/process\.exit\(0\)/.test(hardBranch),
+check('R4b', /process\.exit\(1\)|flushLastSessionThenExit\('mem_hard', 1,/.test(hardBranch) && !/process\.exit\(0\)/.test(hardBranch),
   'HARD tier exits 1 (on-failure restart; machine stays up) — never exit(0)')
 const noticeIdx = hardBranch.indexOf("type: 'agent_recycling'")
-const exitIdx = hardBranch.indexOf('process.exit(1)')
+const exitIdx = Math.max(hardBranch.indexOf('process.exit(1)'), hardBranch.indexOf('flushLastSessionThenExit'))
 check('R4c', noticeIdx > 0 && exitIdx > noticeIdx, 'frontend agent_recycling notice sent BEFORE exit(1)')
 
 // ── R5: local-dev guard ─────────────────────────────────────────────────────

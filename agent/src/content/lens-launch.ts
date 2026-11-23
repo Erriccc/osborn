@@ -379,10 +379,23 @@ export function launchLoopsFlush(target: LoopsFlushTarget, reason: string, timeo
  * 120s after start); the flush lock's TTL (LOOPS_LOCK_TTL_MS, 90s) is shorter, so a lock
  * left by a worker killed with the machine never blocks it.
  */
-export async function flushLastSessionThenExit(reason: string, code: number, delayMs: number): Promise<void> {
-  try {
-    const last = readLastSession()
-    if (last) await launchLoopsFlush({ sessionId: last.id, cwd: last.cwd }, reason)
-  } catch { /* never blocks the exit */ }
-  setTimeout(() => process.exit(code), delayMs)
+export async function flushLastSessionThenExit(reason: string, code: number, delayMs: number, boxMs?: number): Promise<void> {
+  return exitAfterFlush({
+    flush: async () => {
+      const last = readLastSession()
+      if (last) await launchLoopsFlush({ sessionId: last.id, cwd: last.cwd }, reason)
+    },
+    exit: (c) => process.exit(c), code, delayMs, boxMs,
+  })
+}
+
+/**
+ * Run `flush`, then `exit(code)` after `delayMs`. With `boxMs` the exit is guaranteed by then even
+ * if `flush` never settles (hard memory recycle: the process is about to OOM). A throwing flush
+ * never blocks the exit.
+ */
+export async function exitAfterFlush(o: { flush: () => Promise<void>; exit: (code: number) => void; code: number; delayMs: number; boxMs?: number }): Promise<void> {
+  if (o.boxMs !== undefined) setTimeout(() => o.exit(o.code), o.boxMs)
+  try { await o.flush() } catch { /* never blocks the exit */ }
+  setTimeout(() => o.exit(o.code), o.delayMs)
 }

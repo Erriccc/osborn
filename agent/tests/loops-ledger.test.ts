@@ -69,6 +69,16 @@ t('question answered closes', () => {
   assert.deepEqual(open([rec({ kind: 'question', id, text: 'Unanswered question: which?' }), rec({ kind: 'question_answered', id })]), [])
 })
 
+t('meeting-skip slot_refused is an open inferred item, deduped per target', () => {
+  const id = L.loopIds.meetingSkip('reviewer')
+  assert.ok(L.appendLoopRecord('msess', root, { kind: 'slot_refused', id, text: '@reviewer not routed: at dispatch cap', source: 'inferred', origin: 'system' }))
+  assert.ok(L.appendLoopRecord('msess', root, { kind: 'slot_refused', id, text: '@reviewer not routed: at dispatch cap', source: 'inferred', origin: 'system' }))
+  const line = readFileSync(L.getLoopsPath('msess', root), 'utf-8').trim().split('\n')[0]
+  assert.match(line, /"kind":"slot_refused"/); assert.match(line, /"source":"inferred"/)
+  const items = L.openLoops(L.readLoopRecordsAt(L.getLoopsPath('msess', root)))
+  assert.equal(items.length, 1); assert.equal(items[0].id, id)
+})
+
 t('slot_refused is open', () => {
   const id = L.loopIds.slot('s')
   assert.deepEqual(open([rec({ kind: 'slot_refused', id, text: 'refused' })]), [id])

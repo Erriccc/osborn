@@ -44,7 +44,38 @@ await t('soft recycle calls the flush before exit', () => {
   assert.match(idx, /flushLastSessionThenExit\('mem_soft', 0, 1500\)/)
   assert.doesNotMatch(idx, /setTimeout\(\(\) => process\.exit\(0\), 1500\)/)
   // Hard recycle exits 1, which bin/cli.js treats as abnormal and flushes itself (cli-signals.test.ts).
-  assert.match(idx, /setTimeout\(\(\) => process\.exit\(1\), 1500\)/)
+  assert.match(idx, /flushLastSessionThenExit\('mem_hard', 1, 1500, 3000\)/)
+  const hard = slice(idx, 'usedMB >= RECYCLE_HARD_MB', 'else if')
+  assert.ok(hard.indexOf("type: 'agent_recycling'") > 0 && hard.indexOf("type: 'agent_recycling'") < hard.indexOf('mem_hard'), 'notice first')
+})
+
+await t('exitAfterFlush: flushes then exits with the code; a throwing flush still exits', async () => {
+  const { exitAfterFlush } = await import('../src/content/lens-launch.js')
+  const calls: string[] = []
+  await exitAfterFlush({ flush: async () => { calls.push('flush') }, exit: (c) => calls.push(`exit${c}`), code: 1, delayMs: 5, boxMs: 200 })
+  await new Promise(r => setTimeout(r, 40))
+  assert.deepEqual(calls.slice(0, 2), ['flush', 'exit1'])
+  const c2: number[] = []
+  await exitAfterFlush({ flush: async () => { throw new Error('boom') }, exit: (c) => c2.push(c), code: 1, delayMs: 5, boxMs: 200 })
+  await new Promise(r => setTimeout(r, 40))
+  assert.equal(c2[0], 1)
+})
+
+await t('exitAfterFlush: a flush that never settles still exits within the box', async () => {
+  const { exitAfterFlush } = await import('../src/content/lens-launch.js')
+  const t0 = Date.now(); let at = 0
+  void exitAfterFlush({ flush: () => new Promise<void>(() => {}), exit: (c) => { if (!at) at = Date.now() - t0; assert.equal(c, 1) }, code: 1, delayMs: 5, boxMs: 60 })
+  await new Promise(r => setTimeout(r, 150))
+  assert.ok(at >= 50 && at < 140, `exited at ${at}ms`)
+})
+
+await t('meeting @-routing cap skip records an inferred slot_refused', async () => {
+  const body = slice(idx, 'routing skipped', '    try {')
+  assert.match(body, /recordLoop\?\.\(\{ kind: 'slot_refused', id: loopIds\.meetingSkip\(pendingTarget\)/)
+  assert.match(body, /source: 'inferred', origin: 'system'/)
+  const { loopIds } = await import('../src/loops-ledger.js')
+  assert.equal(loopIds.meetingSkip('x'), loopIds.meetingSkip('x'))
+  assert.notEqual(loopIds.meetingSkip('x'), loopIds.meetingSkip('y'))
 })
 
 await t('idle exit calls the flush before exit', () => {
