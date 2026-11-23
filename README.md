@@ -86,7 +86,7 @@ open your first PR.
 - **Parallel Sub-Agents**: Orchestrator spawns concurrent `Task` sub-agents for independent research streams.
 - **Visual Documents**: Mermaid diagrams, comparison tables, analysis docs generated via `generateVisualDocument()` and surfaced in the files panel.
 - **Gemini Auto-Recovery**: Automatic session recovery from crashes (1008/1011) with conversation-history briefing on resume.
-- **MCP Integration**: Stdio servers + Smithery cloud servers via in-process `smithery-proxy` (bypasses Claude SDK HTTP bug #18296).
+- **MCP Integration**: not connected to sessions yet (#501); the stdio + Smithery `smithery-proxy` backend is kept but inert.
 - **Research Artifacts**: Plans, diagrams (Mermaid), notes, and analysis files — persist across session resumes via `listWorkspaceArtifacts()`.
 - **Claude OAuth Flow**: For headless / cloud deployments. `claude-auth.ts` walks env → credentials file → CLI check → interactive `claude setup-token` via `node-pty`. Auth URL surfaces via `claude_auth_url` data channel; user pastes code back via the auth modal; token persists in `~/.claude/.credentials.json`.
 - **Per-User Cloud Sandboxes**: Self-hosted Daytona on a Hostinger VPS provisions isolated Linux sandboxes per user (Claude Code + osborn pre-installed). Each user authenticates Claude via their own OAuth flow inside the sandbox. Tokens persist on the sandbox filesystem. Local vs Cloud toggle in dashboard settings — see `DAYTONA-SETUP.md`.
@@ -185,7 +185,7 @@ SONIOX_API_KEY=your-soniox-key            # Default STT and TTS (pipeline voice)
 # Optional:
 DEEPGRAM_API_KEY=your-deepgram-key        # Only with OSBORN_STT_PROVIDER/OSBORN_TTS_PROVIDER=deepgram
 RECALL_API_KEY=your-recall-key            # Zoom / Google Meet bot integration
-SMITHERY_API_KEY=your-smithery-key        # Cloud MCP servers
+SMITHERY_API_KEY=your-smithery-key        # Cloud MCP servers (not connected yet, #501)
 LIVEKIT_REMOTE_EOT_URL=...                # LiveKit Cloud remote turn detection
 OSBORN_CWD=/path/to/project               # Override config.workingDirectory
 OSBORN_API_PORT=8741                      # Auto-bumps on EADDRINUSE
@@ -229,7 +229,7 @@ direct:
     provider: deepgram
     voice: aura-asteria-en
 
-mcpServers:
+mcpServers:                 # read, but not connected to sessions yet (#501)
   github:
     enabled: true
     command: npx
@@ -341,7 +341,7 @@ osborn/
 | Proactive Conversational Loop | Working |
 | Claude OAuth flow (pty) | Working |
 | Files Panel + Files Explorer Modal | Working |
-| MCP Integration (Smithery cloud proxy) | Working |
+| MCP Integration (Smithery cloud proxy) | Not connected to sessions (#501) |
 | Cloud Sandboxes (self-hosted Daytona) | Working |
 | Per-User Claude OAuth (sandbox-side) | Working |
 | `waitForToolboxReady` (Daytona race fix) | Working |
@@ -363,7 +363,7 @@ osborn/
 - **Pipeline Fast Brain**: Gemini Flash AFC observer with `search_session`, `get_recent`, `emergency_stop`
 - **Search**: bundled `@vscode/ripgrep` + `minisearch` BM25
 - **Meeting**: Recall.ai (Zoom / Google Meet bot integration)
-- **MCP**: stdio + Smithery cloud via in-process `@smithery/api/mcp` proxy
+- **MCP**: stdio + Smithery cloud via in-process `@smithery/api/mcp` proxy (not connected to sessions yet, #501)
 - **Frontend**: Next.js 14 + React + Tailwind CSS, `react-markdown` + `mermaid` + `highlight.js`
 - **Auth**: Supabase SSR (Google + GitHub OAuth)
 - **Cloud Sandboxes**: Self-hosted Daytona on Hostinger VPS via raw HTTP

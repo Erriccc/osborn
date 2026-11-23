@@ -450,7 +450,7 @@ export default function SetupWizard({ onComplete, onSkip }: SetupWizardProps) {
               helpUrl="https://smithery.ai"
               helpLabel="Get from smithery.ai"
             />
-            <p className="text-xs text-gray-500 mt-1">Enables cloud-hosted MCP servers (YouTube, GitHub)</p>
+            <p className="text-xs text-gray-500 mt-1">For cloud-hosted MCP servers (YouTube, GitHub); not connected to sessions yet</p>
           </div>
         </StepCard>
       </div>

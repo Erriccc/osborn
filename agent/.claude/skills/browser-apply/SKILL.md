@@ -44,7 +44,7 @@ Candidate values (email, password, phone, address, work history, education) are 
    google-chrome --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222 \
      --user-data-dir="$HOME/.osborn/apply-profile"
    ```
-4. Point the Playwright MCP server at that browser with `--cdp-endpoint http://127.0.0.1:9222` (a `@playwright/mcp` flag) in the user's MCP config. Osborn's built-in Playwright catalog entry does not pass this flag yet; without it the MCP launches its own browser and the helper cannot see it.
+4. Point the Playwright MCP server at that browser with `--cdp-endpoint http://127.0.0.1:9222` (a `@playwright/mcp` flag) in the user's Claude Code MCP config (`.mcp.json` or `claude mcp add`); Osborn's own MCP catalog is not connected to sessions yet (#501). Without the flag the MCP launches its own browser and the helper cannot see it.
 5. The helper reads NO environment variables and has no path or URL options. Its only config is the optional `CANDIDATE_CDP_URL=` line inside `~/.osborn/candidate.env` (default `http://127.0.0.1:9222`; non-loopback hosts are refused). Only the user edits that file; the model cannot change it.
 6. There is no list of approved job sites. Every fill names ONE exact host that the user confirms out loud just before it (see "Filling secret fields").
 7. Verify: `node ~/.claude/skills/browser-apply/fill.mjs check` should end with `cdp: reachable`.
