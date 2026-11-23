@@ -18,6 +18,7 @@ const ok = (c: any, m: string) => { if (!c) throw new Error(m) }
 // own sync token and an email listed in ADMIN_EMAILS.
 const tokens = new Map<string, string>() // sync token → user id
 const emails = (user: string) => `${user}@example.com`
+const lookupFails = new Set<string>() // user ids whose account lookup errors
 let GOOD_TOKEN = ''
 let USER = ''
 let accounts = 0
@@ -50,7 +51,9 @@ const mocks: Record<string, any> = {
         }
         return b
       },
-      auth: { admin: { getUserById: async (id: string) => ({ data: { user: { id, email: emails(id) } } }) } },
+      auth: { admin: { getUserById: async (id: string) => lookupFails.has(id)
+        ? { data: { user: null }, error: { message: 'not found' } }
+        : ({ data: { user: { id, email: emails(id) } }, error: null }) } },
     }),
   },
   // Same rule as lib/admin.ts, without its cookie-session imports.
@@ -238,6 +241,15 @@ async function main() {
     ok(gh.labelPosts.every((l) => mirror.FOLLOW_UP_LABELS.includes(l.split(':').slice(1).join(':'))), `label posts ${gh.labelPosts}`)
     const kinds = gh.creates.map((c) => c.labels[1]).sort()
     ok(kinds.join() === 'osborn:noted,osborn:proposed', kinds.join())
+  })
+
+  await t('a failed account lookup gets 403 with no GitHub call, even for an admin email', async () => {
+    reset()
+    lookupFails.add(USER)
+    const r = await post({ repo: 'acme/private-repo', items: [item(62)] })
+    lookupFails.delete(USER)
+    ok(r.status === 403, `status ${r.status}`)
+    ok(gh.calls.length === 0, 'no GitHub call')
   })
 
   await t('a non-admin account gets 403 with no GitHub call', async () => {

@@ -3,6 +3,7 @@ import { serviceClient } from '@/lib/sandbox-claims'
 import { fileFollowUp, githubConfigured, repoAccess } from '@/lib/github-issue-mirror'
 import { MAX_ITEMS, accountLimiter, cleanItem, mayFile, validRepo } from '@/lib/follow-through'
 import { isAdminEmail } from '@/lib/admin'
+import { accountEmail } from '@/lib/phone-code'
 import { bearerToken, syncTokenUserId } from '@/lib/sync-token-auth'
 
 /**
@@ -40,8 +41,7 @@ export async function POST(request: Request) {
   const userId = await syncTokenUserId(admin, token)
   if (!userId) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
 
-  const { data: account } = await admin.auth.admin.getUserById(userId)
-  if (!isAdminEmail(account?.user?.email)) return NextResponse.json({ error: 'not allowed' }, { status: 403 })
+  if (!isAdminEmail(await accountEmail(admin, userId))) return NextResponse.json({ error: 'not allowed' }, { status: 403 })
   if (!validRepo(repo)) return NextResponse.json({ error: 'repo not allowed' }, { status: 403 })
   if (!githubConfigured()) return NextResponse.json({ error: 'not configured' }, { status: 503 })
 
