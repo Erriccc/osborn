@@ -46,7 +46,7 @@ export type LoopKind =
   | 'steward_block' | 'steward_clear'
   | 'question' | 'question_answered'
   | 'permission_pending' | 'permission_settled'
-  | 'slot_refused' | 'budget_denied' | 'open_loop' | 'queued'
+  | 'slot_refused' | 'budget_denied' | 'open_loop' | 'queued' | 'started'
   | 'filed' | 'recapped' | 'held'
 
 export interface LoopRecord {
@@ -160,6 +160,8 @@ const OPENS: Partial<Record<LoopKind, (r: LoopRecord) => boolean>> = {
   open_loop: () => true,
   // An instruction that found no free background slot: startable later, open until filed.
   queued: () => true,
+  // The queued item was sent (the hub's dispatch matched it): closed, so it is neither offered nor filed.
+  started: () => false,
 }
 
 /** Fold the ledger: the last record per item id wins. `prompt` and `session` lines are never items. */
@@ -269,7 +271,29 @@ export function appendQueuedLoop(sessionId: string, cwd: string, instruction: st
   return appendLoopRecord(sessionId, cwd, { ...queuedLoopRecord(instruction, project, opts), fg: true })
 }
 
+/**
+ * The hub sent `instruction` to `project` (folder `cwd`): close a matching open queued item in any of that
+ * project's ledgers with `started` (same id as queuedLoopRecord). Returns whether one matched.
+ */
+export function markQueuedStarted(cwd: string, project: string, instruction: string): boolean {
+  const id = queuedLoopRecord(instruction, project).id!
+  let hit = false
+  for (const l of ledgersIn(projectOsbDir(cwd))) {
+    if (foldLoops(readLoopRecordsAt(l.path)).get(id)?.open && appendLoopRecord(l.sessionId, cwd, { kind: 'started', id })) hit = true
+  }
+  return hit
+}
+
 // ── IO ──────────────────────────────────────────────────────────────────────
+
+const projectOsbDir = (cwd: string): string => dirname(dirname(getLoopsPath('_', cwd)))
+
+/** The session ledgers that exist under one project's `osb` folder. */
+function ledgersIn(osbDir: string): Array<{ sessionId: string; path: string }> {
+  let sessions: string[] = []
+  try { sessions = readdirSync(osbDir) } catch { return [] }
+  return sessions.map((sessionId) => ({ sessionId, path: join(osbDir, sessionId, LOOPS_FILE) })).filter((l) => existsSync(l.path))
+}
 
 export function getLoopsPath(sessionId: string, workingDir: string): string {
   return getSidecarPath(sessionId, workingDir, LOOPS_FILE)
@@ -310,14 +334,9 @@ export function listLedgers(): Array<{ sessionId: string; path: string; cwd?: st
   let projects: string[] = []
   try { projects = readdirSync(root) } catch { return out }
   for (const proj of projects) {
-    const osb = join(root, proj, 'osb')
-    let sessions: string[] = []
-    try { sessions = readdirSync(osb) } catch { continue }
-    for (const sid of sessions) {
-      const path = join(osb, sid, LOOPS_FILE)
-      if (!existsSync(path)) continue
+    for (const { sessionId, path } of ledgersIn(join(root, proj, 'osb'))) {
       const cwd = readLoopRecordsAt(path).find((r) => r.kind === 'session' && typeof r.cwd === 'string')?.cwd
-      out.push({ sessionId: sid, path, ...(cwd ? { cwd } : {}) })
+      out.push({ sessionId, path, ...(cwd ? { cwd } : {}) })
     }
   }
   return out
@@ -331,15 +350,10 @@ export function listLedgers(): Array<{ sessionId: string; path: string; cwd?: st
  */
 export function takeLoopsRecap(workingDir: string, max = RECAP_MAX): Array<{ text: string; url: string }> {
   try {
-    const osbRoot = dirname(dirname(getLoopsPath('_', workingDir)))
-    let sessions: string[] = []
-    try { sessions = readdirSync(osbRoot) } catch { return [] }
     const found: Array<{ sessionId: string; item: LoopItem }> = []
-    for (const sid of sessions) {
-      const path = join(osbRoot, sid, LOOPS_FILE)
-      if (!existsSync(path)) continue
+    for (const { sessionId, path } of ledgersIn(projectOsbDir(workingDir))) {
       for (const item of foldLoops(readLoopRecordsAt(path)).values()) {
-        if (item.filedUrl && !item.recapped) found.push({ sessionId: sid, item })
+        if (item.filedUrl && !item.recapped) found.push({ sessionId, item })
       }
     }
     found.sort((a, b) => (b.item.filedAt ?? '').localeCompare(a.item.filedAt ?? ''))
