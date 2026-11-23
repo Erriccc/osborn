@@ -1475,6 +1475,17 @@ async function main() {
           let popup: Page | null = null
           const onPopup = (p: Page) => { popup ??= p }
           page.on('popup', onPopup)
+          // A failed act is still a task: it must not vanish from the run.
+          const failAct = async (msg: string) => {
+            page.off('popup', onPopup)
+            mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
+            const fn = ++reqN
+            const fshot = await reqShot(fn, 'act', page)
+            const failTask = stampTask(fn, 'act', t0, null, fshot, body.instruction, undefined, page)
+            const failUsage = await usageNow()
+            Object.assign(failTask, { tokens: failUsage.tokens, modelMs: failUsage.modelMs }); writeManifest()
+            return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, tokens: failUsage.tokens, modelMs: failUsage.modelMs, brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null }, brainAlive ? 502 : 503)
+          }
           // PLAIN PAGE SCROLLS ARE DONE BY THE ENGINE, NOT THE BRAIN. On the live
           // landing page the brain's scroll action first moved nothing and, on
           // the identical repeat, scrolled back UP to the top for "scroll down".
@@ -1509,21 +1520,10 @@ async function main() {
                 try { usageBefore = await metricsNow(); r = await brain(body.instruction, page); healed = true } catch (e1) { e = e1 }
               }
             }
-            if (!healed) {
-              page.off('popup', onPopup)
-              const msg = ((e as Error).message || String(e)).slice(0, 300)
-              mark(`act[${driver}] FAILED: ${msg.slice(0, 90)}`)
-              // A failed act is still a task: it must not vanish from the run.
-              const fn = ++reqN
-              const fshot = await reqShot(fn, 'act', page)
-              const failTask = stampTask(fn, 'act', t0, null, fshot, body.instruction, undefined, page)
-              const failUsage = await usageNow()
-              Object.assign(failTask, { tokens: failUsage.tokens, modelMs: failUsage.modelMs }); writeManifest()
-              return json(res, { ok: false, code: brainAlive ? 'brain_error' : 'brain_unavailable', error: `the brain could not act: ${msg}`, driver, tokens: failUsage.tokens, modelMs: failUsage.modelMs, brain: brainAlive ? 'ready' : 'dead', brainModel: brainAlive ? brainModel : null, artifact: fshot, artifactUrl: fshot ? `${mediaBase}/artifact?n=${fn}` : null }, brainAlive ? 502 : 503)
-            }
+            if (!healed) return failAct(((e as Error).message || String(e)).slice(0, 300))
           }
           // VISION RETRY (#478): a no-op means the DOM held nothing to match (a canvas, an embedded
-          // frame). Try once from a screenshot, under this same lock and a fresh fence, with a one-step
+          // frame). Try once from a screenshot, under this same lock and a fresh fence, with a two-step
           // budget. Never cached: the recipe is a click at a coordinate, not a selector. Any failure keeps
           // the original no-op, with a note.
           let visionUsed = false
@@ -1556,11 +1556,7 @@ async function main() {
               mark(`act[${driver}]: vision retry failed — ${visionNote}`)
             }
           }
-          if (visionTried && !brainAlive) {
-            page.off('popup', onPopup)
-            const dead = await usageNow()
-            return json(res, { ok: false, code: 'brain_unavailable', error: brainDownMsg(), driver, tokens: dead.tokens, modelMs: dead.modelMs, brain: 'dead', brainModel: null }, 503)
-          }
+          if (visionTried && !brainAlive) return failAct(visionNote ?? brainDownMsg())
           const usage = await usageNow()
           mark(`act[${driver}]: ${String(body.instruction).slice(0, 55)}`)
           // POST-ACTION SETTLE: let the click's EFFECT paint before the clip cut.

@@ -47,6 +47,15 @@ test('the instruction keeps the original text, looks first and asks for one inte
   assert.match(t, /single interaction/)
 })
 
+test('an interaction sent in the same model step as the screenshot is blind', () => {
+  const actions = [{ type: 'screenshot' }, { type: 'click', describe: 'Play', success: true }]
+  const call = (toolName: string) => ({ type: 'tool-call', toolName })
+  const same = [{ role: 'user', content: 'go' }, { role: 'assistant', content: [call('screenshot'), call('click')] }, { role: 'tool', content: [] }]
+  assert.equal(summarizeVision({ actions, messages: same }).blind, true)
+  const apart = [{ role: 'user', content: 'go' }, { role: 'assistant', content: [call('screenshot')] }, { role: 'tool', content: [] }, { role: 'assistant', content: [{ type: 'text', text: 'I see it' }, call('click')] }]
+  assert.equal(summarizeVision({ actions, messages: apart }).acted, true)
+})
+
 test('the DOM act tool is not a vision interaction', () => {
   assert.equal(summarizeVision({ actions: [{ type: 'screenshot' }, { type: 'act' }] }).acted, false)
 })
@@ -62,6 +71,8 @@ test('conditional and destructive instructions are skipped unless vision:true is
 
 test('only a tab at the brain\'s viewport is retried', () => {
   assert.equal(viewportMatches({ width: 1288, height: 711 }, { width: 1288, height: 711 }), true)
+  assert.equal(viewportMatches({ width: 1280, height: 720 }, { width: 1288, height: 711 }), true)  // the engine's default tab
+  assert.equal(viewportMatches({ width: 1024, height: 768 }, { width: 1288, height: 711 }), false)
   assert.equal(viewportMatches({ width: 390, height: 844 }, { width: 1288, height: 711 }), false)
   assert.equal(viewportMatches(null, { width: 1288, height: 711 }), false)
 })

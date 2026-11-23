@@ -65,10 +65,12 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   injected). It runs under the same action lock with its own timeout fence,
   capped by what is left of the lock (skipped when under 10s remain), and has a
   2-step budget: take a screenshot, then make one interaction (about three
-  model calls with Stagehand's forced final `done`). An interaction before the
-  first screenshot, one whose tool reported failure, or the DOM `act` tool does
-  not count. It is skipped when the tab's viewport is not the brain's (1288x711,
-  so `/tab` mobile and tablet tabs never get mis-aimed clicks), and for
+  model calls with Stagehand's forced final `done`). An interaction made before
+  the model saw a screenshot (including one sent in the same step as it), one
+  whose tool reported failure, or the DOM `act` tool does not count. It is
+  skipped when the tab's viewport is more than 10px off the brain's (1288x711;
+  the default 1280x720 tab is within that, so its clicks land at most 9px off at
+  the far edge; `/tab` mobile and tablet tabs are not), and for
   conditional ("if ... otherwise") or destructive (delete, pay, send, submit,
   confirm, sign out ...) instructions unless the call sends `"vision":true`.
   When it acts, `effect.fallback:'vision'` (also on the manifest task) and
