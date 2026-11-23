@@ -20,7 +20,6 @@ type AdminUser = {
   sandbox_id: string | null
   sandbox_status: string | null
   instance_status: string | null
-  last_seen: string | null
   machine_state: string | null
   last_active: string | null
 }
@@ -224,7 +223,7 @@ export default function AdminPage() {
                         <StatusPill status={u.machine_state ?? u.sandbox_status ?? u.instance_status} />
                       </td>
                       <td className="px-4 py-3 text-[var(--text-secondary)] text-[13px] whitespace-nowrap">
-                        {fmtRelative(u.last_active ?? u.last_seen)}
+                        {fmtRelative(u.last_active)}
                       </td>
                     </tr>
                   ))}
@@ -246,7 +245,7 @@ export default function AdminPage() {
                     <MobileField label="Signed up" value={fmtDate(u.created_at)} />
                     <MobileField label="Last sign-in" value={fmtRelative(u.last_sign_in_at)} />
                     <MobileField label="Machine" value={u.sandbox_id ?? '—'} mono />
-                    <MobileField label="Last active" value={fmtRelative(u.last_active ?? u.last_seen)} />
+                    <MobileField label="Last active" value={fmtRelative(u.last_active)} />
                   </dl>
                 </div>
               ))}

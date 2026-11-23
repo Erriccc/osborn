@@ -68,8 +68,9 @@ export async function GET() {
     const instance = instanceByUser.get(u.id as string)
     const machine = instance?.sandbox_id ? live.get(instance.sandbox_id as string) : null
     // Supabase records last_sign_in_at only when someone signs in again, so a saved session never moves it:
-    // "last active" is the newest of the app's own last_seen and the machine's last start or exit.
-    const activeTimes = [instance?.last_seen, machine?.lastEventAt].filter((t): t is string => !!t)
+    // "last active" is the newest of the app's own last_seen and the machine's last start or exit, compared as
+    // instants (Postgres writes "+00:00", Fly's time is ISO "Z", so the strings do not sort alike).
+    const activeAt = Math.max(0, ...[instance?.last_seen as string | null, machine?.lastEventAt].map((t) => (t && Date.parse(t)) || 0))
     return {
       id: u.id,
       email: u.email ?? null,
@@ -78,9 +79,8 @@ export async function GET() {
       sandbox_id: instance?.sandbox_id ?? null,
       sandbox_status: instance?.sandbox_status ?? null,
       instance_status: instance?.status ?? null,
-      last_seen: instance?.last_seen ?? null,
       machine_state: machine?.status ?? null,
-      last_active: activeTimes.length ? activeTimes.reduce((a, b) => (a > b ? a : b)) : null,
+      last_active: activeAt ? new Date(activeAt).toISOString() : null,
     }
   })
 
