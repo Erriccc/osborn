@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@supabase/supabase-js'
 import { requireAdmin, AdminAuthError } from '@/lib/admin'
+import { readMachineActivity } from '@/lib/machines'
 
 /**
  * GET /api/admin/users — the data behind the /admin users view.
@@ -56,8 +57,19 @@ export async function GET() {
     (instances ?? []).map((row) => [row.user_id as string, row]),
   )
 
+  // The stored status is only as fresh as the last write (a machine stopped by Fly's idle exit never updates
+  // it), so ask Fly for the live state; a read that fails or takes over 6 s keeps the stored value.
+  const live = new Map(await Promise.all(
+    [...new Set((instances ?? []).map((row) => row.sandbox_id as string | null).filter((id): id is string => !!id))].map(async (id) =>
+      [id, await Promise.race([readMachineActivity(id), new Promise<null>((r) => setTimeout(() => r(null), 6000))])] as const),
+  ))
+
   const users = (authUsers ?? []).map((u) => {
     const instance = instanceByUser.get(u.id as string)
+    const machine = instance?.sandbox_id ? live.get(instance.sandbox_id as string) : null
+    // Supabase records last_sign_in_at only when someone signs in again, so a saved session never moves it:
+    // "last active" is the newest of the app's own last_seen and the machine's last start or exit.
+    const activeTimes = [instance?.last_seen, machine?.lastEventAt].filter((t): t is string => !!t)
     return {
       id: u.id,
       email: u.email ?? null,
@@ -67,6 +79,8 @@ export async function GET() {
       sandbox_status: instance?.sandbox_status ?? null,
       instance_status: instance?.status ?? null,
       last_seen: instance?.last_seen ?? null,
+      machine_state: machine ? (machine.state === 'started' ? 'running' : machine.state) : null,
+      last_active: activeTimes.length ? activeTimes.reduce((a, b) => (a > b ? a : b)) : null,
     }
   })
 
