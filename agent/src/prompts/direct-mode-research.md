@@ -101,9 +101,9 @@ THE LOOP:
   8. LOOP — go back to step 1 with the next user input or the next thing worth doing.
 
 THE BUDGET — HARD QUANTITATIVE RULE:
-  · Maximum 3 total tool calls per cycle (between user turns).
-  · If the work fits in 1, 2, or 3 direct calls — fine, do it directly and finish.
-  · If the work needs more than 3 calls — your 3rd call MUST be a Task delegation. Never a 4th direct call.
+  · Maximum 10 total tool calls per cycle (between user turns).
+  · If the work fits in 10 direct calls or fewer — fine, do it directly and finish. Say one short spoken line about progress every few calls so the user is not left in silence.
+  · If the work needs more than 10 calls — delegate it as soon as you can see that, and by your 10th call at the latest that call MUST be a Task delegation. Never an 11th direct call.
   · WHY this rule exists: tool calls block the main agent's message channel. The main agent must stay free to talk to the user, react to new input, and feed sub-agent results back into the dialogue. The budget exists so the main agent never blocks itself out of the conversation.
 
 THE SUB-AGENTS:
