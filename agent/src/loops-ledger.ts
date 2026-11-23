@@ -46,7 +46,7 @@ export type LoopKind =
   | 'steward_block' | 'steward_clear'
   | 'question' | 'question_answered'
   | 'permission_pending' | 'permission_settled'
-  | 'slot_refused' | 'budget_denied' | 'open_loop' | 'queued'
+  | 'slot_refused' | 'budget_denied' | 'open_loop' | 'queued' | 'started'
   | 'filed' | 'recapped' | 'held'
 
 export interface LoopRecord {
@@ -87,6 +87,8 @@ export interface LoopItem {
   filedUrl?: string
   filedAt?: string
   recapped?: boolean
+  /** `queued`: the instruction kept to start it later. */
+  instruction?: string
 }
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
@@ -160,6 +162,8 @@ const OPENS: Partial<Record<LoopKind, (r: LoopRecord) => boolean>> = {
   open_loop: () => true,
   // An instruction that found no free background slot: startable later, open until filed.
   queued: () => true,
+  // The queued item was sent (the hub's dispatch matched it): closed, so it is neither offered nor filed.
+  started: () => false,
 }
 
 /** Fold the ledger: the last record per item id wins. `prompt` and `session` lines are never items. */
@@ -185,6 +189,7 @@ export function foldLoops(records: LoopRecord[]): Map<string, LoopItem> {
       id: r.id, kind: r.kind, text: '', source: 'inferred', origin, fg: false, at: r.at, open: true,
     }
     if (r.text && (!prev || !item.text)) item.text = r.text
+    if (r.instruction && !item.instruction) item.instruction = r.instruction
     if (!prev) {
       // Only a user's own words can be explicit.
       item.source = r.source === 'explicit' && origin === 'user_mic' ? 'explicit' : 'inferred'
@@ -267,6 +272,37 @@ export function queuedLoopRecord(instruction: string, project: string, opts: { t
 export function appendQueuedLoop(sessionId: string, cwd: string, instruction: string, project: string, opts: { typed?: boolean } = {}): boolean {
   if (!readLoopRecords(sessionId, cwd).some((r) => r.kind === 'session' && r.cwd)) appendLoopRecord(sessionId, cwd, { kind: 'session', cwd, fg: true })
   return appendLoopRecord(sessionId, cwd, { ...queuedLoopRecord(instruction, project, opts), fg: true })
+}
+
+/** The oldest queued item still open: not started, not filed. */
+export function nextQueued(records: LoopRecord[]): LoopItem | undefined {
+  return [...foldLoops(records).values()]
+    .filter((i) => i.kind === 'queued' && i.open && !i.filedUrl && !!i.instruction)
+    .sort((a, b) => a.at.localeCompare(b.at))[0]
+}
+
+/** The id a queued item has for this project and instruction (same clipping as queuedLoopRecord). */
+export const queuedIdFor = (project: string, instruction: string): string => queuedLoopRecord(instruction, project).id!
+
+/**
+ * The hub sent `instruction` to `project` (folder `cwd`): close a matching open queued item in any of that
+ * project's ledgers with `started`. Returns whether one matched.
+ */
+export function markQueuedStarted(cwd: string, project: string, instruction: string): boolean {
+  try {
+    const id = queuedIdFor(project, instruction)
+    const osbRoot = dirname(dirname(getLoopsPath('_', cwd)))
+    let hit = false
+    for (const sid of readdirSync(osbRoot)) {
+      const path = join(osbRoot, sid, LOOPS_FILE)
+      if (!existsSync(path)) continue
+      const it = foldLoops(readLoopRecordsAt(path)).get(id)
+      if (it?.open && appendLoopRecord(sid, cwd, { kind: 'started', id })) hit = true
+    }
+    return hit
+  } catch {
+    return false
+  }
 }
 
 // ── IO ──────────────────────────────────────────────────────────────────────

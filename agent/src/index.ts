@@ -57,7 +57,8 @@ import { clearPipelineFastBrainSession, prewarmBM25Index, probeFastBrain, fastBr
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { loopIds, appendQueuedLoop } from './loops-ledger.js'
+import { loopIds, appendQueuedLoop, markQueuedStarted } from './loops-ledger.js'
+import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport } from './prompts.js'
@@ -3206,6 +3207,12 @@ async function main() {
   // At the slot cap the instruction is kept in the TARGET project's own ledger (#378), so it files to that project's repo, never the hub's.
   const keepQueued = (sessionId: string, cwd: string, instruction: string, project: string, typed = false): string =>
     appendQueuedLoop(sessionId, cwd, instruction, project, { typed }) ? ` It is saved as a queued item for ${project}; it has not started.` : ''
+  // A freed slot offers ONE queued item to the hub (#378); it never starts one on its own.
+  const queuedOfferer = makeOfferer({
+    hubCwd: () => (currentLLM as any)?.workingDirectory || workingDir,
+    hubUp: () => !!currentLLM && !!activeRoom && peopleIn(activeRoom) > 0,
+    hubIdle: () => (currentLLM as any)?.busyState?.()?.idle ?? true,
+  })
   const DISPATCH_REPORT_CAP_MS = 60 * 60 * 1000  // a spoke still working after an hour is reported as timed out (it keeps running)
   // When a spoke slot we spawned was freed: its last session write is ours, not a terminal's (resolveDispatchTarget).
   const spokeFreedAt = new Map<string, number>()
@@ -3272,7 +3279,9 @@ async function main() {
       if (hubUp) {
         try {
           const ctx = new llm.ChatContext()
-          ctx.addMessage({ role: 'user', content: getSpokeReport({ project, sessionId: slot.id, status, summary: last }) })
+          // The offer rides in the same notification turn, and only when the freed seat left the hub idle beforehand.
+          const offer = !gone && !timedOut && spawned ? queuedOfferer.onSlotFree() : null
+          ctx.addMessage({ role: 'user', content: getSpokeReport({ project, sessionId: slot.id, status, summary: last }) + (offer ? `\n\n${offer.replace(/^\[NOTIFICATION\] /, '')}` : '') })
           currentLLM!.chat({ chatCtx: ctx })
         } catch (err) { console.warn(`⚠️ Spoke report failed: ${(err as Error).message}`) }
       } else {
@@ -3295,6 +3304,7 @@ async function main() {
     if (!cwd) return `Not sent: the ${pick.project} session's folder is gone.`
     if (!pick.ok) return `Not sent: ${pick.error}${keepQueued(pick.sessionId, cwd, instruction.trim(), pick.project)}`
     const sent = await dispatchToSlot(pick.sessionId, instruction.trim(), { cwd, report: { project: pick.project } })
+    if (sent.ok) markQueuedStarted(cwd, pick.project, instruction.trim())
     return sent.ok ? `Sent to ${pick.project}. Its result comes back as a notification.` : `Not sent: ${sent.error}`
   }
   const hubTools = dispatchServers(dispatchByName)

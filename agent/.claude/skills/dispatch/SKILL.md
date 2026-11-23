@@ -21,7 +21,7 @@ Call the tool with `project` (the project's folder name as the user said it, e.g
 |---|---|
 | No session in a folder with that name | Ask which project they mean |
 | Several folders share that name | Ask which one |
-| That is this conversation's own session, it is still on an earlier task, both background slots are busy, or its newest session was active in the last few minutes (maybe open in a terminal) | Tell them, and offer to wait or do it here |
+| That is this conversation's own session, it is still on an earlier task, both background slots are busy (a send refused at the cap is saved as a queued item, and a freed slot may offer it back to you: ask the user, and call the tool only on their yes), or its newest session was active in the last few minutes (maybe open in a terminal) | Tell them, and offer to wait or do it here |
 | The session would not start | Tell them it failed to start |
 
 ## When the result arrives
