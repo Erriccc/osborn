@@ -352,7 +352,7 @@ let currentDuck: ReturnType<typeof installDuck> | null = null
 let duckRestoreTimer: ReturnType<typeof setTimeout> | null = null
 // phoneRoom: join this caller's room (a phone call) instead of a fresh one.
 let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null
-// Failed fast-brain lookups are kept out of the chat, so /health is where an outage (a retired model, a dead key) shows.
+// Failed fast-brain lookups are kept out of the chat; the count is on /health (read with curl, no page shows it yet).
 const fastBrainErrors = { count: 0, lastAt: null as string | null }
 // Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
 // agent's room and play the agent's REAL TTS audio track — bit-identical to
