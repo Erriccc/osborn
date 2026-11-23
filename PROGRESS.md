@@ -113,7 +113,7 @@ Session picker scans ALL `~/.claude/projects/*/` folders via `listAllClaudeSessi
 | `killCurrentLLM()` subprocess cleanup on disconnect | Working |
 | Self-healing CWD fallback chain (existsSync verified) | Working |
 | LiveKit Cloud turn detector shim (no JobContext required) | Working |
-| MCP server integration (stdio + Smithery cloud SDK proxy) | Working |
+| MCP server integration (stdio + Smithery cloud SDK proxy) | Not connected to sessions (#501) |
 | Recall.ai meeting bot integration (Zoom / Google Meet) | Working |
 | Supabase Auth (Google + GitHub OAuth) | Working |
 | Dashboard with recent chats, settings, agent health | Working |
@@ -161,7 +161,7 @@ Session picker scans ALL `~/.claude/projects/*/` folders via `listAllClaudeSessi
 
 | File | Purpose |
 |------|---------|
-| `components/VoiceRoom.tsx` | Main voice UI (~2000 lines): chat, permission UI, session management, MCP toggles, files panel, OAuth modal, meeting controls |
+| `components/VoiceRoom.tsx` | Main voice UI (~2000 lines): chat, permission UI, session management, files panel, OAuth modal, meeting controls |
 | `components/MarkdownMessage.tsx` | Markdown renderer with syntax highlighting + Mermaid; `MessageContent` for inline images and download cards |
 | `components/SessionBrowser.tsx` | Past session browser (all Claude projects) |
 | `components/FilesExplorerModal.tsx` | Full-screen files explorer with type badges and copy-all |
@@ -209,7 +209,7 @@ OPENAI_API_KEY=your-openai-key        # At least one of OpenAI or Google require
 GOOGLE_API_KEY=your-google-key        # Recommended (Gemini Flash is fast brain primary)
 SONIOX_API_KEY=your-soniox-key        # Default STT and TTS (pipeline voice)
 DEEPGRAM_API_KEY=your-deepgram-key    # Optional, only with OSBORN_STT_PROVIDER/OSBORN_TTS_PROVIDER=deepgram
-SMITHERY_API_KEY=your-smithery-key    # Optional, for cloud MCP servers
+SMITHERY_API_KEY=your-smithery-key    # Optional, cloud MCP servers (not connected yet, #501)
 RECALL_API_KEY=your-recall-key        # Optional, for Zoom/Google Meet bot
 LIVEKIT_REMOTE_EOT_URL=...            # Optional, LiveKit Cloud turn detector
 OSBORN_CWD=/path/to/project           # Optional, overrides config.workingDirectory

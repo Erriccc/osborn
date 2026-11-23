@@ -2,7 +2,7 @@
 
 import { useCallback, useRef, useState } from 'react'
 import { formatTime, deriveSessionTitle } from '@/lib/sessions'
-import { usePanelExclusive, useViewportClamp, type SessionInfo, type McpServerStatus } from './shared'
+import { usePanelExclusive, useViewportClamp, type SessionInfo } from './shared'
 import { SkillsPanel } from './SkillsPanel'
 import type { SkillStoreApi } from '@/lib/skill-store'
 import { useMenuDismiss } from '@/lib/use-menu-dismiss'
@@ -17,9 +17,6 @@ export function ControlMenu({
   onContinueSession,
   isLoadingSessions,
   disabled,
-  mcpServers,
-  onMcpToggle,
-  onLoadMcpStatus,
   skillStore,
   showAddSkill,
   setShowAddSkill,
@@ -35,9 +32,6 @@ export function ControlMenu({
   onContinueSession: () => void
   isLoadingSessions?: boolean
   disabled?: boolean
-  mcpServers?: McpServerStatus[]
-  onMcpToggle?: (serverKey: string, enabled: boolean) => void
-  onLoadMcpStatus?: () => void
   skillStore?: SkillStoreApi
   showAddSkill?: boolean
   setShowAddSkill?: (show: boolean) => void
@@ -66,18 +60,13 @@ export function ControlMenu({
   }, [showSwitchConfirm])
   useMenuDismiss(isOpen, onDismiss, [wrapRef], toggleRef)
 
-  const enabledMcpCount = (mcpServers || []).filter(s => s.enabled).length
-  const skillCount = skillStore?.skills.length ?? 0
-  const toolsBadgeCount = enabledMcpCount + skillCount
+  const toolsBadgeCount = skillStore?.skills.length ?? 0
 
   // Load data when tabs are opened
   const handleTabChange = (tab: 'history' | 'tools') => {
     setActiveTab(tab)
     if (tab === 'history' && sessions.length === 0) {
       onLoadSessions()
-    }
-    if (tab === 'tools') {
-      onLoadMcpStatus?.()
     }
   }
 
@@ -209,75 +198,8 @@ export function ControlMenu({
                 setNewSkillContent={setNewSkillContent}
               />}
 
-              {/* MCP Servers Section */}
-              {(!mcpServers || mcpServers.length === 0) ? (
-                <p className="text-center py-4 text-gray-500 text-xs">No MCP tools available</p>
-              ) : (
-                <>
-                  {/* Group by category */}
-                  {(['code', 'web', 'data', 'utility'] as const).map(category => {
-                    const serversInCategory = mcpServers.filter(s => s.category === category)
-                    if (serversInCategory.length === 0) return null
-                    const categoryLabels: Record<string, string> = {
-                      code: 'Code', web: 'Web', data: 'Data', utility: 'Utility',
-                    }
-                    return (
-                      <div key={category}>
-                        <h4 className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1.5">
-                          {categoryLabels[category]}
-                        </h4>
-                        <div className="space-y-1">
-                          {serversInCategory.map(server => (
-                            <div
-                              key={server.serverKey}
-                              className="flex items-center justify-between p-2 rounded-lg bg-gray-800/50 border border-gray-700/30"
-                            >
-                              <div className="flex-1 min-w-0 mr-2">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-sm font-medium text-gray-200">{server.name}</span>
-                                  {server.source === 'config' && (
-                                    <span className="text-[9px] px-1 py-0.5 rounded bg-gray-700 text-gray-400">custom</span>
-                                  )}
-                                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
-                                    server.transport === 'stdio' ? 'bg-gray-700 text-gray-400' : 'bg-emerald-900/50 text-emerald-400'
-                                  }`}>
-                                    {server.transport === 'stdio' ? 'local' : 'cloud'}
-                                  </span>
-                                </div>
-                                <p className="text-[11px] text-gray-500 truncate">{server.description}</p>
-                                {!server.available && server.missingEnvVars && (
-                                  <p className="text-[10px] text-amber-400 mt-0.5">
-                                    Missing: {server.missingEnvVars.join(', ')}
-                                  </p>
-                                )}
-                              </div>
-                              <button
-                                onClick={() => onMcpToggle?.(server.serverKey, !server.enabled)}
-                                disabled={!server.available}
-                                className={`relative w-9 h-5 rounded-full transition-colors shrink-0 ${
-                                  !server.available
-                                    ? 'bg-gray-700 cursor-not-allowed opacity-50'
-                                    : server.enabled
-                                    ? 'bg-green-500'
-                                    : 'bg-gray-600 hover:bg-gray-500'
-                                }`}
-                                title={!server.available ? `Missing env vars: ${server.missingEnvVars?.join(', ')}` : server.enabled ? 'Disable' : 'Enable'}
-                              >
-                                <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${
-                                  server.enabled ? 'translate-x-4' : 'translate-x-0'
-                                }`} />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )
-                  })}
-                  <p className="text-[10px] text-gray-600 text-center pt-1">
-                    Changes apply on next message
-                  </p>
-                </>
-              )}
+              {/* The catalog/config.yaml MCP servers are not passed to sessions (#501): a note, not toggles that do nothing */}
+              <p className="text-center py-4 text-gray-500 text-xs">The Osborn MCP catalog is not connected to sessions yet</p>
             </div>
           )}
 

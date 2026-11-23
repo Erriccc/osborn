@@ -232,7 +232,7 @@ APNs (Phase 2).
 ### 3.3 Data-channel protocol (`user-input` → / `osborn-updates` ←)
 **Send (~25):** noise_cancel, list_slots, permission_response, plan, get_plan_file,
 get_research_artifact, list_processes, list_sessions, resume_session,
-continue_session, user_text, replay_message, mcp_toggle, get_mcp_status,
+continue_session, user_text, replay_message,
 spawn_background_session, dispatch_background, stop_background_session, join_meeting,
 leave_meeting, start_ide, stop_ide, session_selected, skill_get, skill_add, skill_fork,
 skill_remove, get_agent_prompt.
@@ -242,7 +242,7 @@ noise_cancel_state, gate_dropped, agent_stopped, task_completed, tool_use,
 task_review, claude_output, permission_request, permission_response, status_update,
 progress_update, sessions_list, current_session, session_resume_set/failed,
 session_switched, plan_file_updated/content, research_artifact_updated/content,
-session_artifacts, fast_brain_response, mcp_status/servers_changed/toggle_result,
+session_artifacts, fast_brain_response,
 skills_status, agents_status, skill_content/add_result/fork_result/remove_result, agent_prompt,
 claude_auth_required/url/waiting_code/submitting/complete/error,
 meeting_joining/joined/left/error, ide_status, background_update, slots_list,

@@ -324,19 +324,6 @@ export interface SlotInfo {
   error?: string
 }
 
-// MCP server status from backend
-export interface McpServerStatus {
-  serverKey: string
-  name: string
-  description: string
-  category: 'code' | 'web' | 'data' | 'utility'
-  transport: 'stdio' | 'http' | 'sse'
-  enabled: boolean
-  available: boolean
-  missingEnvVars?: string[]
-  source: 'catalog' | 'config'
-}
-
 // Generated file tracking (plans + research artifacts)
 export interface GeneratedFile {
   filePath: string
