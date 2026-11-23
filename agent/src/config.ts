@@ -678,6 +678,8 @@ export interface SessionPreview {
   firstTs?: string
   /** Timestamp of the last REAL user/assistant turn (not file mtime). */
   lastActivityAt?: string
+  /** messageCount counts the whole file (a small file); otherwise it is a sampled lower bound. */
+  exact?: boolean
 }
 
 interface PreviewAcc {
@@ -807,6 +809,7 @@ async function getSessionPreview(filePath: string, fileSize?: number): Promise<S
         messageCount: whole.count,
         firstTs: whole.firstTs,
         lastActivityAt: whole.lastTs,
+        exact: true,
       }
     }
 
@@ -971,6 +974,7 @@ const SESSION_LIST_TTL_MS = 300_000
 
 export function invalidateSessionListCache(): void {
   _sessionListCache = null
+  _sessionManifest = null  // re-read from disk, as after a restart
 }
 
 // ── Persisted session-list manifest (cold-boot dashboard fix) ──
@@ -984,7 +988,7 @@ export function invalidateSessionListCache(): void {
 interface SessionManifestEntry {
   mtimeMs: number; size: number; lastMessage?: string; messageCount: number; cwd: string
   title?: string; firstTs?: string; lastActivityAt?: string
-  /** Whole-file turn count for a large session, taken in the background; valid while mtime+size match. */
+  /** messageCount counts the whole file (read whole, or counted in the background); valid while mtime+size match. */
   exact?: boolean
 }
 interface SessionManifest { v: number; entries: Record<string, SessionManifestEntry> }
@@ -992,18 +996,20 @@ interface SessionManifest { v: number; entries: Record<string, SessionManifestEn
 // large-file messageCount estimate changed, and unchanged files are never re-read.
 // v4: the large-file count is the sampled lower bound. v5: no head fallback for last activity.
 // v6: large-file previews widen the window when the samples hold no user turn.
-// v7: large sessions carry a background whole-file count (`exact`).
-const SESSION_MANIFEST_VERSION = 7
+const SESSION_MANIFEST_VERSION = 6
 function sessionManifestPath(): string {
   return join(homedir(), '.claude', 'session-manifest.json')
 }
+// One loaded copy, shared by the listing and the background count so neither saves over the other's entries.
+let _sessionManifest: SessionManifest | null = null
 function loadSessionManifest(): SessionManifest {
+  if (_sessionManifest) return _sessionManifest
   try {
     const raw = readFileSync(sessionManifestPath(), 'utf-8')
     const m = JSON.parse(raw) as SessionManifest
-    if (m && m.v === SESSION_MANIFEST_VERSION && m.entries && typeof m.entries === 'object') return m
+    if (m && m.v === SESSION_MANIFEST_VERSION && m.entries && typeof m.entries === 'object') return (_sessionManifest = m)
   } catch { /* missing / corrupt → start fresh */ }
-  return { v: SESSION_MANIFEST_VERSION, entries: {} }
+  return (_sessionManifest = { v: SESSION_MANIFEST_VERSION, entries: {} })
 }
 function saveSessionManifest(m: SessionManifest): void {
   try {
@@ -1014,40 +1020,36 @@ function saveSessionManifest(m: SessionManifest): void {
   } catch { /* best-effort — a failed manifest write just means the next cold boot re-reads */ }
 }
 
-
 // A large session's list entry is sampled (head + tail), so a 400 MB session reads "9 msgs". One
 // background pass per file counts it whole, one file at a time, and the next listing serves the
-// real number from the manifest. Never on the listing path: a cold list stays fast.
-const EXACT_COUNT_MIN_BYTES = 192 * 1024
+// real number from the manifest. Never on the listing path: a cold list stays fast. A file written
+// in the last few minutes is a live session: it waits until idle instead of being recounted every turn.
 const EXACT_COUNT_MAX_BYTES = 1024 * 1024 * 1024
-const EXACT_COUNT_COOLDOWN_MS = 5 * 60_000
+const EXACT_COUNT_QUIET_MS = 5 * 60_000
 const exactCountQueue: { filePath: string; mtimeMs: number; size: number }[] = []
-const exactCountLast = new Map<string, number>()
-let exactCountRunning = false
 async function drainExactCounts(): Promise<void> {
-  if (exactCountRunning) return
-  exactCountRunning = true
-  try {
-    for (let job = exactCountQueue.shift(); job; job = exactCountQueue.shift()) {
+  // The file being counted stays at the head of the queue, so a listing meanwhile cannot queue it again.
+  for (let job = exactCountQueue[0]; job; job = exactCountQueue[0]) {
+    const started = Date.now()
+    try {
       const acc = await scanWholeFile(job.filePath)
       const manifest = loadSessionManifest()
       const hit = manifest.entries[job.filePath]
-      if (!hit || hit.mtimeMs !== job.mtimeMs || hit.size !== job.size || acc.count < hit.messageCount) continue
-      hit.messageCount = acc.count
-      hit.exact = true
-      saveSessionManifest(manifest)
-      _sessionListCache = null  // the next listing reads the real count
-    }
-  } finally { exactCountRunning = false }
+      if (hit && hit.mtimeMs === job.mtimeMs && hit.size === job.size) {
+        hit.messageCount = Math.max(acc.count, hit.messageCount)  // the sampled floor keeps a large session listed
+        hit.exact = true
+        saveSessionManifest(manifest)
+        _sessionListCache = null  // the next listing reads the real count (the shared manifest copy stays)
+      }
+      // Rest as long as the pass took: a backfill of many large files uses at most half a core.
+      await new Promise((r) => setTimeout(r, Date.now() - started))
+    } finally { exactCountQueue.shift() }
+  }
 }
 function queueExactCount(filePath: string, mtimeMs: number, size: number): void {
-  if (size < EXACT_COUNT_MIN_BYTES || size > EXACT_COUNT_MAX_BYTES) return
-  const last = exactCountLast.get(filePath)
-  if (last && Date.now() - last < EXACT_COUNT_COOLDOWN_MS) return
+  if (size > EXACT_COUNT_MAX_BYTES || Date.now() - mtimeMs < EXACT_COUNT_QUIET_MS) return
   if (exactCountQueue.some((j) => j.filePath === filePath)) return
-  exactCountLast.set(filePath, Date.now())
-  exactCountQueue.push({ filePath, mtimeMs, size })
-  void drainExactCounts()
+  if (exactCountQueue.push({ filePath, mtimeMs, size }) === 1) void drainExactCounts()
 }
 
 /**
@@ -1135,10 +1137,10 @@ export async function listAllClaudeSessions(limit = 1000, includeSubagents = fal
         manifest.entries[c.filePath] = {
           mtimeMs: c.mtime.getTime(), size: c.size,
           lastMessage: preview.lastMessage, messageCount: preview.messageCount, cwd,
-          title: preview.title, firstTs: preview.firstTs, lastActivityAt: preview.lastActivityAt,
+          title: preview.title, firstTs: preview.firstTs, lastActivityAt: preview.lastActivityAt, exact: preview.exact,
         }
         manifestDirty = true
-        queueExactCount(c.filePath, c.mtime.getTime(), c.size)
+        if (!preview.exact) queueExactCount(c.filePath, c.mtime.getTime(), c.size)
         return { c, preview, cwd }
       } catch { return null }
     })
