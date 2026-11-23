@@ -4,7 +4,7 @@ import assert from 'node:assert'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { notifyPhone } from '../src/pushover.js'
+import { notifyPhone, armPermissionPush, settlePermissionPush, phonePushPending } from '../src/pushover.js'
 
 const run = async () => {
   // notifyPhone: nothing configured → no request, false.
@@ -27,6 +27,33 @@ const run = async () => {
   // A failed send reports false.
   ;(globalThis as any).fetch = async () => ({ ok: false })
   assert.equal(await notifyPhone('x'), false)
+
+  // Answering a request cancels its push receipt and frees the single push slot.
+  for (const k of ['NTFY_URL', 'NTFY_TOPIC']) delete process.env[k]
+  process.env.PUSHOVER_TOKEN = 'tok'
+  process.env.PUSHOVER_USER_KEY = 'usr'
+  process.env.WATCH_ACK_SECRET = 'sec'
+  process.env.OSBORN_PUBLIC_URL = 'https://agent.example'
+  const reqs: { url: string; body: string }[] = []
+  let n = 0
+  ;(globalThis as any).fetch = async (url: string, init: any) => {
+    reqs.push({ url: String(url), body: String(init?.body ?? '') })
+    return { ok: true, json: async () => ({ receipt: `rcpt${++n}` }) }
+  }
+  await armPermissionPush({ toolName: 'Bash', description: 'run ls', requestId: 'r1' })
+  assert.equal(phonePushPending(), true)
+  settlePermissionPush('other') // a different request never cancels this one
+  assert.equal(phonePushPending(), true)
+  settlePermissionPush('r1')
+  assert.equal(phonePushPending(), false, 'answered: nothing pending')
+  const cancel = reqs.find(r => r.url.endsWith('/receipts/rcpt1/cancel.json'))
+  assert.ok(cancel && cancel.body.includes('token=tok'), 'the receipt was cancelled')
+  const before = reqs.length
+  await armPermissionPush({ toolName: 'Edit', description: 'edit x', requestId: 'r2' })
+  assert.ok(reqs.length > before && phonePushPending(), 'the next request still gets its push')
+  settlePermissionPush('r2')
+  settlePermissionPush('r2') // idempotent
+  assert.equal(reqs.filter(r => r.url.endsWith('/cancel.json')).length, 2)
 
   // Billing guards (index.ts is not importable in a test): keep-working starts only
   // after the hang-up released the agents and armed the room teardown.

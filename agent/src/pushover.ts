@@ -1,8 +1,11 @@
 /**
  * pushover.ts — Track 1 watch bridge (yes/no on the wrist via Pushover).
  *
- * When the agent hits a blocking permission request and nobody answers in the
- * web UI, this module fires an emergency (priority-2) Pushover notification.
+ * When the agent hits a blocking permission request, this module fires an
+ * emergency (priority-2) Pushover notification at once, in parallel with the
+ * web UI (it does not wait to see whether the browser answers). Whichever
+ * answer lands first settles the request; settlePermissionPush then cancels
+ * the push so the wrist stops buzzing.
  * Pushover mirrors notifications to the Apple Watch, so a single tap on the
  * wrist acknowledges it; Pushover then requests our callback URL (the
  * frontend's /api/watch/ack/<token> route), which verifies the HMAC and POSTs
@@ -296,6 +299,32 @@ export function handleWatchAck(qid: string, receipt?: string, allow = true): boo
   return true
 }
 
+/** Stop Pushover's emergency retries for a receipt. Fire-and-forget. */
+function cancelReceipt(token: string, receipt: string): void {
+  void fetch(`${PUSH_API}/receipts/${receipt}/cancel.json`, {
+    method: 'POST',
+    body: new URLSearchParams({ token }),
+  }).catch(() => {})
+}
+
+/**
+ * A request was answered (browser, keypad, voice) or its brain was aborted:
+ * drop its push and cancel the Pushover receipt so the watch stops buzzing and
+ * the next request's push is not skipped. No-op when no push is pending for it.
+ */
+export function settlePermissionPush(requestId: string | undefined): void {
+  if (!requestId) return
+  for (const record of [...pending.values()]) {
+    if (record.settled || record.requestId !== requestId) continue
+    record.settled = true
+    if (record.expiryTimer) clearTimeout(record.expiryTimer)
+    pending.delete(record.qid)
+    const cfg = pushoverConfig()
+    if (cfg && record.receipt) cancelReceipt(cfg.token, record.receipt)
+    console.log(`⌚️ Watch bridge: request answered elsewhere, push cancelled (${record.toolName})`)
+  }
+}
+
 /**
  * Expiry path: if Pushover says the notification was never acknowledged,
  * settle as deny and cancel further retries (stops the watch buzzing). If it
@@ -329,10 +358,7 @@ async function settleExpired(record: PendingPush): Promise<void> {
       console.log(`⌚️ Watch bridge: unacknowledged at expiry → deny ${record.toolName}`)
       resultHandler?.(false, record.toolName, record.requestId)
       // Cancel remaining emergency retries so the wrist stops buzzing.
-      void fetch(`${PUSH_API}/receipts/${record.receipt}/cancel.json`, {
-        method: 'POST',
-        body: new URLSearchParams({ token: cfg.token }),
-      }).catch(() => {})
+      cancelReceipt(cfg.token, record.receipt)
     }
   } catch (e) {
     // Poll failed — settle deny; the record is dropped either way.

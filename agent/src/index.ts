@@ -71,7 +71,7 @@ import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
-import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl, notifyPhone, isWatchBridgeEnabled, phonePushPending } from './pushover.js'
+import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl, notifyPhone, isWatchBridgeEnabled, phonePushPending, settlePermissionPush } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
@@ -2837,6 +2837,7 @@ async function main() {
     if (warmLLM) {
       try {
         const llm = warmLLM as any
+        cancelPushOf(llm)
         if (typeof llm.abortQuery === 'function') llm.abortQuery()
         else if (typeof llm.abortAgent === 'function') llm.abortAgent()
       } catch (err) {
@@ -3026,6 +3027,7 @@ async function main() {
     if (!currentLLM) return
     try {
       const llm = currentLLM as any
+      cancelPushOf(llm)
       // NOTE (fast-brain migration): the old summary-index 10s setInterval watcher
       // was retired — fast-brain now reads the recall store (session.db) directly,
       // so there is no per-LLM timer holding the PipelineDirectLLM → ClaudeLLM graph
@@ -4375,6 +4377,7 @@ async function main() {
 
       // 4. Close the old query (idle, or forced) and clear its resume state.
       launchLibraryOnSessionEnd(warmParkKey(llmAny), llmAny.workingDirectory || workingDir, 'session_switch', [...liveSessionIds(), target])
+      cancelPushOf(currentLLM)
       currentLLM.resetForSessionSwitch()
 
       // 5. Cross-project: the SDK cwd, fast brain and session tail move together.
@@ -5469,7 +5472,14 @@ async function main() {
   // adds that request's scope (alwaysScope) to the session's always-allow list.
   // False when that request is not pending (already answered elsewhere).
   function settlePendingPermission(answer: PermissionAnswer, requestId: unknown): boolean {
-    return answerPending(pendingPermissionHolder(), answer, requestId, sessionAllows)
+    const settled = answerPending(pendingPermissionHolder(), answer, requestId, sessionAllows)
+    if (settled && typeof requestId === 'string') settlePermissionPush(requestId)
+    return settled
+  }
+
+  // An abort or session switch closes a brain's pending request unanswered: cancel its push too.
+  function cancelPushOf(llm: any): void {
+    try { settlePermissionPush(llm?.getPendingPermission?.()?.requestId) } catch {}
   }
 
   // wireRoomHandlers(room): register EVERY room.on(...) listener onto a fresh
@@ -6807,9 +6817,11 @@ async function main() {
         // session's sole pending request only, Always as allow-once).
         const answer = data.response
         const known = answer === 'allow' || answer === 'deny' || answer === 'always_allow'
+        const liveId = (currentLLM as any)?.getPendingPermission?.()?.requestId
         const settled = known && (data.requestId === undefined
           ? answerPendingWithoutId(currentLLM as any, warmLLM as any, answer)
           : settlePendingPermission(answer, data.requestId))
+        if (settled && data.requestId === undefined) settlePermissionPush(liveId)
         if (settled) {
           console.log(`✅ Permission: ${answer}${data.requestId === undefined ? ' (no request id: live request, once)' : ''}`)
         } else {
