@@ -352,6 +352,8 @@ let currentDuck: ReturnType<typeof installDuck> | null = null
 let duckRestoreTimer: ReturnType<typeof setTimeout> | null = null
 // phoneRoom: join this caller's room (a phone call) instead of a fresh one.
 let connectRoomHook: ((phoneRoom?: string) => Promise<string>) | null = null
+// Failed fast-brain lookups are kept out of the chat; the count is on /health (read with curl, no page shows it yet).
+const fastBrainErrors = { count: 0, lastAt: null as string | null }
 // Mints a LISTEN-ONLY LiveKit token for the meeting canvas so it can join the
 // agent's room and play the agent's REAL TTS audio track — bit-identical to
 // the browser voice experience (2026-08-01 quality architecture; replaces the
@@ -969,6 +971,7 @@ function startApiServer(workingDir: string, port: number): void {
         status: 'ok',
         workingDir,
         version,
+        fastBrain: { errors: fastBrainErrors.count, lastErrorAt: fastBrainErrors.lastAt },
         // Library: is it on, can it call the model, does it reach /library. Public: counts, times and codes only.
         library: {
           enabled: isContentLensEnabled(),
@@ -4632,6 +4635,8 @@ async function main() {
     console.log(`🧠⚡ [FAST_BRAIN ${r.type.toUpperCase()} +${r.elapsedMs}ms]: "${r.answer.substring(0, 60)}"`)
     // A hand-off to the main agent has nothing to say yet; its answer follows.
     if (r.type === 'research_needed') return
+    // A failed lookup is a log line, not a chat message: "Search error occurred." under "provisional" tells the user nothing.
+    if (r.type === 'error') { fastBrainErrors.count++; fastBrainErrors.lastAt = new Date().toISOString(); return }
     sendToFrontend({
       type: 'fast_brain_response', text: r.answer, responseType: r.type,
       elapsedMs: r.elapsedMs, question: r.question, toolsUsed: r.toolsUsed,

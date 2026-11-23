@@ -1,11 +1,4 @@
-/**
- * Shared text-model provider resolution for the platform-side content routes
- * (/api/content/refine, /api/content/chat). Mirrors the agent-side house demo
- * pass: Fireworks first (pay-per-use, gpt-oss-120b), z.ai GLM subscription as
- * the fallback so content ops keep working without a Fireworks key.
- * Embeddings are NOT covered — the z.ai pass has no embedding model; the agent
- * embedder stays on Fireworks.
- */
+/** Text-model provider for the content routes: Fireworks first, the z.ai house pass as the fallback. */
 export interface TextProvider {
   url: string
   key: string
@@ -13,13 +6,17 @@ export interface TextProvider {
   name: string
 }
 
+/** The default models are GLM-5.3, which always thinks: at its default effort the reasoning used a route's whole
+ *  max_tokens (refine 2048, chat 1024) and the reply came back empty. Spread into every request body. */
+export const LOW_REASONING = { reasoning_effort: 'low' } as const
+
 export function resolveTextProvider(): TextProvider | null {
   const fw = process.env.FIREWORKS_API_KEY
   if (fw) {
     return {
       url: 'https://api.fireworks.ai/inference/v1/chat/completions',
       key: fw,
-      model: 'accounts/fireworks/models/gpt-oss-120b',
+      model: 'accounts/fireworks/models/glm-5p3-flash',
       name: 'Fireworks',
     }
   }

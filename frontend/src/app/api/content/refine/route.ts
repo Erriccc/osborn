@@ -7,7 +7,7 @@ import {
   userPrompt,
   type RefineResult,
 } from '@/lib/content-refine'
-import { resolveTextProvider } from '@/lib/model-provider'
+import { resolveTextProvider, LOW_REASONING } from '@/lib/model-provider'
 import { CONTENT_ITEM_COLUMNS } from '@/lib/library-grid'
 
 /**
@@ -21,7 +21,7 @@ import { CONTENT_ITEM_COLUMNS } from '@/lib/library-grid'
  * JWT. We load the source (or the existing rendition when renditionId is given)
  * under the caller's RLS, so a user can only refine their own items.
  *
- * Fireworks: OpenAI-compatible chat/completions, model gpt-oss-120b, keyed by
+ * Fireworks: OpenAI-compatible chat/completions, the resolveTextProvider() model, keyed by
  * FIREWORKS_API_KEY (set on Railway). A platform-specific system prompt + the
  * source body (+ optional instruction) yields STRICT JSON which we parse into
  * {title, hook, body, seo:{metaTitle, metaDescription}}.
@@ -104,6 +104,7 @@ export async function POST(req: NextRequest) {
         model: prov.model,
         max_tokens: MAX_TOKENS,
         temperature: 0.6,
+        ...LOW_REASONING,
         messages: [
           { role: 'system', content: systemPrompt(platform) },
           { role: 'user', content: userPrompt(sourceBody, instruction, sourceTitle) },

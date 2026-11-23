@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server'
 import { createSupabaseServer } from '@/lib/supabase-server'
-import { resolveTextProvider } from '@/lib/model-provider'
+import { resolveTextProvider, LOW_REASONING } from '@/lib/model-provider'
 
 /**
  * POST /api/content/chat — a LIGHTWEIGHT, conversational "talk to this page"
@@ -20,8 +20,8 @@ import { resolveTextProvider } from '@/lib/model-provider'
  * Auth: signed-in only. The Fireworks key is paid, so we never expose an
  * anonymous LLM proxy. Anon callers get 401 and the UI nudges them to sign in.
  *
- * Fireworks: OpenAI-compatible streaming chat/completions, gpt-oss-120b,
- * keyed by FIREWORKS_API_KEY (set on Railway).
+ * Fireworks: OpenAI-compatible streaming chat/completions, the model from
+ * resolveTextProvider(), keyed by FIREWORKS_API_KEY (set on Railway).
  */
 
 
@@ -96,6 +96,7 @@ export async function POST(req: NextRequest) {
         max_tokens: MAX_TOKENS,
         temperature: 0.7,
         stream: true,
+        ...LOW_REASONING,
         messages: [{ role: 'system', content: systemPrompt(context) }, ...messages],
       }),
       signal: controller.signal,
