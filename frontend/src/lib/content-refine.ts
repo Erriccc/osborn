@@ -4,7 +4,7 @@
  *
  * The studio turns a raw library item (internal notes written by the
  * content-lens worker) into a polished, platform-specific, SEO-friendly
- * rendition via a fast LLM (Fireworks gpt-oss-120b). Each platform has its own
+ * rendition via a fast LLM (resolveTextProvider()). Each platform has its own
  * system prompt; all of them ask the model to return STRICT JSON with the same
  * shape so the route can persist it uniformly.
  */

@@ -13,6 +13,10 @@ export interface TextProvider {
   name: string
 }
 
+/** Both models are GLM-5.3, which always thinks: at its default effort the reasoning used a route's whole
+ *  max_tokens (refine 2048, chat 1024) and the reply came back empty. Spread into every request body. */
+export const LOW_REASONING = { reasoning_effort: 'low' } as const
+
 export function resolveTextProvider(): TextProvider | null {
   const fw = process.env.FIREWORKS_API_KEY
   if (fw) {
