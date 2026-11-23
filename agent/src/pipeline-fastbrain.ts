@@ -398,7 +398,7 @@ export async function requestWithFallback(body: Record<string, unknown>): Promis
       body: JSON.stringify({ model: c.model, ...body }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
-    if (resp.ok) { modelInUse = c.model; if (fallbackFrom === c.model) fallbackFrom = null; return resp.json() }
+    if (resp.ok) { modelInUse = c.model; if (c === all[0]) fallbackFrom = null; return resp.json() }
     const text = await resp.text().catch(() => '')
     const tried = c
     const next = attempt === 0 && isModelNotFound(resp.status, text) ? all.find((x) => x !== tried && !isDead(x)) : undefined

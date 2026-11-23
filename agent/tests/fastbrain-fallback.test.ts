@@ -52,6 +52,14 @@ script = [ok]; urls.length = 0
 await fb.requestWithFallback({})
 assert.match(urls[0], /fireworks/)
 
+// The same model name on both providers: the fallback answering does not clear the retired flag.
+process.env.OSBORN_FAST_BRAIN_MODEL = 'deepseek/deepseek-chat'
+const same = await import('../src/pipeline-fastbrain.js?same')
+script = [gone, ok]
+await same.requestWithFallback({})
+assert.equal(same.fastBrainModelStatus().fallbackFrom, 'deepseek/deepseek-chat')
+delete process.env.OSBORN_FAST_BRAIN_MODEL
+
 // Single candidate: a model-not-found never marks it dead; every turn retries it.
 fb.resetFastBrainFallback()
 delete process.env.FIREWORKS_API_KEY
