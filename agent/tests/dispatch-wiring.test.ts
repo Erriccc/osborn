@@ -1,5 +1,8 @@
-// The hub built the way index.ts builds it (createPipelineDirectLLM with hubTools) hands the dispatch tool to the
-// SDK query, and a slot built the way index.ts builds it does not. The query is a stub: no API call.
+// Guards two things, with a stub query (no API call):
+//  1. behaviour: a pipeline hub given `hubTools` hands the `dispatch` server to the SDK, and a ClaudeLLM given none (a slot) hands none
+//     (this builds its own options, so it catches claude-llm.ts / pipeline-direct-llm.ts dropping hubTools);
+//  2. wiring in index.ts, read as text: every createPipelineDirectLLM({...}) literal (exactly two: connect, recovery) passes
+//     `hubTools`, and the slot's createClaudeLLM literal does not.
 // Run: npx tsx agent/tests/dispatch-wiring.test.ts
 import assert from 'node:assert/strict'
 import { llm, initializeLogger } from '@livekit/agents'
@@ -31,5 +34,12 @@ const slot: { servers?: any; called?: boolean } = {}
 await coldStart(createClaudeLLM({ workingDirectory: cwd, voiceMode: 'direct', skipTTSQueue: true, permissionMode: 'bypassPermissions', queryFn: stub(slot) } as any), slot)
 assert.ok(slot.called, 'the slot started a query')
 assert.equal(slot.servers, undefined, 'a slot has no mcpServers at all')
+import { readFileSync } from 'node:fs'
+const idx = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf-8')
+const sites = [...idx.matchAll(/createPipelineDirectLLM\(\{/g)].map((m) => idx.slice(m.index!, m.index! + 700))
+assert.equal(sites.length, 2, 'the hub is built in exactly two places: connect and recovery')
+sites.forEach((s, i) => assert.match(s.slice(0, 400), /\n\s+hubTools,/, `createPipelineDirectLLM site ${i} passes hubTools`))
+const slotLiteral = idx.slice(idx.indexOf('const bgLLM = createClaudeLLM('), idx.indexOf('const slot = slots.add('))
+assert.ok(slotLiteral.length > 20 && !/hubTools|mcpServers/.test(slotLiteral), 'the slot is built without hubTools')
 console.log('dispatch-wiring: ok')
 process.exit(0)
