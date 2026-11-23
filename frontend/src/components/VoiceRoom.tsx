@@ -38,7 +38,7 @@ import { isRedundantFinal } from '@/lib/claude-output'
 import { isAgentIdentity, isAuthGateTerminal } from '@/lib/connect-gate'
 import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
 import { historyTurns, isControlNotice } from '@/lib/control-text'
-import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
+import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micPlatform, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { AudioControls } from './voice/AudioControls'
 import { RoomsSidebar, RoomsBar, type Room } from './voice/RoomsRail'
@@ -1018,7 +1018,7 @@ function VoiceRoomInner({
     return () => { cancelled = true }
   }, [selectedFile])
 
-  const { localParticipant, isMicrophoneEnabled: micEnabled } = useLocalParticipant()
+  const { localParticipant, isMicrophoneEnabled: micEnabled, isScreenShareEnabled: screenSharing } = useLocalParticipant()
   // Honest mute UI: never show "unmuted" while no audio is published (e.g.
   // joined without the mic after a denial). A tap then means "turn it on".
   const shownMuted = micShownMuted({ muted: isMuted, micPublished: localParticipant ? micEnabled : undefined })
@@ -1031,6 +1031,18 @@ function VoiceRoomInner({
       setIsMuted(newMuted)
     }
   }, [localParticipant, shownMuted])
+
+  // Screen share (#472): desktop Chrome only (micPlatform 'chrome' is not Edge, iOS/iPadOS or Android).
+  // setScreenShareEnabled opens the browser's picker; a cancelled picker rejects and is ignored.
+  // Stopping it, or the browser's "Stop sharing" bar, unpublishes the track (LiveKit LocalParticipant).
+  const [canShareScreen, setCanShareScreen] = useState(false)
+  useEffect(() => {
+    setCanShareScreen(!!navigator.mediaDevices?.getDisplayMedia && micPlatform({ ua: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints }) === 'chrome')
+  }, [])
+  const toggleScreenShare = async () => {
+    if (!localParticipant) return
+    try { await localParticipant.setScreenShareEnabled(!screenSharing) } catch (err) { console.warn('[screen-share]', err) }
+  }
 
   // Copy all messages to clipboard with timestamps
   const handleCopyAllMessages = useCallback(async () => {
@@ -4697,7 +4709,7 @@ function VoiceRoomInner({
           pendingPermission={pendingPermission}
           onPermissionRespond={handlePermissionResponse}
           reviewMode={approvalMode === 'auto-review'}
-          corner={<CallPill muted={shownMuted} onToggleMute={toggleMute} onEnd={onDisconnect ? handleEnd : undefined} />}
+          corner={<CallPill muted={shownMuted} onToggleMute={toggleMute} onEnd={onDisconnect ? handleEnd : undefined} sharing={screenSharing} onToggleShare={canShareScreen ? toggleScreenShare : undefined} />}
         />
 
         {/* Logs drawer */}
