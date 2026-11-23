@@ -3339,7 +3339,6 @@ async function main() {
         console.log(`🎯 [meeting-addr] routing addressed turn → @${pendingTarget} via Task directive (dispatches ${active}/${cap})`)
       } else {
         console.log(`🎯 [meeting-addr] @${pendingTarget} routing skipped — at concurrency cap (${active}/${cap}); orchestrator handles it`)
-        ;(currentLLM as any)?.recordLoop?.({ kind: 'slot_refused', id: loopIds.slot(`meeting ${pendingTarget}`), text: `@${pendingTarget} not routed: at dispatch cap`, source: 'inferred', origin: 'system' })
       }
     }
     try {
