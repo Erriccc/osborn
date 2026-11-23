@@ -13,6 +13,7 @@ import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, PHONE_TOOLS_DENIED } from './prompts.js'
+import { hubMcpServers } from './dispatch-tool.js'
 import { steersTurn } from './content/transcript-sanitizer.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
@@ -175,6 +176,8 @@ export interface ClaudeLLMOptions {
   resumeSessionId?: string
   continueSession?: boolean
   mcpServers?: Record<string, McpServerConfig>
+  /** The hub's own in-process tools (the dispatch tool), built fresh for each query. Never passed for a background slot. */
+  hubTools?: () => Record<string, McpServerConfig>
   model?: string  // Claude model ID (default: claude-opus-5-5)
   voiceMode?: 'direct' | 'realtime'  // Which voice pipeline — controls system prompt selection
   skipTTSQueue?: boolean  // When true, emit 'tts_say' events instead of queue.put() — for session.say() bypass
@@ -1350,6 +1353,7 @@ export class ClaudeLLM extends llm.LLM {
       resumeSessionId: this.#resumeSessionId || undefined,
       continueSession: this.#continueSession,
       mcpServers: this.#mcpServers,
+      hubTools: opts.hubTools,
       voiceMode: opts.voiceMode || 'realtime',
       skipTTSQueue: opts.skipTTSQueue || false,
       // CRITICAL: the PreCompact / PostCompact hooks call
@@ -2693,6 +2697,8 @@ class ClaudeLLMStream extends llm.LLMStream {
         cwd: this.#opts.workingDirectory,
         permissionMode: this.#opts.permissionMode,
         allowedTools,
+        // Only the hub's own tools (not allowed, so each call asks); the config/toggle servers stay inert here.
+        ...(this.#opts.hubTools ? { mcpServers: hubMcpServers(this.#opts.hubTools) } : {}),
         // model: this.#opts.model || 'haiku', // haiku for speed with limited tools, sonnet for full research capabilities (including tool use trace in response)
         // Turbo: when on, override main model to FAST_MODEL regardless of config.
         // model: this.#llmRef.turbo ? FAST_MODEL : (this.#opts.model || 'claude-opus-4-8[1m]'), // prev

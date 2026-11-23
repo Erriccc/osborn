@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict'
 import { resolveDispatchTarget, listFreshSessions } from '../src/session-switch.js'
 import { SlotRegistry } from '../src/slot-manager.js'
+import { dispatchServers, hubMcpServers } from '../src/dispatch-tool.js'
 import { DISPATCH_TOOL, dispatchFieldsOk, describeDispatch } from '../src/dispatch.js'
 import { getSpokeReport } from '../src/prompts.js'
 import { steersTurn } from '../src/content/transcript-sanitizer.js'
@@ -24,17 +25,17 @@ t('matches by folder name, newest session wins, case and punctuation ignored', (
   assert.equal(r.ok, true); assert.equal(r.sessionId, 'new-osborn'); assert.equal(r.cwd, '/work/osborn')
   assert.equal(resolveDispatchTarget('audos com', sessions, free()).sessionId, 'audos-1')
 })
-t('unknown project is 404, empty is 400, two folders with the name are 400', () => {
+t('an unknown project, an empty name and two folders with the name are refused', () => {
   assert.match(resolveDispatchTarget('nope', sessions, free()).error!, /no session found/)
   assert.equal(resolveDispatchTarget('  ', sessions, free()).ok, false)
   const amb = resolveDispatchTarget('web', sessions, free())
   assert.equal(amb.ok, false); assert.match(amb.error, /\/a\/web/)
 })
-t('the focused session is refused with 409', () => {
+t('the focused session is refused', () => {
   const r = resolveDispatchTarget('osborn', sessions, free('new-osborn'))
   assert.equal(r.ok, false); assert.match(r.error!, /foreground/)
 })
-t('a full slot cap is 409; a busy existing slot is 409; an idle one is reused', () => {
+t('a full slot cap and a busy existing slot are refused; an idle one is reused', () => {
   const full = new SlotRegistry({ max: 1 }); full.add({ id: 'x', llm: {}, isFocused: false, workingDir: '/w' })
   assert.equal(resolveDispatchTarget('osborn', sessions, free(null, 'none', full)).ok, false)
   const mine = new SlotRegistry({ max: 2 }); mine.add({ id: 'new-osborn', llm: {}, isFocused: false, workingDir: '/w' })
@@ -47,7 +48,7 @@ t('a [NOTIFICATION] never steers a turn, like [MEETING and [SYSTEM; a user turn 
   assert.equal(steersTurn('have osborn fix it'), true)
   assert.equal(steersTurn(getSpokeReport({ project: 'p', sessionId: 'abcdef123', status: 'done', summary: 'ok' })), false)
 })
-t('folders that no longer exist are dropped before the ambiguity check; a session active moments ago is 409', () => {
+t('folders that no longer exist are dropped before the ambiguity check; a session active moments ago is refused', () => {
   const gone = [...sessions, s('web-gone', '/gone/osborn', 9)]
   assert.equal(resolveDispatchTarget('osborn', gone, free()).sessionId, 'new-osborn')
   const slots = new SlotRegistry({ max: 2 })
@@ -83,12 +84,24 @@ t('control, bidi and C1 characters are refused; newline and tab are fine', () =>
   assert.equal(dispatchFieldsOk('', 'x'), false); assert.equal(dispatchFieldsOk('p', '  '), false); assert.equal(dispatchFieldsOk(1, 'x'), false)
   assert.equal(dispatchFieldsOk('p'.repeat(101), 'x'), false); assert.equal(dispatchFieldsOk('p', 'x'.repeat(8001)), false)
 })
-t('the tool is on the hub only: slots are built without mcpServers, and it is not in allowedTools', () => {
+t('the hub\'s query options include the dispatch tool (fresh per query); a slot\'s do not', async () => {
+  const sent: string[][] = []
+  const hubTools = dispatchServers(async (p, i) => { sent.push([p, i]); return 'ok' })
+  const hub = hubMcpServers(hubTools)!
+  assert.deepEqual(Object.keys(hub), ['dispatch'])
+  const inst = (hub.dispatch as any).instance
+  assert.deepEqual(Object.keys(inst._registeredTools), ['send'], 'mcp__dispatch__send once the SDK prefixes it')
+  assert.equal(DISPATCH_TOOL, 'mcp__dispatch__send')
+  assert.notEqual((hubMcpServers(hubTools)!.dispatch as any).instance, inst, 'a new instance for every query')
+  const res = await inst._registeredTools.send.handler({ project: 'osborn', instruction: 'x' }, {})
+  assert.equal(res.content[0].text, 'ok'); assert.deepEqual(sent, [['osborn', 'x']])
+  assert.equal(hubMcpServers(undefined), undefined, 'a slot passes no hubTools')
   const idx = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf-8')
-  assert.doesNotMatch(idx.slice(idx.indexOf('const bgLLM = createClaudeLLM('), idx.indexOf('const slot = slots.add(')), /mcpServers/)
-  assert.doesNotMatch(idx.slice(idx.indexOf('const bgSdkOptions'), idx.indexOf('slot.emitter = bgEmitter')), /mcpServers/)
-  assert.match(idx, /mcpServers\[DISPATCH_SERVER\] = createSdkMcpServer/)
-  assert.doesNotMatch(readFileSync(new URL('../src/claude-llm.ts', import.meta.url), 'utf-8'), /mcp__dispatch/)
+  assert.doesNotMatch(idx.slice(idx.indexOf('const bgLLM = createClaudeLLM('), idx.indexOf('const slot = slots.add(')), /hubTools|mcpServers/)
+  assert.match(idx.slice(idx.indexOf('const directLLM = llmOverride'), idx.indexOf('const directLLM = llmOverride') + 400), /hubTools,/)
+  const llm = readFileSync(new URL('../src/claude-llm.ts', import.meta.url), 'utf-8')
+  assert.match(llm, /hubMcpServers\(this\.#opts\.hubTools\)/)
+  assert.doesNotMatch(llm, /mcp__dispatch/, 'not in allowedTools')
 })
 t('a follow-up to a session our freed slot just wrote is not refused as live elsewhere', () => {
   const now = Date.UTC(2026, 11, 1)

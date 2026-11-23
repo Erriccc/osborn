@@ -211,7 +211,7 @@ const projectKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, 
 /**
  * The newest session whose project folder name matches `project` (case and punctuation ignored).
  * Two different folders with that name are ambiguous; the focused session, a busy slot or a full
- * slot cap are refused with 409. `sessions` is listAllClaudeSessions' output.
+ * slot cap are refused. `sessions` is listAllClaudeSessions' output.
  */
 export function resolveDispatchTarget(
   project: string,

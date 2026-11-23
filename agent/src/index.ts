@@ -28,7 +28,8 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
 import { randomUUID, randomBytes, createHmac } from 'node:crypto'
-import { DISPATCH_SERVER, dispatchFieldsOk } from './dispatch.js'
+import { dispatchFieldsOk } from './dispatch.js'
+import { dispatchServers } from './dispatch-tool.js'
 import { newCanvasKey, secretMatches, withCanvasKey, canvasRouteAllowed, ttsLineSig } from './canvas-key.js'
 import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
@@ -86,7 +87,6 @@ import { matchVoiceAction, phoneMayChangeMode, promptHeard, sayBlocked, sayModeC
 import { readVolumeSyncStatus } from './volume-sync-status.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
-import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
 import { closeSessionBounded } from './lib/settle-within.js'
 
 // ============================================================
@@ -3262,9 +3262,9 @@ async function main() {
     }, 5_000)
   }
 
-  // The hub's `dispatch` tool (dispatch.ts): an in-process MCP tool, so a call is structured input that the
-  // permission dialog describes as it will run. Not in allowedTools, so canUseTool and the approval mode
-  // apply. Added to the hub's mcpServers only; the slots above are built without any.
+  // The hub's `dispatch` tool (dispatch.ts, dispatch-tool.ts): an in-process MCP tool, so a call is structured
+  // input that the permission dialog describes as it will run. Not in allowedTools, so canUseTool and the
+  // approval mode apply. Handed to the hub's ClaudeLLM as `hubTools` (createDirectSession); a slot gets none.
   async function dispatchByName(project: string, instruction: string): Promise<string> {
     if (!dispatchFieldsOk(project, instruction)) return 'Not sent: project and instruction must be plain text with no control characters.'
     const pick = resolveDispatchTarget(project.trim(), await listFreshSessions({ invalidate: invalidateSessionListCache, list: () => listAllClaudeSessions(1000) }), {
@@ -3276,12 +3276,7 @@ async function main() {
     const sent = await dispatchToSlot(pick.sessionId, instruction.trim(), { cwd, report: { project: pick.project } })
     return sent.ok ? `Sent to ${pick.project}. Its result comes back as a notification.` : `Not sent: ${sent.error}`
   }
-  mcpServers[DISPATCH_SERVER] = createSdkMcpServer({
-    name: DISPATCH_SERVER,
-    tools: [tool('send', "Send a task to another project's own session; the result comes back to you as a notification.",
-      { project: z.string().describe("the project's folder name"), instruction: z.string().describe('the task, self-contained: that session has none of this conversation') },
-      async ({ project, instruction }) => ({ content: [{ type: 'text' as const, text: await dispatchByName(project, instruction) }] }))],
-  })
+  const hubTools = dispatchServers(dispatchByName)
 
   let localParticipant: LocalParticipant | null = null
   let agentState = 'initializing'
@@ -4764,6 +4759,7 @@ async function main() {
       workingDirectory: workingDir,
       sessionBaseDir,
       mcpServers,
+      hubTools,
       resumeSessionId,
       voiceMode: 'direct',
       skipTTSQueue: true,
@@ -7319,7 +7315,7 @@ async function main() {
       // ============================================================
       // MCP SERVER TOGGLE HANDLERS
       // ============================================================
-      else if (data.type === 'mcp_toggle' && currentLLM && data.serverKey !== DISPATCH_SERVER) {  // the hub's own dispatch tool is not a toggle
+      else if (data.type === 'mcp_toggle' && currentLLM) {
         const serverKey = data.serverKey as string
         const enabled = data.enabled as boolean
         console.log(`🔌 MCP toggle: ${serverKey} → ${enabled ? 'ON' : 'OFF'}`)
