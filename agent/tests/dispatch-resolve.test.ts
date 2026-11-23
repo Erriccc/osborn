@@ -108,6 +108,11 @@ t('only the skill\'s exact command is parsed; every other placeholder shape is n
     skillCmd('{"project":"a","instruction":"b"}', 'x\\"y'), skillCmd('{"project":"a","instruction":"b"}', '"-o" "/tmp/x"'), skillCmd('{"project":"a","instruction":"b"}', '"--url" "http://x"'), skillCmd('{"project":"a","instruction":"b"}', "'-K' cfg"),
     skillCmd('{"project":"a","instruction":"b\\nEOF\\nrm"}').replace('\\n', '\n'),
     skillCmd('{"project":"a\\u0000","instruction":"b"}')]
+  const g = skillCmd('{"project":"a","instruction":"b"}')
+  bad.push(g.replace(` -H "Authorization: Bearer $OSBORN_SYNC_TOKEN"`, ''),
+    g.replace(`-H 'Content-Type: application/json' `, `-H 'Content-Type: application/json' -H 'Content-Type: application/json' `),
+    g.replace(`-H 'Content-Type: application/json'`, '-H @-').replace('--data-binary @-', "--data-binary 'Content-Type: application/json'"),
+    skillCmd(`{"project":"a","instruction":"${DISPATCH_PLACEHOLDER}"}`), skillCmd(`{"project":"${DISPATCH_PLACEHOLDER}","instruction":"b"}`))
   bad.forEach((c, i) => assert.equal(parseDispatchCurl(c), null, `bad #${i}`))
 })
 t('the own-API auto-approve never covers a command with the placeholder, and still covers canvas/tts/noise-cancel', () => {

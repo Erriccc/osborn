@@ -2797,7 +2797,7 @@ class ClaudeLLMStream extends llm.LLMStream {
           
           // A dispatch is labelled and keyed only in the skill's exact shape; any other placeholder command is refused unseen.
           if ((toolName as string) === 'Bash' && hasDispatchPlaceholder(String((input as any)?.command || '')) && !parseDispatchCurl(String((input as any).command))) {
-            return { behavior: 'deny', message: 'A dispatch must be the dispatch skill\'s exact command (one curl, the key header once, one JSON heredoc).' }
+            return { behavior: 'deny', message: 'A dispatch must be the dispatch skill\'s command as written: one line, its three headers once each, `--data-binary @-` and one JSON heredoc ending in EOF.' }
           }
           console.log(`⚠️ Permission needed: ${toolName}`)
           // Track the pending dialog so steer-priority ('now') suppression can
@@ -2809,7 +2809,7 @@ class ClaudeLLMStream extends llm.LLMStream {
             const approved = String((answer as any)?.updatedInput?.command || '')
             if ((toolName as string) === 'Bash' && answer.behavior === 'allow' && hasDispatchPlaceholder(approved)) {
               const body = parseDispatchCurl(approved)  // the body the user saw is the body the key is for
-              if (!body) return { behavior: 'deny', message: 'A dispatch must be the dispatch skill\'s exact command.' }
+              if (!body) return { behavior: 'deny', message: 'A dispatch must be the dispatch skill\'s command as written.' }
               return { ...answer, updatedInput: { ...(answer as any).updatedInput, command: approved.split(DISPATCH_PLACEHOLDER).join(dispatchNonces.mint(dispatchBodyHash(body.project, body.instruction))) } }
             }
             return answer

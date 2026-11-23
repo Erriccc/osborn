@@ -19,7 +19,7 @@ EOF
 
 - `project` is the project's folder name as the user said it ("osborn", "audos-com"). The newest session in that folder runs the task.
 - `instruction` must stand alone: the other session has none of this conversation. Say what to change, where, and how to know it worked.
-- Keep the command exactly in this shape: one line, the key header once, one JSON heredoc ending in `EOF`, no backslashes. `__OSBORN_DISPATCH_APPROVAL__` is a marker, not a secret. Only this shape is shown to the user (project and instruction, as sent) and given a key; any other command with the marker is refused.
+- Keep the command as written: one line, its three headers once each, `--data-binary @-` and one JSON heredoc ending in `EOF`, no backslashes. `__OSBORN_DISPATCH_APPROVAL__` is a marker, not a secret. Only this shape is shown to the user (project and instruction, as sent) and given a key; any other command with the marker is refused.
 - The user is asked for every dispatch (the approval mode applies; in auto-review Bash is always high risk, so only an allow-all session skips the question). The approved command gets a one-time key valid for 2 minutes and for that exact project and instruction. This is a consent step for a cooperative hub, not a sandbox: the hub's Bash is pre-approved in this product, and any process of the same user can read the key from curl's arguments while it runs. A background session has no approval path and never dispatches; never use this skill from one.
 - Answer `{"status":"sent"}` with one short line: "Sent to <project>." Do not wait for it.
 
