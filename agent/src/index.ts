@@ -721,7 +721,7 @@ function startApiServer(workingDir: string, port: number): void {
       }
       try {
         const limit = Math.min(parseInt(url.searchParams.get('limit') || '500', 10), 1000)
-        const sessions = await listAllClaudeSessions(limit)
+        const sessions = await listAllClaudeSessions(limit, false, { countInBackground: true })
         const payload = {
           // The agent's working directory at launch — the BASE LAYER of all
           // project organization. The dashboard groups sessions relative to

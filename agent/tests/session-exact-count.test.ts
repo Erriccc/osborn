@@ -2,7 +2,7 @@
 // still being written (live) keeps its sampled count instead of being recounted every turn.
 // npx tsx agent/tests/session-exact-count.test.ts
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -23,8 +23,8 @@ writeFileSync(live, rows.join('\n') + '\n')
 const hourAgo = new Date(Date.now() - 3600_000)
 utimesSync(idle, hourAgo, hourAgo)
 
-const { listAllClaudeSessions } = await import('../src/config.js')
-const count = async (id: string) => ((await listAllClaudeSessions(10)) as any[]).find((s) => s.filePath === id).messageCount
+const { listAllClaudeSessions, invalidateSessionListCache } = await import('../src/config.js')
+const count = async (id: string) => ((await listAllClaudeSessions(10, false, { countInBackground: true })) as any[]).find((s) => s.filePath === id).messageCount
 assert.ok((await count(idle)) < 200, 'sampled lower bound first')
 let real = 0
 for (let i = 0; i < 100 && real !== 200; i++) {
@@ -35,4 +35,17 @@ assert.equal(real, 200, 'the background pass supplies the real turn count')
 assert.ok((await count(live)) < 200, 'a file written in the last few minutes is not counted yet')
 const manifest = JSON.parse(readFileSync(join(home, '.claude', 'session-manifest.json'), 'utf-8'))
 assert.equal(manifest.entries[idle].exact, true, 'the count is persisted, so a restart serves it')
+// A counted session that gains a turn keeps its count as a floor, so the list never drops back to the sample.
+appendFileSync(idle, row('user', 'one more') + '\n')
+invalidateSessionListCache()
+assert.ok((await count(idle)) >= 200, 'a counted session that grew does not fall back to the sampled count')
+// The voice-connect sweep (no countInBackground) never starts the count.
+const sweepDir = join(dir, '66666666-6666-4666-8666-666666666666.jsonl')
+writeFileSync(sweepDir, rows.join('\n') + '\n')
+utimesSync(sweepDir, hourAgo, hourAgo)
+invalidateSessionListCache()
+const sweep = ((await listAllClaudeSessions(10)) as any[]).find((s) => s.filePath === sweepDir)
+await new Promise((r) => setTimeout(r, 1500))
+invalidateSessionListCache()
+assert.ok(sweep.messageCount < 200 && ((await listAllClaudeSessions(10)) as any[]).find((s) => s.filePath === sweepDir).messageCount < 200, 'the connect sweep does not count in the background')
 console.log('session-exact-count: ok')
