@@ -5863,7 +5863,7 @@ async function main() {
       console.log('⏭️ join superseded by a newer join — closing the session it built')
       await closeSessionBounded(session)
       try { session.removeAllListeners() } catch {}
-      try { myLLM?.abortQuery?.() ?? myLLM?.abortAgent?.() } catch {}
+      try { cancelPushOf(myLLM); myLLM?.abortQuery?.() ?? myLLM?.abortAgent?.() } catch {}
       if (currentLLM === myLLM) currentLLM = null
       return
     }
