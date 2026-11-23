@@ -13,7 +13,7 @@ import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, PHONE_TOOLS_DENIED } from './prompts.js'
-import { hubMcpServers } from './dispatch-tool.js'
+import { dispatchCallRefusal } from './dispatch.js'
 import { steersTurn } from './content/transcript-sanitizer.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
@@ -2698,7 +2698,7 @@ class ClaudeLLMStream extends llm.LLMStream {
         permissionMode: this.#opts.permissionMode,
         allowedTools,
         // Only the hub's own tools (not allowed, so each call asks); the config/toggle servers stay inert here.
-        ...(this.#opts.hubTools ? { mcpServers: hubMcpServers(this.#opts.hubTools) } : {}),
+        ...(this.#opts.hubTools ? { mcpServers: this.#opts.hubTools() } : {}),
         // model: this.#opts.model || 'haiku', // haiku for speed with limited tools, sonnet for full research capabilities (including tool use trace in response)
         // Turbo: when on, override main model to FAST_MODEL regardless of config.
         // model: this.#llmRef.turbo ? FAST_MODEL : (this.#opts.model || 'claude-opus-4-8[1m]'), // prev
@@ -2824,6 +2824,13 @@ class ClaudeLLMStream extends llm.LLMStream {
                 console.log(`📞 Phone call: denied ${toolName} (phone tools are off)`)
                 this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: 'Tools are off on a phone call.', agent: agentType ?? 'main' })
                 return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: PHONE_TOOLS_DENIED }
+              }
+
+              // Sub-agents inherit every tool, but only the main conversation may dispatch.
+              const dispatchRefusal = dispatchCallRefusal(toolName, agentType)
+              if (dispatchRefusal) {
+                this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: dispatchRefusal, agent: agentType })
+                return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: dispatchRefusal }
               }
 
               // Spoken-progress cadence + runaway backstop (main orchestrator only).

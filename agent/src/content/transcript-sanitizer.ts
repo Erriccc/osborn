@@ -109,8 +109,14 @@ export { redactSecrets, detectSecrets } from './secret-rules.js'
 
 /** Injected turns that fold into the live turn instead of aborting or enriching it:
  *  meeting chunks, system notes, spoke reports. */
-const NO_STEER_PREFIXES = ['[MEETING', '[SYSTEM', '[NOTIFICATION']
-export const steersTurn = (userText: string): boolean => !NO_STEER_PREFIXES.some((p) => userText.startsWith(p))
+const NO_STEER_PREFIXES: RegExp[] = [
+  // [SYSTEM], [SYSTEM — SILENT CONTROL MESSAGE …], [SYSTEM: …], [SYSTEM - …];
+  // NOT a real message that merely starts with "[SYSTEM design] …".
+  /^\[SYSTEM(?:\]|\s*[—:-])/,
+  /^\[MEETING —/,
+  /^\[NOTIFICATION\]/,
+]
+export const steersTurn = (userText: string): boolean => !NO_STEER_PREFIXES.some((re) => re.test(userText))
 
 /** Rule 1 — leading markers whose entries are DROPPED whole. */
 const DROP_PREFIXES: RegExp[] = [
@@ -125,11 +131,8 @@ const DROP_PREFIXES: RegExp[] = [
   /^\[favorited\]/,
   /^\[welcome-back\]/,
   // Voice-queue injections (index.ts filters these from the echo too).
-  /^\[(?:SCRIPT|PROACTIVE|NOTIFICATION)\]/,
-  // [SYSTEM], [SYSTEM — SILENT CONTROL MESSAGE …], [SYSTEM: …], [SYSTEM - …];
-  // NOT a real message that merely starts with "[SYSTEM design] …".
-  /^\[SYSTEM(?:\]|\s*[—:-])/,
-  /^\[MEETING —/,
+  /^\[(?:SCRIPT|PROACTIVE)\]/,
+  ...NO_STEER_PREFIXES,
   /^This session is being continued/,
   /^<system-reminder>/,
   // Pasted "[hh:mm] System:/You:/Osborn:" transcript blocks.

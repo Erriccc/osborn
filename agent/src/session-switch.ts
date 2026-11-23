@@ -18,9 +18,8 @@
  * session is never 'close'd here; it is 'background'.
  */
 
-import { basename, dirname, isAbsolute } from 'node:path'
+import { dirname, isAbsolute } from 'node:path'
 import { projectPathToSlug } from './session-access.js'
-import type { AdmitResult } from './slot-manager.js'
 
 export interface SessionSwitchState {
   /** Session id the live query reported via SDK init (null until the first init). */
@@ -192,52 +191,6 @@ export async function resolveSessionCwd(
   let c: string | null | undefined = null
   try { c = await deps.lookupCwd(sessionId) } catch { c = null }
   return c && deps.exists(sessionId, c) ? c : null
-}
-
-// ── Voice dispatch: project name → the spoke session to run ────────────────
-
-/** The session list read fresh: the cache can be minutes old, and the live-elsewhere check compares mtimes. */
-export async function listFreshSessions<T>(deps: { invalidate: () => void; list: () => Promise<T[]> }): Promise<T[]> {
-  deps.invalidate()
-  return deps.list()
-}
-
-/** Flat shape: the agent builds without strictNullChecks, so a union would not narrow. */
-export interface DispatchTarget { ok: boolean; sessionId?: string; cwd?: string; project?: string; error?: string }
-
-const DISPATCH_LIVE_WINDOW_MS = 3 * 60_000
-const projectKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '')
-
-/**
- * The newest session whose project folder name matches `project` (case and punctuation ignored).
- * Two different folders with that name are ambiguous; the focused session, a busy slot or a full
- * slot cap are refused. `sessions` is listAllClaudeSessions' output.
- */
-export function resolveDispatchTarget(
-  project: string,
-  sessions: Array<{ sessionId: string; cwd: string; timestamp: Date }>,
-  deps: { seat: (id: string) => AdmitResult; slotState: (id: string) => 'none' | 'idle' | 'busy'; dirExists: (cwd: string) => boolean; now?: number; ownWriteAt?: (id: string) => number | undefined },
-): DispatchTarget {
-  const want = projectKey(project || '')
-  if (!want) return { ok: false, error: 'name the project to send this to' }
-  const hits = sessions.filter((s) => s.cwd && projectKey(basename(s.cwd)) === want && deps.dirExists(s.cwd))
-    .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
-  if (!hits.length) return { ok: false, error: `no session found for a project called "${project}"` }
-  const folders = [...new Set(hits.map((h) => h.cwd))]
-  if (folders.length > 1) return { ok: false, error: `"${project}" matches ${folders.length} folders (${folders.join(', ')}); say which one` }
-  const pick = hits[0]
-  const seat = deps.seat(pick.sessionId)
-  if (!seat.ok) {
-    if (seat.reason !== 'duplicate') return { ok: false, error: seat.error }
-    if (deps.slotState(pick.sessionId) === 'busy') return { ok: false, error: `${basename(pick.cwd)} is still working on an earlier task` }
-  }
-  // Written to moments ago and not by our own slot: probably open in a terminal, and a second process resuming it corrupts the transcript.
-  const own = deps.ownWriteAt?.(pick.sessionId)  // the last write was our own freed slot's
-  const ours = own !== undefined && pick.timestamp.getTime() <= own + 5_000
-  if (seat.ok && !ours && (deps.now ?? Date.now()) - pick.timestamp.getTime() < DISPATCH_LIVE_WINDOW_MS) {
-    return { ok: false, error: `the newest ${basename(pick.cwd)} session was active a moment ago and may be open elsewhere; close it or try again in a few minutes` }
-  }
-  return { ok: true, sessionId: pick.sessionId, cwd: pick.cwd, project: basename(pick.cwd) }
 }
 
 /**

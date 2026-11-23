@@ -1,10 +1,9 @@
 // Voice dispatch: project name -> session, the hub-only dispatch tool, and spoke reports never steering a turn.
 // Run: npx tsx agent/tests/dispatch-resolve.test.ts
 import assert from 'node:assert/strict'
-import { resolveDispatchTarget, listFreshSessions } from '../src/session-switch.js'
 import { SlotRegistry } from '../src/slot-manager.js'
-import { dispatchServers, hubMcpServers } from '../src/dispatch-tool.js'
-import { DISPATCH_TOOL, dispatchFieldsOk, describeDispatch } from '../src/dispatch.js'
+import { dispatchServers } from '../src/dispatch-tool.js'
+import { DISPATCH_TOOL, DISPATCH_SERVER, DISPATCH_TOOL_NAME, dispatchFieldsOk, dispatchCallRefusal, resolveDispatchTarget, spokePhoneNotice } from '../src/dispatch.js'
 import { getSpokeReport } from '../src/prompts.js'
 import { steersTurn } from '../src/content/transcript-sanitizer.js'
 import { describePermission, speakablePermission } from '../src/approval-policy.js'
@@ -60,50 +59,52 @@ t('folders that no longer exist are dropped before the ambiguity check; a sessio
   slots.add({ id: 'live', llm: {}, isFocused: false, workingDir: '/w' })
   assert.equal(resolveDispatchTarget('live', fresh, { ...free(null, 'idle', slots), now }).ok, true, 'our own slot writing it is fine')
 })
-t('the session list is read fresh before the live-elsewhere check', async () => {
-  const calls: string[] = []
-  const out = await listFreshSessions({ invalidate: () => calls.push('invalidate'), list: async () => { calls.push('list'); return [1] } })
-  assert.deepEqual(calls, ['invalidate', 'list']); assert.deepEqual(out, [1])
-  const idx = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf-8')
-  assert.match(idx, /resolveDispatchTarget\(project\.trim\(\), await listFreshSessions\(\{ invalidate: invalidateSessionListCache/)
-})
-t('the dispatch tool is described from its structured input and is high risk', () => {
-  assert.equal(DISPATCH_TOOL, 'mcp__dispatch__send')
-  const input = { project: 'osborn', instruction: 'x'.repeat(200) }
-  assert.equal(describePermission(DISPATCH_TOOL, input), `Start a background session in osborn: ${'x'.repeat(120)}...`)
-  assert.equal(describeDispatch({ project: 'p'.repeat(70), instruction: 'a\n b' }), `Start a background session in ${'p'.repeat(60)}...: a b`)
-  assert.match(speakablePermission(DISPATCH_TOOL, input), /^start a background session in osborn/)
+t('the dispatch tool shows all of what will be sent, tells the phone the rest is in the app, and is high risk', () => {
+  assert.equal(DISPATCH_TOOL, `mcp__${DISPATCH_SERVER}__${DISPATCH_TOOL_NAME}`)
+  const long = 'x'.repeat(1900)
+  const input = { project: 'osborn', instruction: long }
+  assert.equal(describePermission(DISPATCH_TOOL, input), `Start a background session in osborn: ${long}\nThe new session runs without asking you again.`, 'the card shows everything that runs')
+  const spoken = speakablePermission(DISPATCH_TOOL, input)
+  assert.match(spoken, /^start a background session in osborn: x+… and more; the full text is in the app\. The new session runs without asking you again$/)
+  assert.ok(spoken.length < 300)
+  assert.equal(speakablePermission(DISPATCH_TOOL, { project: 'p', instruction: 'short' }), 'start a background session in p: short. The new session runs without asking you again')
   assert.equal(classifyRisk(DISPATCH_TOOL, input), 'high', 'auto-review asks')
 })
-t('control, bidi and C1 characters are refused; newline and tab are fine', () => {
+t('control, bidi and C1 characters are refused; newline and tab are fine; the instruction is at most 2000', () => {
   assert.equal(dispatchFieldsOk('osborn', 'fix\nthe\ttypo'), true)
   for (const c of ['\u0000', '\u202e', '\u0085', '\u009b', '\u200f', '\u2067', '\u001b', '\u007f']) {
     assert.equal(dispatchFieldsOk('osborn', `a${c}b`), false, JSON.stringify(c))
     assert.equal(dispatchFieldsOk(`a${c}`, 'b'), false, JSON.stringify(c))
   }
   assert.equal(dispatchFieldsOk('', 'x'), false); assert.equal(dispatchFieldsOk('p', '  '), false); assert.equal(dispatchFieldsOk(1, 'x'), false)
-  assert.equal(dispatchFieldsOk('p'.repeat(101), 'x'), false); assert.equal(dispatchFieldsOk('p', 'x'.repeat(8001)), false)
+  assert.equal(dispatchFieldsOk('p'.repeat(101), 'x'), false); assert.equal(dispatchFieldsOk('p', 'x'.repeat(2000)), true); assert.equal(dispatchFieldsOk('p', 'x'.repeat(2001)), false)
 })
-t('the hub\'s query options include the dispatch tool (fresh per query); a slot\'s do not', async () => {
+t('the hub\'s tool server is a fresh instance per query with the one tool, and its handler forwards the input', async () => {
   const sent: string[][] = []
   const hubTools = dispatchServers(async (p, i) => { sent.push([p, i]); return 'ok' })
-  const hub = hubMcpServers(hubTools)!
-  assert.deepEqual(Object.keys(hub), ['dispatch'])
-  const inst = (hub.dispatch as any).instance
-  assert.deepEqual(Object.keys(inst._registeredTools), ['send'], 'mcp__dispatch__send once the SDK prefixes it')
-  assert.equal(DISPATCH_TOOL, 'mcp__dispatch__send')
-  assert.notEqual((hubMcpServers(hubTools)!.dispatch as any).instance, inst, 'a new instance for every query')
-  const res = await inst._registeredTools.send.handler({ project: 'osborn', instruction: 'x' }, {})
+  const hub = hubTools()
+  assert.deepEqual(Object.keys(hub), [DISPATCH_SERVER])
+  const inst = (hub[DISPATCH_SERVER] as any).instance
+  assert.deepEqual(Object.keys(inst._registeredTools), [DISPATCH_TOOL_NAME])
+  assert.notEqual((hubTools()[DISPATCH_SERVER] as any).instance, inst, 'a new instance for every query')
+  const res = await inst._registeredTools[DISPATCH_TOOL_NAME].handler({ project: 'osborn', instruction: 'x' }, {})
   assert.equal(res.content[0].text, 'ok'); assert.deepEqual(sent, [['osborn', 'x']])
-  assert.equal(hubMcpServers(undefined), undefined, 'a slot passes no hubTools')
-  const idx = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf-8')
-  assert.doesNotMatch(idx.slice(idx.indexOf('const bgLLM = createClaudeLLM('), idx.indexOf('const slot = slots.add(')), /hubTools|mcpServers/)
-  // both places index.ts builds the pipeline hub (connect, recovery) hand it hubTools
-  const sites = [...idx.matchAll(/createPipelineDirectLLM\(\{/g)].map((m) => idx.slice(m.index, m.index! + 400))
-  assert.equal(sites.length, 2); sites.forEach((s) => assert.match(s, /hubTools,/))
-  const llm = readFileSync(new URL('../src/claude-llm.ts', import.meta.url), 'utf-8')
-  assert.match(llm, /hubMcpServers\(this\.#opts\.hubTools\)/)
-  assert.doesNotMatch(llm, /mcp__dispatch/, 'not in allowedTools')
+})
+t('a sub-agent cannot dispatch; the main agent and other tools are not affected', () => {
+  assert.match(dispatchCallRefusal(DISPATCH_TOOL, 'writer')!, /sub-agent/)
+  assert.equal(dispatchCallRefusal(DISPATCH_TOOL, null), null)
+  assert.equal(dispatchCallRefusal('Bash', 'writer'), null)
+})
+t('what goes to the phone has secrets redacted and a bounded length', () => {
+  const key = 'sk-ant-api03-' + 'A1b2C3d4'.repeat(8)
+  const n = spokePhoneNotice('osborn', 'done', `used ${key} to deploy`)
+  assert.ok(!n.includes(key) && n.startsWith('osborn done: '), n)
+  assert.ok(spokePhoneNotice('osborn', 'done', 'y'.repeat(900)).length < 330)
+  assert.match(spokePhoneNotice('osborn', 'stopped', 'x'), /stopped/)
+})
+t('a typed message that merely starts with [SYSTEM or [MEETING still steers; injected notes do not', () => {
+  for (const typed of ['[SYSTEM design] fix login', '[MEETING notes] summarize', '[NOTIFICATIONS] on', 'fix the bug']) assert.equal(steersTurn(typed), true, typed)
+  for (const injected of ['[SYSTEM] note', '[SYSTEM — SILENT CONTROL MESSAGE] x', '[SYSTEM: x]', '[MEETING — bot1]:\nhi', '[NOTIFICATION] Spoke report']) assert.equal(steersTurn(injected), false, injected)
 })
 t('a follow-up to a session our freed slot just wrote is not refused as live elsewhere', () => {
   const now = Date.UTC(2026, 11, 1)

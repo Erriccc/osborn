@@ -9,7 +9,7 @@
  * - the session's always-allow list ("Always" in the browser, keypad 3) and what it covers.
  */
 import { classifyRisk, type RiskTier } from './risk-tier.js'
-import { DISPATCH_TOOL, describeDispatch } from './dispatch.js'
+import { DISPATCH_TOOL, describeDispatch, speakableDispatch } from './dispatch.js'
 
 /** An answer to a pending permission, from any surface. */
 export type PermissionAnswer = 'allow' | 'deny' | 'always_allow'
@@ -97,7 +97,7 @@ export function speakablePermission(toolName: string, input: ToolInput): string 
   const cmd = str(input?.command).trim()
   const file = str(input?.file_path) || str(input?.notebook_path)
   const url = str(input?.url)
-  if (toolName === DISPATCH_TOOL) return describeDispatch(input).replace(/^Start/, 'start')
+  if (toolName === DISPATCH_TOOL) return speakableDispatch(input)
   if (toolName === 'Bash' && cmd) {
     const words = cmd.split(/\s+/).slice(0, 8).join(' ')
     return `run the command ${words}${cmd.split(/\s+/).length > 8 ? ' and so on' : ''}`

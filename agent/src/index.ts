@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
 import { randomUUID, randomBytes, createHmac } from 'node:crypto'
-import { dispatchFieldsOk } from './dispatch.js'
+import { dispatchFieldsOk, resolveDispatchTarget, spokePhoneNotice } from './dispatch.js'
 import { dispatchServers } from './dispatch-tool.js'
 import { newCanvasKey, secretMatches, withCanvasKey, canvasRouteAllowed, ttsLineSig } from './canvas-key.js'
 import httpProxy from 'http-proxy'
@@ -58,7 +58,7 @@ import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { loopIds } from './loops-ledger.js'
-import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir, resolveDispatchTarget, listFreshSessions } from './session-switch.js'
+import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir, } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
@@ -3218,7 +3218,16 @@ async function main() {
     }
     const slot = slots.get(targetSessionId)
     if (!slot || !slot.emitter || !slot.sdkOptions) return fail('Slot not ready')
-    if (opts.report && slot.reportPending) return fail('That project is already working on an earlier dispatch')
+    if (opts.report) {
+      if (slot.reportPending) return fail('That project is already working on an earlier dispatch')
+      slot.reportPending = true  // claimed before any await, so a second call cannot slip in
+    }
+    // A cold slot first answers its [BACKGROUND_INIT] kickoff; the instruction waits for that, so the two cannot merge into one turn.
+    for (let i = 0; !slot.kickoffDone && i < 300; i++) {
+      if (slots.get(targetSessionId) !== slot) { slot.reportPending = false; return fail('Slot stopped before it started') }
+      await new Promise((r) => setTimeout(r, 200))
+    }
+    if (!slot.kickoffDone) { slot.reportPending = false; return fail('Slot did not start within a minute') }
     slot.dispatchInFlight = true
     if (opts.report) reportSlotWhenIdle(slot, opts.report.project, spawned)
     // Reuse the cold-start emitter — pushMessage's fast path ignores a fresh emitter once the
@@ -3257,7 +3266,7 @@ async function main() {
           currentLLM!.chat({ chatCtx: ctx })
         } catch (err) { console.warn(`⚠️ Spoke report failed: ${(err as Error).message}`) }
       } else {
-        void notifyPhone(status === 'timed_out' ? `${project} is still working after an hour.` : status === 'stopped' ? `${project} was stopped before it finished (the session ended).` : `${project} ${status}: ${last.trim().slice(0, 300) || 'no final message'}`)
+        void notifyPhone(spokePhoneNotice(project, status, last))
       }
     }, 5_000)
   }
@@ -3267,7 +3276,8 @@ async function main() {
   // approval mode apply. Handed to the hub's ClaudeLLM as `hubTools` (createDirectSession); a slot gets none.
   async function dispatchByName(project: string, instruction: string): Promise<string> {
     if (!dispatchFieldsOk(project, instruction)) return 'Not sent: project and instruction must be plain text with no control characters.'
-    const pick = resolveDispatchTarget(project.trim(), await listFreshSessions({ invalidate: invalidateSessionListCache, list: () => listAllClaudeSessions(1000) }), {
+    invalidateSessionListCache()  // the cache can be minutes old and the live-elsewhere check compares mtimes
+    const pick = resolveDispatchTarget(project.trim(), await listAllClaudeSessions(1000), {
       seat: (id) => slots.admit(id), slotState: targetSlotState, dirExists: existsSync, ownWriteAt: (id) => spokeFreedAt.get(id),
     })
     if (!pick.ok) return `Not sent: ${pick.error}`
