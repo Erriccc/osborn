@@ -1,7 +1,7 @@
 /**
  * Shared text-model provider resolution for the platform-side content routes
  * (/api/content/refine, /api/content/chat). Mirrors the agent-side house demo
- * pass: Fireworks first (pay-per-use, gpt-oss-120b), z.ai GLM subscription as
+ * pass: Fireworks first (pay-per-use, glm-5p3-flash), z.ai GLM subscription as
  * the fallback so content ops keep working without a Fireworks key.
  * Embeddings are NOT covered — the z.ai pass has no embedding model; the agent
  * embedder stays on Fireworks.
@@ -19,7 +19,7 @@ export function resolveTextProvider(): TextProvider | null {
     return {
       url: 'https://api.fireworks.ai/inference/v1/chat/completions',
       key: fw,
-      model: 'accounts/fireworks/models/gpt-oss-120b',
+      model: 'accounts/fireworks/models/glm-5p3-flash',
       name: 'Fireworks',
     }
   }

@@ -4632,6 +4632,8 @@ async function main() {
     console.log(`🧠⚡ [FAST_BRAIN ${r.type.toUpperCase()} +${r.elapsedMs}ms]: "${r.answer.substring(0, 60)}"`)
     // A hand-off to the main agent has nothing to say yet; its answer follows.
     if (r.type === 'research_needed') return
+    // A failed lookup is a log line, not a chat message: "Search error occurred." under "provisional" tells the user nothing.
+    if (r.type === 'error') return
     sendToFrontend({
       type: 'fast_brain_response', text: r.answer, responseType: r.type,
       elapsedMs: r.elapsedMs, question: r.question, toolsUsed: r.toolsUsed,

@@ -48,15 +48,15 @@ export interface AgentControlCallbacks {
 // Model reads from env var (set by main process from getInferenceConfig) or DEFAULT_CONFIG default.
 // To switch model: update DEFAULT_CONFIG.inference.fastBrainModel in config.ts, or set OSBORN_FAST_BRAIN_MODEL env var.
 // Provider switch: Fireworks (OpenAI-compatible) when FIREWORKS_API_KEY is set, else
-// OpenRouter. Default Fireworks model: gpt-oss-120b — $0.15/M (docs.fireworks.ai/
-// serverless/pricing, verified 2026-10-22), strictly cheaper than the old OpenRouter
-// deepseek-chat ($0.257/M in, $1.029/M out) on BOTH input and output, with strong
-// OpenAI-style function calling (the fast brain is a tool loop). Same-price alternate:
-// accounts/fireworks/models/glm-5p3-flash ($0.15/M) via OSBORN_FAST_BRAIN_MODEL.
+// OpenRouter. Default Fireworks model: glm-5p3-flash ($0.15/M) with OpenAI-style function
+// calling (the fast brain is a tool loop). gpt-oss-120b was the default until Fireworks began
+// answering it with 404 "Model not found, inaccessible, and/or not deployed" (seen 2026-11-23
+// on the platform key; glm-5p3-flash answered 200), which failed every fast-brain turn.
+// Override with OSBORN_FAST_BRAIN_MODEL.
 const FIREWORKS = !!process.env.FIREWORKS_API_KEY
 const PROVIDER_NAME = FIREWORKS ? 'Fireworks' : 'OpenRouter'
 const OPENROUTER_MODEL = process.env.OSBORN_FAST_BRAIN_MODEL ||
-  (FIREWORKS ? 'accounts/fireworks/models/gpt-oss-120b' : 'deepseek/deepseek-chat')
+  (FIREWORKS ? 'accounts/fireworks/models/glm-5p3-flash' : 'deepseek/deepseek-chat')
 const OPENROUTER_URL = FIREWORKS
   ? 'https://api.fireworks.ai/inference/v1/chat/completions'
   : 'https://openrouter.ai/api/v1/chat/completions'
