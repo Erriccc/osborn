@@ -16,5 +16,7 @@ The meeting cast chain: **cast your tab** (`POST /tab {"op":"cast","i":n}`) → 
 - **Never tunnel a local engine.** ngrok's free tier burned its entire monthly bandwidth cap on ONE continuous-MJPEG demo (`ERR_NGROK_725`, everything 403 until reset), and free URLs rotate every restart.
 - **The sanctioned path**: run the engine on its Fly machine — `:8080` is already public, stable, uncapped.
 
+A driver posting `/canvas` (or `/tts`, `/noise-cancel`) from another machine needs the owner's Bearer token (`Authorization: Bearer <token>`); only a request from the agent's own machine with no browser origin goes without one.
+
 ## Browse requests while casting
 When the canvas is in `stream` mode, "pull up X / show them Y" means: make the STREAMED BROWSER go there (`/act` or `/tab navigate` on the engine). Do NOT flip the canvas to link/web mode — that silently replaces the live browser feed with a static card (observed failure: a "PULLING UP youtube.com" card replaced the stream mid-meeting).
