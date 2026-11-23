@@ -236,6 +236,11 @@ export function isThisMachine(r: { forwarded: boolean; host?: string; remote?: s
   return !r.forwarded && LOOPBACK_HOST.test(r.host || '') && LOOPBACK_ADDR.test(r.remote || '')
 }
 
+/** A request from this machine that no browser page made (no Origin): the agent's own tools. */
+export function localNoBrowser(r: { forwarded: boolean; host?: string; remote?: string; origin?: string }): boolean {
+  return !r.origin && isThisMachine(r)
+}
+
 /** Browser origins allowed to make store writes on a machine with no sync token: a local
  *  page, voice-native.com, or the frontend the agent is configured with. No Origin = not a
  *  browser cross-site request. Also decides which origin the write routes' CORS echoes. */
@@ -268,10 +273,12 @@ function jsonRefusal(contentType: string | undefined): { status: number; error: 
 }
 
 /** Refusal for POST /dispatch, or null. The target slots run with permissions bypassed, so only
- *  this machine's own tools may ask: a loopback request, not forwarded, from no browser page, sending JSON.
+ *  the hub may ask: a loopback request, not forwarded, from no browser page, carrying the per-boot
+ *  dispatch key (slots never get it), sending JSON.
  *  (The token gate, unauthorized(), has already run.) */
-export function dispatchRefusal(r: { forwarded: boolean; host?: string; remote?: string; origin?: string; contentType?: string }): { status: number; error: string } | null {
-  if (!isThisMachine(r) || r.origin) return { status: 403, error: 'dispatch only takes a request from this machine, not from a browser page' }
+export function dispatchRefusal(r: { forwarded: boolean; host?: string; remote?: string; origin?: string; contentType?: string; keyOk: boolean }): { status: number; error: string } | null {
+  if (!localNoBrowser(r)) return { status: 403, error: 'dispatch only takes a request from this machine, not from a browser page' }
+  if (!r.keyOk) return { status: 403, error: 'dispatch is for the voice conversation only (missing or wrong X-Osborn-Dispatch-Key)' }
   return jsonRefusal(r.contentType)
 }
 

@@ -365,6 +365,10 @@ let canvasKey: string | null = null
 // `withToken` a hidden, subscribe-only LiveKit token (`viewer-*`) to watch its
 // broadcast stream. Null when no room is live. Set from main().
 let viewTokenHook: ((withToken: boolean) => Promise<Record<string, unknown> | null>) | null = null
+// Per-boot key for POST /dispatch. The hub's Claude subprocess inherits it; background slots never get it
+// (SLOT_ENV_DENY), so a spoke cannot dispatch further spokes.
+const DISPATCH_KEY = process.env.OSBORN_DISPATCH_KEY || randomBytes(18).toString('hex')
+process.env.OSBORN_DISPATCH_KEY = DISPATCH_KEY
 // POST /dispatch (the hub's voice dispatch to a project's session). Set from main(), where the slots live.
 let dispatchHook: ((project: string, instruction: string) => Promise<{ status: number; body: Record<string, unknown> }>) | null = null
 let leaveRoomHook: ((reason: string) => Promise<void>) | null = null
@@ -1312,21 +1316,21 @@ function startApiServer(workingDir: string, port: number): void {
     // POST /dispatch { project, instruction } → { status: 'sent' } straight away; the result comes back as a hub turn.
     if (req.method === 'POST' && url.pathname === '/dispatch') {
       if (unauthorized()) return
-      const refusal = dispatchRefusal({ forwarded, host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin as string | undefined, contentType: String(req.headers['content-type'] || '') })
+      const refusal = dispatchRefusal({ forwarded, host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin as string | undefined, contentType: String(req.headers['content-type'] || ''), keyOk: secretMatches(DISPATCH_KEY, req.headers['x-osborn-dispatch-key'] as string | undefined) })
       if (refusal) return reply(refusal.status, { error: refusal.error })
-      let body = ''
-      req.on('data', (c) => { if (body.length < 100_000) body += c })
-      req.on('end', async () => {
+      void (async () => {
         try {
-          const { project, instruction } = JSON.parse(body || '{}') as { project?: unknown; instruction?: unknown }
+          const raw = await readBodyCapped(req.iterator({ destroyOnReturn: false }), 100_000)
+          if (raw === null) return reply(413, { error: 'instruction too long' })
+          const { project, instruction } = JSON.parse(raw || '{}') as { project?: unknown; instruction?: unknown }
           if (typeof project !== 'string' || typeof instruction !== 'string' || !project.trim() || !instruction.trim()) return reply(400, { error: 'send {project, instruction} as strings' })
-          if (!dispatchHook) return reply(409, { error: 'no live voice session to dispatch from' })
+          if (!dispatchHook) return reply(503, { error: 'the agent is still starting' })
           const out = await dispatchHook(project.trim(), instruction.trim())
           reply(out.status, out.body)
         } catch (e) {
           reply(400, { error: (e as Error).message })
         }
-      })
+      })()
       return
     }
 
@@ -3226,17 +3230,19 @@ async function main() {
 
   // Push an instruction into a background slot (spawning it first if needed). With `report`, the hub
   // hears the result when the slot goes idle (the Instances panel path passes none and is unchanged).
-  async function dispatchToSlot(targetSessionId: string, instruction: string, opts: { cwd?: string; report?: { project: string } } = {}): Promise<{ ok: boolean; error?: string }> {
-    const fail = (error: string) => { void sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error }); return { ok: false, error } }
+  async function dispatchToSlot(targetSessionId: string, instruction: string, opts: { cwd?: string; report?: { project: string } } = {}): Promise<{ ok: boolean; error?: string; status?: number }> {
+    const fail = (error: string, status = 409) => { void sendToFrontend({ type: 'background_session_error', slotId: targetSessionId, error }); return { ok: false, error, status } }
     const focusedId = currentLLM?.sessionId || currentResumeSessionId || null
     if (targetSessionId === focusedId) return fail('Target is the focused session — use the normal path')
-    if (!slots.has(targetSessionId)) {
-      try { await spawnBackgroundSession(targetSessionId, opts.cwd) } catch (err) { return fail(err instanceof Error ? err.message : String(err)) }
+    const spawned = !slots.has(targetSessionId)
+    if (spawned) {
+      try { await spawnBackgroundSession(targetSessionId, opts.cwd) } catch (err) { return fail(err instanceof Error ? err.message : String(err), 500) }
     }
     const slot = slots.get(targetSessionId)
-    if (!slot || !slot.emitter || !slot.sdkOptions) return fail('Slot not ready')
+    if (!slot || !slot.emitter || !slot.sdkOptions) return fail('Slot not ready', 500)
+    if (opts.report && slot.reportPending) return fail('That project is already working on an earlier dispatch')
     slot.dispatchInFlight = true
-    if (opts.report) reportSlotWhenIdle(slot, opts.report.project)
+    if (opts.report) reportSlotWhenIdle(slot, opts.report.project, spawned)
     // Reuse the cold-start emitter — pushMessage's fast path ignores a fresh emitter once the
     // subprocess exists (see spawnBackgroundSession). NO priority override: slot work is foreground
     // turn work, and a 'now' dispatch would abort the previous instruction mid-flight. Instructions queue/fold.
@@ -3247,8 +3253,9 @@ async function main() {
 
   // The slot's whole turn (writer chain included) is over when busyState().idle, as keepWorkingAfterLeave
   // reads it. The report is a hub turn when a person is in the room, else a phone notice.
-  function reportSlotWhenIdle(slot: SessionSlot, project: string): void {
+  function reportSlotWhenIdle(slot: SessionSlot, project: string, spawned: boolean): void {
     let last = ''
+    slot.reportPending = true
     const onResult = ({ text }: { text: string }) => { if (text) last = text }
     slot.emitter.on('assistant_result', onResult)
     const poll = setInterval(() => {
@@ -3256,7 +3263,11 @@ async function main() {
       if (!gone && !((slot.llm as any).busyState?.()?.idle ?? true)) return
       clearInterval(poll)
       slot.emitter.off('assistant_result', onResult)
-      const status = gone ? 'failed' : 'done'
+      slot.reportPending = false
+      // A hang-up or stop releases the slot on purpose; only a crash is a failure.
+      const status = !gone ? 'done' : slot.released ? 'stopped' : 'failed'
+      // This dispatch made the slot, so it frees the seat (a spoke stays open only when the panel opened it).
+      if (!gone && spawned) { slots.remove(slot.id, slot); void sendToFrontend({ type: 'background_session_stopped', slotId: slot.id }); armAloneTimer() }
       const hubUp = !!currentLLM && !!activeRoom && peopleIn(activeRoom) > 0
       console.log(`📬 [DISPATCH] ${project} ${status}; ${hubUp ? 'telling the hub' : 'notifying the phone'}`)
       if (hubUp) {
@@ -3266,7 +3277,7 @@ async function main() {
           currentLLM!.chat({ chatCtx: ctx })
         } catch (err) { console.warn(`⚠️ Spoke report failed: ${(err as Error).message}`) }
       } else {
-        void notifyPhone(`${project} ${status}: ${last.trim().slice(0, 300) || 'no final message'}`)
+        void notifyPhone(status === 'stopped' ? `${project} was stopped before it finished (the session ended).` : `${project} ${status}: ${last.trim().slice(0, 300) || 'no final message'}`)
       }
     }, 5_000)
   }
@@ -8162,13 +8173,13 @@ async function main() {
 
   dispatchHook = async (project, instruction) => {
     const pick = resolveDispatchTarget(project, await listAllClaudeSessions(1000), {
-      seat: (id) => slots.admit(id), slotState: targetSlotState,
+      seat: (id) => slots.admit(id), slotState: targetSlotState, dirExists: existsSync,
     })
     if (!pick.ok) return { status: pick.status, body: { error: pick.error } }
     const cwd = await resolveCwdForSession(pick.sessionId, pick.cwd)
     if (!cwd) return { status: 404, body: { error: `the ${pick.project} session's folder is gone` } }
     const sent = await dispatchToSlot(pick.sessionId, instruction, { cwd, report: { project: pick.project } })
-    return sent.ok ? { status: 200, body: { status: 'sent', project: pick.project, sessionId: pick.sessionId } } : { status: 409, body: { error: sent.error } }
+    return sent.ok ? { status: 200, body: { status: 'sent', project: pick.project, sessionId: pick.sessionId } } : { status: sent.status ?? 409, body: { error: sent.error } }
   }
 
   viewTokenHook = async (withToken) => {

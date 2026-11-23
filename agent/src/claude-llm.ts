@@ -12,7 +12,8 @@ import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUse
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
-import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, steersTurn, PHONE_TOOLS_DENIED } from './prompts.js'
+import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, PHONE_TOOLS_DENIED } from './prompts.js'
+import { steersTurn } from './content/transcript-sanitizer.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
 import { appendCompactionRecord, countTranscriptRows } from './compaction-log.js'
@@ -2725,8 +2726,8 @@ class ClaudeLLMStream extends llm.LLMStream {
           // only, no shell chaining — not a general curl allowance.
           if ((toolName as string) === 'Bash') {
             const cmd = String((input as any)?.command || '')
-            if (/^\s*curl\b[^;&|]*https?:\/\/(localhost|127\.0\.0\.1):\d+\/(canvas|tts|noise-cancel|dispatch)\b/.test(cmd) && !/[;&|]/.test(cmd)) {
-              console.log(`✅ Auto-approved Bash → own API (canvas/tts/noise-cancel/dispatch path)`)
+            if (/^\s*curl\b[^;&|]*https?:\/\/(localhost|127\.0\.0\.1):\d+\/(canvas|tts|noise-cancel)\b/.test(cmd) && !/[;&|]/.test(cmd)) {
+              console.log(`✅ Auto-approved Bash → own API (canvas/tts/noise-cancel path)`)
               return { behavior: 'allow', updatedInput: input }
             }
           }

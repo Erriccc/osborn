@@ -107,6 +107,11 @@ export { redactSecrets, detectSecrets } from './secret-rules.js'
 // pipeline-direct-llm.ts (read-only) and against the live JSONL.
 // ============================================================================
 
+/** Injected turns that fold into the live turn instead of aborting or enriching it:
+ *  meeting chunks, system notes, spoke reports. */
+const NO_STEER_PREFIXES = ['[MEETING', '[SYSTEM', '[NOTIFICATION']
+export const steersTurn = (userText: string): boolean => !NO_STEER_PREFIXES.some((p) => userText.startsWith(p))
+
 /** Rule 1 — leading markers whose entries are DROPPED whole. */
 const DROP_PREFIXES: RegExp[] = [
   /^<task-notification>/,

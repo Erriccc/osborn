@@ -26,6 +26,7 @@ import type { EventEmitter } from 'node:events'
  */
 export const SLOT_ENV_DENY: ReadonlySet<string> = new Set([
   'OSBORN_SYNC_TOKEN',
+  'OSBORN_DISPATCH_KEY',  // /dispatch's per-boot key: only the hub may dispatch, never a spoke
   'LIVEKIT_API_SECRET',
   'LIVEKIT_API_KEY',
   'PUSHOVER_TOKEN',
@@ -109,6 +110,8 @@ export interface SessionSlot<L extends SlotLLM = SlotLLM> {
   sdkOptions?: any
   dispatchInFlight?: boolean
   kickoffDone?: boolean  // the [BACKGROUND_INIT] ack's assistant_result has been consumed
+  reportPending?: boolean  // a dispatch is waiting to report back to the hub
+  released?: boolean  // dropped on purpose (hang-up, teardown, a stop), not by a failure
 }
 
 export interface SlotListEntry { id: string; isFocused: boolean; workingDir: string; hasSession: boolean }
@@ -189,13 +192,14 @@ export class SlotRegistry<S extends SessionSlot<any> = SessionSlot> {
     const slot = this.#slots.get(id)
     if (!slot || (only && slot !== only)) return undefined
     this.#slots.delete(id)
+    if (!only) slot.released = true
     abortSlot(slot)
     return slot
   }
 
   /** Abort every slot and clear the registry (session end). */
   releaseAll(): void {
-    for (const s of this.#slots.values()) abortSlot(s)
+    for (const s of this.#slots.values()) { s.released = true; abortSlot(s) }
     this.#slots.clear()
   }
 

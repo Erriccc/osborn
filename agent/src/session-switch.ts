@@ -199,6 +199,7 @@ export async function resolveSessionCwd(
 /** Flat shape: the agent builds without strictNullChecks, so a union would not narrow. */
 export interface DispatchTarget { ok: boolean; sessionId?: string; cwd?: string; project?: string; status?: 400 | 404 | 409; error?: string }
 
+const DISPATCH_LIVE_WINDOW_MS = 3 * 60_000
 const projectKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, '')
 
 /**
@@ -209,11 +210,11 @@ const projectKey = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]/g, 
 export function resolveDispatchTarget(
   project: string,
   sessions: Array<{ sessionId: string; cwd: string; timestamp: Date }>,
-  deps: { seat: (id: string) => AdmitResult; slotState: (id: string) => 'none' | 'idle' | 'busy' },
+  deps: { seat: (id: string) => AdmitResult; slotState: (id: string) => 'none' | 'idle' | 'busy'; dirExists: (cwd: string) => boolean; now?: number },
 ): DispatchTarget {
   const want = projectKey(project || '')
   if (!want) return { ok: false, status: 400, error: 'name the project to send this to' }
-  const hits = sessions.filter((s) => s.cwd && projectKey(basename(s.cwd)) === want)
+  const hits = sessions.filter((s) => s.cwd && projectKey(basename(s.cwd)) === want && deps.dirExists(s.cwd))
     .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime())
   if (!hits.length) return { ok: false, status: 404, error: `no session found for a project called "${project}"` }
   const folders = [...new Set(hits.map((h) => h.cwd))]
@@ -223,6 +224,10 @@ export function resolveDispatchTarget(
   if (!seat.ok) {
     if (seat.reason !== 'duplicate') return { ok: false, status: 409, error: seat.error }
     if (deps.slotState(pick.sessionId) === 'busy') return { ok: false, status: 409, error: `${basename(pick.cwd)} is still working on an earlier task` }
+  }
+  // Written to moments ago and not by our own slot: probably open in a terminal, and a second process resuming it corrupts the transcript.
+  if (seat.ok && (deps.now ?? Date.now()) - pick.timestamp.getTime() < DISPATCH_LIVE_WINDOW_MS) {
+    return { ok: false, status: 409, error: `the newest ${basename(pick.cwd)} session was active a moment ago and may be open elsewhere; close it or try again in a few minutes` }
   }
   return { ok: true, sessionId: pick.sessionId, cwd: pick.cwd, project: basename(pick.cwd) }
 }
