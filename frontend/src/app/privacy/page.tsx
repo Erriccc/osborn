@@ -60,10 +60,8 @@ export default function PrivacyPage() {
             <ul className="mt-3 list-disc pl-6 space-y-2 marker:text-[var(--text-muted)]">
               <li>
                 <strong className="text-[var(--text-primary)] font-medium">Account information.</strong>{' '}
-                If you sign in with Google, we store your email address (via our auth
-                provider) so we can identify your account. If you use the no-account
-                &ldquo;connect without account&rdquo; mode, we do not collect account
-                information.
+                We store the email address you sign in with (via our auth
+                provider) so we can identify your account and send you your sign-in code.
               </li>
               <li>
                 <strong className="text-[var(--text-primary)] font-medium">Voice and session data.</strong>{' '}

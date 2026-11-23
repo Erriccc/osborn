@@ -60,14 +60,12 @@ export default function TermsPage() {
 
           <section>
             <h2 className="font-display text-xl sm:text-2xl font-medium text-[var(--text-primary)] tracking-tight">
-              Accounts and the no-account mode
+              Accounts
             </h2>
             <p className="mt-3">
-              You can sign in with Google, or you can use the no-account &ldquo;connect
-              without account&rdquo; mode. If you create an account, you are responsible for
-              the activity that happens under it and for keeping access to it secure. If you
-              use the no-account mode, some features — such as saved history across devices —
-              may not be available.
+              You sign in with your email address and a one-time code we send you. You are
+              responsible for the activity that happens under your account and for keeping
+              access to your email secure.
             </p>
           </section>
 
