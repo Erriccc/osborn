@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import { readFileSync, existsSync, lstatSync, symlinkSync } from 'fs'
 import os from 'os'
+import { superviseChild } from './child-exit.js'
 
 // On Fly machines, home is /root (ephemeral) but sessions live on /workspace/.claude.
 // Recreate the symlink on every startup so sessions survive image updates.
@@ -128,25 +129,11 @@ if (entry?.src) {
   process.exit(1)
 }
 
-child.on('error', (err) => {
-  console.error('Failed to start agent:', err.message)
-  process.exit(1)
-})
-
-// Stop signals (Fly stop, Ctrl+C) go to the agent, which files its open follow-through
-// items before it exits (#378). `stopping` marks the stop as intended (#450).
-let stopping = false
-for (const sig of ['SIGINT', 'SIGTERM']) {
-  process.on(sig, () => {
-    stopping = true
-    try { child.kill(sig) } catch {}
-  })
-}
-
 /**
- * The agent died without filing (heap-OOM abort, kill, crash): file the last
- * foreground session's open items from a detached worker. Resolves once the
- * worker has spawned (or failed, or 2s passed); never throws.
+ * The agent died without filing its open follow-through items (heap-OOM abort, kill,
+ * crash; #378): file the last foreground session's items from a detached worker.
+ * A stop signal reaches the agent, which files them itself and exits 0. Resolves once
+ * the worker has spawned (or failed, or 2s passed); never throws.
  */
 function spawnLoopsFlush() {
   return new Promise((resolve) => {
@@ -163,12 +150,4 @@ function spawnLoopsFlush() {
   })
 }
 
-child.on('exit', (code, signal) => {
-  // An intended stop that the agent finished (it flushed in its own signal handler).
-  if (stopping && code === 0) process.exit(0)
-  const abnormal = signal != null || (code != null && code !== 0)
-  if (!stopping && !abnormal) process.exit(0)
-  // Signalled child: 128 + signal number, so on-failure restart applies (a null code used to exit 0).
-  const exitCode = stopping ? 0 : signal ? 128 + (os.constants.signals[signal] ?? 0) : code
-  spawnLoopsFlush().finally(() => process.exit(exitCode))
-})
+superviseChild(child, { name: 'agent', onAbnormalExit: spawnLoopsFlush })
