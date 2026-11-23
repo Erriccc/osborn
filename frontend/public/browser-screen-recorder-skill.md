@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 67
+Version: 68
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v68
+- When `/act` finds nothing in the DOM to match (a canvas, an embedded frame) the engine now makes one screenshot-based attempt before giving up, and reports `effect.fallback:'vision'`. Opt out per call with `"vision":false` or engine-wide with `OSBORN_NO_VISION_RETRY=1`; see `references/harness-api.md`.
 
 ## What's new in v67
 - A driver that posts `/canvas`, `/tts` or `/noise-cancel` to an agent from another machine sends the owner's Bearer token (see `references/streaming.md`); the agent's own localhost curl needs nothing extra.

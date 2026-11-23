@@ -71,7 +71,7 @@ type BrainLike = {
 // Stagehand the Playwright page instead makes it open a CDP session on every call
 // and never close it, which piles up over hundreds of /act on one tab.
 const brainPages = new WeakMap<Page, { targetId(): string }>()
-async function brainPageFor(stagehand: BrainLike, page: Page): Promise<{ targetId(): string } | undefined> {
+export async function brainPageFor(stagehand: BrainLike, page: Page): Promise<{ targetId(): string } | undefined> {
   const pages = stagehand.context?.pages?.()
   if (!Array.isArray(pages)) return undefined
   const known = brainPages.get(page)

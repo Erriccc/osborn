@@ -16,7 +16,7 @@
 | `GET /audio` | your tab's captured audio as mp3 (`<audio>`/`<video>` elements and WebAudio output — absent from the video-only clips/stream). 404 with `ears` until the tab has recorded something; it does not arm them (`/act`, `/say` or `/hear` does). WebAudio output of the top page only, not iframes |
 | `GET /logs` | full console+network+websocket buffers, all tabs |
 | `GET /events` | SSE: live navigation/task/tab/journey/transcript/agent_output/lifecycle events (25-event replay on connect; `engine_stopping` announces sleep) |
-| `POST /act {instruction, clipSeconds?, settleMs?}` | natural-language action → returns clip + screenshot + devtools + tab; arms the ears on the tab so `/clip?n=N&audio=1` can carry its sound; a tab the action opens becomes your tab (`effect.openedTab`) |
+| `POST /act {instruction, clipSeconds?, settleMs?, vision?}` | natural-language action → returns clip + screenshot + devtools + tab; arms the ears on the tab so `/clip?n=N&audio=1` can carry its sound; a tab the action opens becomes your tab (`effect.openedTab`) |
 | `POST /input {type: key\|type\|click\|scroll, key?, text?, x?, y?, dy?}` | raw input on your tab: a real key press (`Enter` submits a form; `/act` fills fields but does not reliably press keys), keystrokes into the focused field, a click at frame fractions, a wheel scroll |
 | `POST /say {text, ...}` | speak into the mic; returns a screenshot, `heard` (agent's spoken reply, transcribed) and a `clipUrl` that waits until the clip is encoded (`clipPending: true`; pass `waitClip: true` to get the clip in the reply) |
 | `POST /hear {lastMs}` | transcript of recent agent audio |
@@ -57,6 +57,17 @@ From the harness dir: `fly launch` (or `fly deploy`), then `fly ips allocate-v4 
   server is listening.
 - **`/act` response**: `effect {changed, noop, urlBefore, urlAfter, titleAfter,
   scrollBefore, scrollAfter}`, `warning`, `result.did`, `brainModel`, `tokens {prompt, completion, reasoning, total}` and `modelMs` (model use of this act, also on the task in `manifest.json`; a cached replay normally reports 0, more than 0 means Stagehand re-asked the model to heal it; an engine scroll reports 0). Failures (the first three carry `tokens` and `modelMs` too):
+  **Vision retry** (on by default): when the DOM brain finds nothing to match (a
+  canvas, an embedded frame) the engine makes ONE screenshot-based attempt
+  (Stagehand `agent({mode:'hybrid'})`, one step, same lock and timeout fence as
+  the act) and reports `effect.fallback:'vision'` (also on the manifest task);
+  `effect.changed` is judged as usual, its tokens and `modelMs` are counted in
+  the act's totals, and it is never written to `knowledge/<host>/actions.json`.
+  A failed or empty retry returns the original `noop` with `effect.visionNote`
+  (never a 500). Opt out for one call with `"vision":false` in the body, or for
+  the whole engine with env `OSBORN_NO_VISION_RETRY=1`. The brain model is the
+  engine's own (Gemini Flash by default; Stagehand warns that models outside its
+  hybrid list may click less accurately).
   `noop` (`ok:false`, nothing on the page matched), `brain_error` (502, provider
   message), `brain_unavailable` (503), `bad_request` (400), `too_large` (413).
 - **Async**: `POST /act|/say {"async":true}` → 202 `{job, resultUrl}`;
