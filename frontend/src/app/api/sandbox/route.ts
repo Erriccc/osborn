@@ -29,6 +29,11 @@ import { volumeSyncProblem } from '@/lib/volume-sync'
 // "no sandbox" (which clears the record or provisions another).
 const lookupFailed = () => NextResponse.json({ error: 'Sandbox lookup failed, try again' }, { status: 503 })
 
+/** Record that the user connected to their machine (the admin "Last active" reads it). Never awaited: a failed write must not slow or fail the request. */
+function touchLastSeen(supabase: Awaited<ReturnType<typeof createSupabaseServer>>, userId: string): void {
+  supabase.from('instances').update({ last_seen: new Date().toISOString() }).eq('user_id', userId).then(({ error }) => { if (error) console.warn(`[sandbox] last_seen write failed for ${userId}: ${error.message}`) }, () => {})
+}
+
 /**
  * GET /api/sandbox — get current user's sandbox status
  *
@@ -504,7 +509,10 @@ export async function POST(request: Request) {
       // fire it the instant the button is clicked and SKIP the separate
       // room-code round-trip. One wake, one health wait, there.
       const cr = await connectUserAgent(user.id, await getKnownSandboxId(), getSyncToken)
-      if (cr.ok) return NextResponse.json({ success: true, roomName: cr.roomName })
+      if (cr.ok) {
+        touchLastSeen(supabase, user.id)
+        return NextResponse.json({ success: true, roomName: cr.roomName })
+      }
       if (cr.reason === 'no-sandbox') return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       if (cr.reason === 'wake-failed') return NextResponse.json({ success: false, error: 'Failed to wake sandbox' }, { status: 503 })
       return NextResponse.json({ success: false })
