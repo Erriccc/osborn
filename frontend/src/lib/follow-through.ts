@@ -11,29 +11,13 @@ const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 const SOURCES = new Set<string>(FOLLOW_UP_SOURCES)
 const ORIGINS = new Set<string>(FOLLOW_UP_ORIGINS)
 
-/**
- * FOLLOW_THROUGH_REPO_ALLOWLIST: comma-separated `owner/repo=<user_id>` entries; each repo
- * receives issues only from that account's machine. Repos compare case-insensitively; an
- * entry without `=<user_id>` (or malformed) is ignored. Unset = no repo receives any.
- */
-export function parseAllowlist(raw: string | undefined): Map<string, string> {
-  const out = new Map<string, string>()
-  for (const entry of (raw ?? '').split(',')) {
-    const [repo = '', userId = ''] = entry.split('=').map((x) => x.trim())
-    if (REPO_RE.test(repo) && /^[A-Za-z0-9-]{8,64}$/.test(userId)) out.set(repo.toLowerCase(), userId)
-  }
-  return out
-}
-
-/** True only when `repo` is allowlisted for exactly this account. */
-export function repoAllowed(repo: string, userId: string, allow: Map<string, string>): boolean {
-  return REPO_RE.test(repo) && !!userId && allow.get(repo.toLowerCase()) === userId
-}
+/** `owner/repo` with GitHub's name characters only. */
+export const validRepo = (repo: string): boolean => REPO_RE.test(repo)
 
 /** Items a single account may send to GitHub per rolling 24h. */
 export const DAILY_ITEM_CAP = 30
 // In memory, per server process (slice 1: no rate-limit table exists in Supabase). A restart
-// or a second instance resets it; the per-account allowlist is what bounds who can file at all.
+// or a second instance resets it; the admin-only rule is what bounds who can file at all.
 export const accountLimiter = createRateLimiter({ limit: DAILY_ITEM_CAP, windowMs: 24 * 60 * 60_000, maxKeys: 10_000 })
 
 /** Absolute, home-relative, Windows and relative (`src/x/y.ts`) file paths → `<path>` (URLs are left alone). */

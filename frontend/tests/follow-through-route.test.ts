@@ -14,9 +14,10 @@ async function t(name: string, fn: () => any) {
 }
 const ok = (c: any, m: string) => { if (!c) throw new Error(m) }
 
-// Each test runs as a fresh account (the daily cap is per account and in memory): its own
-// sync token, and the three test repos allowlisted to it.
+// Each test runs as a fresh admin account (the daily cap is per account and in memory): its
+// own sync token and an email listed in ADMIN_EMAILS.
 const tokens = new Map<string, string>() // sync token → user id
+const emails = (user: string) => `${user}@example.com`
 let GOOD_TOKEN = ''
 let USER = ''
 let accounts = 0
@@ -31,7 +32,7 @@ function asNewAccount() {
   const a = newAccount()
   GOOD_TOKEN = a.token
   USER = a.user
-  process.env.FOLLOW_THROUGH_REPO_ALLOWLIST = ['acme/public-repo', ' acme/private-repo', 'acme/broken-repo'].map((r) => `${r}=${USER}`).join(',')
+  process.env.ADMIN_EMAILS = `someone-else@example.com, ${emails(USER)}`
 }
 process.env.GITHUB_TOKEN = 'ghp_test_token_not_real'
 
@@ -49,7 +50,12 @@ const mocks: Record<string, any> = {
         }
         return b
       },
+      auth: { admin: { getUserById: async (id: string) => ({ data: { user: { id, email: emails(id) } } }) } },
     }),
+  },
+  // Same rule as lib/admin.ts, without its cookie-session imports.
+  '@/lib/admin': {
+    isAdminEmail: (email?: string | null) => !!email && (process.env.ADMIN_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).includes(email.toLowerCase()),
   },
 }
 
@@ -57,7 +63,7 @@ const mocks: Record<string, any> = {
 type Issue = { number: number; html_url: string; body: string; state: string; state_reason?: string; labels: string[]; title: string; payload: any }
 const row = (i: Issue) => ({ number: i.number, html_url: i.html_url, body: i.body, state: i.state, state_reason: i.state_reason ?? null })
 const gh = { issues: new Map<string, Issue[]>(), labelPosts: [] as string[], creates: [] as any[], calls: [] as string[] }
-const privacy: Record<string, boolean | 'error'> = { 'acme/public-repo': false, 'acme/private-repo': true, 'acme/broken-repo': 'error' }
+const privacy: Record<string, boolean | 'error' | 'readonly'> = { 'acme/public-repo': false, 'acme/private-repo': true, 'acme/broken-repo': 'error', 'acme/readonly-repo': 'readonly' }
 const json = (o: any, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } })
 ;(globalThis as any).fetch = async (url: string, init: any = {}) => {
   const u = new URL(url)
@@ -66,7 +72,8 @@ const json = (o: any, status = 200) => new Response(JSON.stringify(o), { status,
   let m: RegExpMatchArray | null
   if (method === 'GET' && (m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)$/))) {
     const p = privacy[m[1]]
-    return p === 'error' || p === undefined ? json({ message: 'nope' }, 500) : json({ private: p })
+    if (p === 'error' || p === undefined) return json({ message: 'nope' }, 500)
+    return json({ private: p === true, permissions: { push: p !== 'readonly' } })
   }
   if (method === 'GET' && (m = u.pathname.match(/^\/repos\/([^/]+\/[^/]+)\/issues$/))) {
     return json((gh.issues.get(m[1]) ?? []).map(row))
@@ -124,11 +131,11 @@ async function main() {
     ok(r.status === 413, `status ${r.status}`)
   })
 
-  await t('403 repo not on the allowlist', async () => {
+  await t('403 for a repo the server cannot reach', async () => {
     reset()
     const r = await post({ repo: 'someone/else', items: [item(1)] })
     ok(r.status === 403, `status ${r.status}`)
-    ok(gh.creates.length === 0 && gh.calls.length === 0, 'no GitHub call for a refused repo')
+    ok(gh.creates.length === 0 && !gh.calls.some((c) => c.startsWith('POST')), 'only a read, no write, for a refused repo')
   })
 
   await t('inferred item not filed into a public repo, explicit item is', async () => {
@@ -148,11 +155,13 @@ async function main() {
     ok(gh.creates.length === 0, 'nothing created')
   })
 
-  await t('unknown repo visibility counts as public (fail closed)', async () => {
+  await t('a repo the server cannot read or push to gets 403 (fail closed)', async () => {
     reset()
-    const r = await post({ repo: 'acme/broken-repo', items: [item(5, { source: 'inferred', origin: 'tool' }), item(6)] })
-    const by = Object.fromEntries(r.body.results.map((x: any) => [x.key, x.action]))
-    ok(by[key(5)] === 'held' && by[key(6)] === 'created', JSON.stringify(by))
+    for (const repo of ['acme/broken-repo', 'acme/readonly-repo', 'someone/else']) {
+      const r = await post({ repo, items: [item(5)] })
+      ok(r.status === 403, `${repo}: status ${r.status}`)
+    }
+    ok(gh.creates.length === 0, 'nothing created')
   })
 
   await t('private repo: inferred items file, marked noted and not a work order', async () => {
@@ -231,15 +240,14 @@ async function main() {
     ok(kinds.join() === 'osborn:noted,osborn:proposed', kinds.join())
   })
 
-  await t("user B's valid token posting to user A's repo gets 403", async () => {
-    reset() // account A owns the allowlisted repos
-    const b = newAccount()
+  await t('a non-admin account gets 403 with no GitHub call', async () => {
+    reset()
+    const b = newAccount() // not in ADMIN_EMAILS
     const r = await post({ repo: 'acme/private-repo', items: [item(60)] }, b.token)
     ok(r.status === 403, `status ${r.status}`)
-    ok(gh.calls.length === 0 && gh.creates.length === 0, 'no GitHub call for another account')
-    // A bare owner/repo entry (no =user) allows no one.
-    process.env.FOLLOW_THROUGH_REPO_ALLOWLIST = 'acme/private-repo'
-    ok((await post({ repo: 'acme/private-repo', items: [item(61)] })).status === 403, 'bare entry')
+    ok(gh.calls.length === 0 && gh.creates.length === 0, 'no GitHub call for a non-admin')
+    process.env.ADMIN_EMAILS = ''
+    ok((await post({ repo: 'acme/private-repo', items: [item(61)] })).status === 403, 'no admins configured')
   })
 
   await t('going over the daily cap gets 429', async () => {

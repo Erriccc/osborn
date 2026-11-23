@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server'
 import { serviceClient } from '@/lib/sandbox-claims'
-import { fileFollowUp, githubConfigured, repoIsPrivate } from '@/lib/github-issue-mirror'
-import { MAX_ITEMS, accountLimiter, cleanItem, mayFile, parseAllowlist, repoAllowed } from '@/lib/follow-through'
+import { fileFollowUp, githubConfigured, repoAccess } from '@/lib/github-issue-mirror'
+import { MAX_ITEMS, accountLimiter, cleanItem, mayFile, validRepo } from '@/lib/follow-through'
+import { isAdminEmail } from '@/lib/admin'
 import { bearerToken, syncTokenUserId } from '@/lib/sync-token-auth'
 
 /**
@@ -10,8 +11,9 @@ import { bearerToken, syncTokenUserId } from '@/lib/sync-token-auth'
  * Called by the agent's detached flush worker (agent/src/follow-through-client.ts):
  * `{ repo, items: [{ key, kind, text, source, origin, turn? }] }`,
  * `Authorization: Bearer <sync token>`. The token names the machine, so the account
- * (same check as /api/phone/code). A repo receives issues only when
- * FOLLOW_THROUGH_REPO_ALLOWLIST maps it to this account (403 otherwise), and an account sends
+ * (same check as /api/phone/code). Only an admin account (ADMIN_EMAILS, lib/admin.ts) may
+ * file, and only into a repo the server's GitHub token can push to (403 otherwise); other
+ * accounts' items stay on their machine until per-user GitHub (#463). An account sends
  * at most DAILY_ITEM_CAP items to GitHub per rolling 24h (429 once over). Into a public repo
  * (or one whose visibility is unknown) only the user's own explicit asks file, everything
  * else is `held`. Replies `{ results: [{ key, action: 'created'|'skipped'|'held'|'error', url? }] }`,
@@ -38,14 +40,16 @@ export async function POST(request: Request) {
   const userId = await syncTokenUserId(admin, token)
   if (!userId) return NextResponse.json({ error: 'unauthorized' }, { status: 401 })
 
-  if (!repoAllowed(repo, userId, parseAllowlist(process.env.FOLLOW_THROUGH_REPO_ALLOWLIST))) {
-    return NextResponse.json({ error: 'repo not allowed' }, { status: 403 })
-  }
+  const { data: account } = await admin.auth.admin.getUserById(userId)
+  if (!isAdminEmail(account?.user?.email)) return NextResponse.json({ error: 'not allowed' }, { status: 403 })
+  if (!validRepo(repo)) return NextResponse.json({ error: 'repo not allowed' }, { status: 403 })
   if (!githubConfigured()) return NextResponse.json({ error: 'not configured' }, { status: 503 })
 
   const started = Date.now()
-  // Fail closed: unknown visibility counts as public.
-  const repoPrivate = await repoIsPrivate(repo)
+  // Fail closed: a repo we cannot read counts as no push access and public.
+  const access = await repoAccess(repo)
+  if (!access.canPush) return NextResponse.json({ error: 'repo not allowed' }, { status: 403 })
+  const repoPrivate = access.isPrivate
   const results: Array<{ key: string; action: 'created' | 'skipped' | 'held' | 'error'; url?: string }> = []
   let sent = 0
   for (const rawItem of items) {

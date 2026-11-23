@@ -244,8 +244,8 @@ async function safeText(res: Response): Promise<string> {
 
 // ── Follow-through (#378): open items from a voice session, filed inert ─────────
 //
-// Filed through /api/follow-through (sync-token auth), into a repo the route has
-// already checked against FOLLOW_THROUGH_REPO_ALLOWLIST. A follow-up is a record,
+// Filed through /api/follow-through (sync-token auth, admin accounts only), into a repo
+// the server's GitHub token can already push to. A follow-up is a record,
 // never a work order: no assignees, only the labels below, @-mentions neutralized
 // so no watching bot or person is pinged, and a body that says so.
 
@@ -350,17 +350,21 @@ async function findFollowUpByLabel(tok: string, repo: string, tokenStr: string):
 
 export type FollowUpResult = { ok: true; action: 'created' | 'skipped'; url: string } | { ok: false; error: string }
 
-/** Repo visibility: true = private. Unknown (no token, error, not found) counts as public. */
-export async function repoIsPrivate(repo: string): Promise<boolean> {
+/**
+ * What the server's GitHub token may do in `repo`: push access, and visibility. Unknown
+ * (no token, error, not found) is no access and public, so callers fail closed.
+ */
+export async function repoAccess(repo: string): Promise<{ canPush: boolean; isPrivate: boolean }> {
+  const none = { canPush: false, isPrivate: false }
   const tok = token()
-  if (!tok) return false
+  if (!tok) return none
   try {
     const res = await fetch(`${GITHUB_API}/repos/${repo}`, { headers: ghHeaders(tok), ...withTimeout(FOLLOW_UP_FETCH_MS) })
-    if (!res.ok) return false
-    const data = (await res.json()) as { private?: unknown }
-    return data?.private === true
+    if (!res.ok) return none
+    const data = (await res.json()) as { private?: unknown; permissions?: { push?: unknown } }
+    return { canPush: data?.permissions?.push === true, isPrivate: data?.private === true }
   } catch {
-    return false
+    return none
   }
 }
 
