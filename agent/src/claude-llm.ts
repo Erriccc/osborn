@@ -13,8 +13,8 @@ import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, PHONE_TOOLS_DENIED } from './prompts.js'
-import { hasDispatchPlaceholder, DISPATCH_PLACEHOLDER, isOwnApiCurl } from './agent-store.js'
-import { dispatchNonces } from './dispatch-nonce.js'
+import { hasDispatchPlaceholder, parseDispatchCurl, dispatchBodyHash, DISPATCH_PLACEHOLDER } from './dispatch-command.js'
+import { dispatchNonces, isOwnApiCurl } from './dispatch.js'
 import { steersTurn } from './content/transcript-sanitizer.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
@@ -2795,6 +2795,10 @@ class ClaudeLLMStream extends llm.LLMStream {
             return { behavior: 'deny', message: 'Research mode does not use plan mode. Just proceed with the research directly.' }
           }
           
+          // A dispatch is labelled and keyed only in the skill's exact shape; any other placeholder command is refused unseen.
+          if ((toolName as string) === 'Bash' && hasDispatchPlaceholder(String((input as any)?.command || '')) && !parseDispatchCurl(String((input as any).command))) {
+            return { behavior: 'deny', message: 'A dispatch must be the dispatch skill\'s exact command (one curl, the key header once, one JSON heredoc).' }
+          }
           console.log(`⚠️ Permission needed: ${toolName}`)
           // Track the pending dialog so steer-priority ('now') suppression can
           // avoid aborting the very turn that's waiting on the user's answer.
@@ -2804,7 +2808,9 @@ class ClaudeLLMStream extends llm.LLMStream {
             // Approved (by the user, the approval mode or allow-all): only now does a dispatch get its one-time key.
             const approved = String((answer as any)?.updatedInput?.command || '')
             if ((toolName as string) === 'Bash' && answer.behavior === 'allow' && hasDispatchPlaceholder(approved)) {
-              return { ...answer, updatedInput: { ...(answer as any).updatedInput, command: approved.split(DISPATCH_PLACEHOLDER).join(dispatchNonces.mint()) } }
+              const body = parseDispatchCurl(approved)  // the body the user saw is the body the key is for
+              if (!body) return { behavior: 'deny', message: 'A dispatch must be the dispatch skill\'s exact command.' }
+              return { ...answer, updatedInput: { ...(answer as any).updatedInput, command: approved.split(DISPATCH_PLACEHOLDER).join(dispatchNonces.mint(dispatchBodyHash(body.project, body.instruction))) } }
             }
             return answer
           } finally {

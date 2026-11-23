@@ -28,7 +28,8 @@ import { fileURLToPath } from 'node:url'
 import { spawn } from 'node:child_process'
 import { getHeapStatistics } from 'node:v8'
 import { randomUUID, randomBytes, createHmac } from 'node:crypto'
-import { dispatchNonces } from './dispatch-nonce.js'
+import { dispatchNonces, dispatchRefusal, DISPATCH_KEY_REFUSAL } from './dispatch.js'
+import { dispatchBodyHash } from './dispatch-command.js'
 import { newCanvasKey, secretMatches, withCanvasKey, canvasRouteAllowed, ttsLineSig } from './canvas-key.js'
 import httpProxy from 'http-proxy'
 import { createRequire } from 'node:module'
@@ -51,7 +52,7 @@ import { cleanupHousekeeping } from './housekeeping.js'
 import { createSTT, createTTS } from './voice-io.js'
 import { createClaudeLLM, NAMED_AGENTS, applyTurbo, requestAuthRestart } from './claude-llm.js'
 import { SOURCES, loadCatalog, findEntry, installSkill, agentDraft, recommend, skillProvenance, installedIds, findUpdates } from './store-catalog.js'
-import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, dispatchRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, skillHeading, storeName, type AgentDef, type Role } from './agent-store.js'
+import { parseUserAgents, mergeAgents, describeAgents, describeRoles, coreRole, AGENT_LIMITS, storeWriteRefusal, storeWriteOriginAllowed, coreSkillNames, skillForkedFrom, forkSkill, removeUserSkill, addUserSkill, readUserSkill, parseFrontMatter, skillHeading, storeName, type AgentDef, type Role } from './agent-store.js'
 import { clearPipelineFastBrainSession, prewarmBM25Index } from './pipeline-fastbrain.js'
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
@@ -1313,7 +1314,7 @@ function startApiServer(workingDir: string, port: number): void {
     // POST /dispatch { project, instruction } → { status: 'sent' } straight away; the result comes back as a hub turn.
     if (req.method === 'POST' && url.pathname === '/dispatch') {
       if (unauthorized()) return
-      const refusal = dispatchRefusal({ forwarded, host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin as string | undefined, contentType: String(req.headers['content-type'] || ''), keyOk: dispatchNonces.consume(req.headers['x-osborn-dispatch-key'] as string | undefined) })
+      const refusal = dispatchRefusal({ forwarded, host: req.headers.host, remote: req.socket.remoteAddress, origin: req.headers.origin as string | undefined, contentType: String(req.headers['content-type'] || ''), })
       if (refusal) return reply(refusal.status, { error: refusal.error })
       void (async () => {
         try {
@@ -1321,6 +1322,8 @@ function startApiServer(workingDir: string, port: number): void {
           if (raw === null) return reply(413, { error: 'instruction too long' })
           const { project, instruction } = JSON.parse(raw || '{}') as { project?: unknown; instruction?: unknown }
           if (typeof project !== 'string' || typeof instruction !== 'string' || !project.trim() || !instruction.trim()) return reply(400, { error: 'send {project, instruction} as strings' })
+          // The key is for the body the user approved: a leaked or reused key with another body is refused.
+          if (!dispatchNonces.consume(req.headers['x-osborn-dispatch-key'] as string | undefined, dispatchBodyHash(project, instruction))) return reply(DISPATCH_KEY_REFUSAL.status, { error: DISPATCH_KEY_REFUSAL.error })
           if (!dispatchHook) return reply(503, { error: 'the agent is still starting' })
           const out = await dispatchHook(project.trim(), instruction.trim())
           reply(out.status, out.body)

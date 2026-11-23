@@ -21,7 +21,7 @@ EOF
 
 - `project` is the project's folder name as the user said it ("osborn", "audos-com"). The newest session in that folder runs the task.
 - `instruction` must stand alone: the other session has none of this conversation. Say what to change, where, and how to know it worked.
-- Keep the key header exactly as written: `__OSBORN_DISPATCH_APPROVAL__` is not a secret, it is a marker. The command always goes through the approval dialog (the saved approval mode applies, in a phone call or an allow-all session too), and only an approved command gets a one-time key swapped in. A command that skips the dialog is refused with 401/403. A background session has no approval path, so it can never dispatch; never use this skill from one.
+- Keep the command exactly in this shape (one curl, the key header once, one JSON heredoc): `__OSBORN_DISPATCH_APPROVAL__` is a marker, not a secret. Only this shape is shown to the user (project and instruction, as sent) and given a key; any other command with the marker is refused. The user is asked for every dispatch (the approval mode applies; in auto-review Bash is always high risk, so only an allow-all session skips the question). The approved command gets a one-time key valid for 2 minutes and for that exact project and instruction. Anything else, or a reused key, fails with 403. A background session has no approval path, so it can never dispatch; never use this skill from one.
 - Answer `{"status":"sent"}` with one short line: "Sent to <project>." Do not wait for it.
 
 ## Refusals

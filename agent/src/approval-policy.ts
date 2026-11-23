@@ -9,7 +9,7 @@
  * - the session's always-allow list ("Always" in the browser, keypad 3) and what it covers.
  */
 import { classifyRisk, type RiskTier } from './risk-tier.js'
-import { parseDispatchCurl } from './agent-store.js'
+import { parseDispatchCurl } from './dispatch-command.js'
 
 /** An answer to a pending permission, from any surface. */
 export type PermissionAnswer = 'allow' | 'deny' | 'always_allow'
