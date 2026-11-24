@@ -45,6 +45,8 @@ interface ChatSessionContextValue {
   connecting: boolean
   connected: boolean
   error: string | null
+  /** The error is a 401 from /api/token: show the sign-in card, not Retry. */
+  signInRequired: boolean
   statusMsg: string | null
   authRequired: boolean
   activeSandboxId: string | null
@@ -197,6 +199,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
   const [activeSandboxId, setActiveSandboxId] = useState<string | null>(null)
   const [lastActivityAt, setLastActivityAt] = useState(Date.now())
   const [authRequired, setAuthRequired] = useState(false)
+  const [signInRequired, setSignInRequired] = useState(false)
   // agent_ready actually fired. Distinct from `connected`, which
   // markAuthRequired also flips to uncover the sign-in modal (issue #78).
   const [agentReady, setAgentReady] = useState(false)
@@ -497,6 +500,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     setConnecting(true)
     setAgentReady(false)
     setError(null)
+    setSignInRequired(false)
     // A reconnect after the idle stop: the room only mounts while !idleStopped,
     // and agent_ready can't arrive without the room.
     setIdleStopped(false)
@@ -755,6 +759,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       if (!isCurrent()) return
       if (!res.ok) {
         // /api/token requires a signed-in owner of the room's machine.
+        setSignInRequired(res.status === 401)
         setError(
           res.status === 401
             ? 'Sign in to connect to your agent.'
@@ -1152,6 +1157,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
     connecting,
     connected,
     error,
+    signInRequired,
     statusMsg,
     authRequired,
     activeSandboxId,

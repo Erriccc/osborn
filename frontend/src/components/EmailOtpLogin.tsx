@@ -42,6 +42,7 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
       <form onSubmit={send} className="flex flex-col gap-2">
         <input
           type="email"
+          aria-label="Email address"
           inputMode="email"
           autoComplete="email"
           placeholder="you@email.com"
@@ -70,6 +71,7 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
       <input
         type="text"
         inputMode="numeric"
+        aria-label="6-digit code"
         autoComplete="one-time-code"
         placeholder="______"
         value={code}
