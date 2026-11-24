@@ -370,9 +370,9 @@ export function pendingDeliveries(records: LoopRecord[], now: number, opts: { ma
     .slice(0, opts.max ?? 1)
 }
 
-/** True while a new notice would break the limit: one per 5 minutes, three per hour, counted from this session's `work_surfaced` records. */
-export function noticeThrottled(records: LoopRecord[], now: number): boolean {
-  const at = records.filter((r) => r.kind === 'work_surfaced').map((r) => Date.parse(r.at)).filter((t) => t <= now)
+/** True while a new notice would break the limit: one per 5 minutes, three per hour, per process and per session (this session's `work_surfaced` records plus `extraAt`, the times this process sent). */
+export function noticeThrottled(records: LoopRecord[], now: number, extraAt: number[] = []): boolean {
+  const at = [...records.filter((r) => r.kind === 'work_surfaced').map((r) => Date.parse(r.at)), ...extraAt].filter((t) => t <= now)
   if (at.some((t) => now - t < WORK_NOTICE_GAP_MS)) return true
   return at.filter((t) => now - t < 3_600_000).length >= WORK_NOTICE_PER_HOUR
 }
@@ -468,6 +468,8 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
         // Foreground items only, as for filing: a background slot keeps its ledger local.
         if (item.recapped || !item.fg) continue
         if (!item.text) continue
+        // Work rows: only with the ledger on, and only while fresh (an old row is never recapped).
+        if (item.state && (!workLedgerEnabled() || Date.now() - Date.parse(item.resultAt ?? item.at) > WORK_SURFACE_WINDOW_MS)) continue
         // Filing happens after a session ends, so the live session still hears of its own filed items.
         if (item.filedUrl) filed.push({ sessionId, item })
         else if (item.open && sessionId !== skipSession) unfiled.push({ sessionId, item })

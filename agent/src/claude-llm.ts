@@ -1759,6 +1759,8 @@ export class ClaudeLLM extends llm.LLM {
   resetForSessionSwitch(): void {
     // Kill persistent session — new session needs fresh subprocess
     this.closeSession()
+    this.#workResultTurn.clear()
+    this.#workSurfaced.clear()
 
     // Clear any pending permission request from previous session
     if (this.#pendingPermission) {

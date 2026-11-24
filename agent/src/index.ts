@@ -3324,6 +3324,7 @@ async function main() {
   // agent is idle and listening and the user is quiet, as one bounded [NOTIFICATION]. Never interrupts, never
   // gates anything (busyState does not read the ledger), expired rows are dropped.
   const ledgerStartedAt = Date.now()  // a result from before this agent process started is never surfaced
+  const noticeTimes: number[] = []  // notices sent by this process, across session switches
   function surfaceUndelivered(): void {
     try {
       if (!workLedgerEnabled() || !currentLLM || !activeRoom || peopleIn(activeRoom) === 0) return
@@ -3340,10 +3341,11 @@ async function main() {
       const records = readLoopRecords(sid, cwd)
       const now = Date.now()
       for (const id of expiredWork(records, now)) currentLLM.recordWork?.({ kind: 'work_dropped', id, reason: 'ttl' })
-      if (noticeThrottled(records, now)) return
+      if (noticeThrottled(records, now, noticeTimes)) return
       const rows = pendingDeliveries(records, now, { sinceMs: ledgerStartedAt })
       if (!rows.length) return
       // The reply to this notice closes its row (ClaudeLLM.deliverTurnResults); workSpoken is for spoke reports.
+      noticeTimes.push(now)
       for (const r of rows) currentLLM.recordWork?.({ kind: 'work_surfaced', id: r.id })
       const ctx = new llm.ChatContext()
       ctx.addMessage({ role: 'user', content: getUndeliveredNote(rows) })
