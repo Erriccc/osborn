@@ -1,5 +1,4 @@
 // Load environment variables FIRST before any other imports
-import { StaleTurnGate } from './stale-turn-gate.js'
 import 'dotenv/config'
 // Then hydrate volume-persisted user secrets into process.env, BEFORE any
 // module that reads its keys at load time (recall-client's RECALL_REGION const,
@@ -8,6 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
+import { StaleTurnGate } from './stale-turn-gate.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
@@ -5140,13 +5140,12 @@ async function main() {
       // folded into lastInterruption so the next chat() to Claude carries it as
       // "you wrote this but the user did not hear it — re-articulate if relevant."
       if (userState === 'speaking') {
-        staleTurns.markStale((data as any).messageId)
         appendSuppressedText(data.text)
         return
       }
       // A late block from a turn the user already cut off: never speak it over
       // the new answer; the next turn carries it as unheard text instead.
-      if (staleTurns.isStale((data as any).messageId)) {
+      if (staleTurns.isStale(data.messageId)) {
         console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         appendSuppressedText(data.text)
         return
@@ -5201,7 +5200,7 @@ async function main() {
             activeSpeechHandles.delete(sh)
             if (sh.interrupted) {
               console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
-              staleTurns.markStale((data as any).messageId)
+              staleTurns.markStale(data.messageId)
               // Cancel all other queued handles so the queue flushes on barge-in.
               // Without this, LiveKit auto-starts the next queued handle even after
               // the current one is interrupted — user has to wait for the whole queue
@@ -6182,7 +6181,8 @@ async function main() {
         // and no new user turn arrives within 1.2s, replay the suppressed text directly.
         // Without this, both sides go silent: agent has no transcript to react to,
         // user has no audio — deadlock.
-        if (ev.newState === 'listening' && lastInterruption?.suppressedText) {
+        // Not after a confirmed barge-in (spokenText set): that text is the cut-off turn's (#456).
+        if (ev.newState === 'listening' && lastInterruption?.suppressedText && !lastInterruption.spokenText) {
           const capturedInterruption = lastInterruption
           const capturedText = lastInterruption.suppressedText
           setTimeout(() => {

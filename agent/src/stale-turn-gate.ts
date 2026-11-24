@@ -18,8 +18,4 @@ export class StaleTurnGate {
   isStale(messageId?: string | null): boolean {
     return !!messageId && this.#stale.has(messageId)
   }
-
-  clear(): void {
-    this.#stale.clear()
-  }
 }
