@@ -140,9 +140,10 @@ assert.equal(isExpired(0, 60_000), false); assert.equal(isExpired(0, 60_001), tr
   li = putBack(li, blocks, 1000)
   assert.equal(joinBlocks(li.suppressedBlocks), 'B2\nB3', 'older text first, newer kept')
   assert.equal(li.suppressedBlocks[0].at, 100, 'keeps the original age per block')
-  assert.equal(li.timestamp, 100)
+  assert.equal(li.timestamp, 500, 'context time untouched')
   const after = putBack({ ...base, spokenText: 'heard', suppressedBlocks: [], timestamp: 900 } as any, [B2], 1000) as any
   assert.equal(joinBlocks(after.suppressedBlocks), 'B2'); assert.equal(after.spokenText, 'heard'); assert.equal(after.suppressedBlocks[0].turnId, 'T1')
+  assert.equal(after.timestamp, 900, 'an older put-back block never ages the heard context')
   assert.equal(joinBlocks((putBack(null, [B2], 1000) as any).suppressedBlocks), 'B2')
   assert.equal(putBack(null, [{ text: 'B2', at: 0 }], 61_000), null, 'expired text is not put back')
 }

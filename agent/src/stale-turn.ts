@@ -72,7 +72,7 @@ export type SuppressedBlock = { text: string; turnId?: string; at: number }
 type Pending = { suppressedBlocks: SuppressedBlock[]; timestamp: number }
 type Buffered = Pending & { spokenText: string; recentMessages: string }
 /** A context that holds only buffered reply blocks: nothing was heard, nothing else to fold in. */
-export const bufferOnly = (suppressedBlocks: SuppressedBlock[], timestamp: number): Buffered =>
+const bufferOnly = (suppressedBlocks: SuppressedBlock[], timestamp: number): Buffered =>
   ({ spokenText: '', recentMessages: '', suppressedBlocks, timestamp })
 export const joinBlocks = (blocks: SuppressedBlock[]): string => blocks.map((b) => b.text).join('\n')
 export const totalChars = (blocks: SuppressedBlock[]): number => joinBlocks(blocks).length
@@ -169,5 +169,5 @@ export function putBack<T extends Buffered>(li: T | null, blocks: SuppressedBloc
   if (!live.length) return li
   if (!li) return bufferOnly(live, earliest(live, now))
   const merged = [...live, ...li.suppressedBlocks].sort((a, b) => a.at - b.at)  // stable: equal times keep put-back first
-  return { ...li, suppressedBlocks: merged, timestamp: Math.min(li.timestamp, earliest(live, li.timestamp)) }
+  return { ...li, suppressedBlocks: merged }  // timestamp is the heard context's own age: blocks never shift it
 }
