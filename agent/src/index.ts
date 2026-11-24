@@ -4126,7 +4126,7 @@ async function main() {
       fullBlockText: lastInterruption.fullBlockText,
     }
     staleTurnId = staleIdOnConsume(lastInterruption, staleTurnId)
-    if (ctx.suppressedText) console.log(`🤐 [suppressed] CONSUMED ${ctx.suppressedText.length} chars into next prompt (new user turn)`)
+    if (ctx.suppressedText) console.log(`🤐 [suppressed] CONSUMED ${ctx.suppressedText.length} chars by chat() (may not reach the prompt if the turn text was empty)`)
     lastInterruption = null
     return ctx
   }
@@ -4483,7 +4483,7 @@ async function main() {
       isProcessingQueue = false
       currentSpeechHandle = null
       activeSpeechHandles.clear()
-      clearInterruption('session reset')
+      clearInterruption('performSessionSwitch')
       if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
       stopProactiveLoop()
       if (activeResearch) {
@@ -5528,7 +5528,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('session reset')
+    clearInterruption('room-disconnect')
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -5777,7 +5777,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('session reset')
+    clearInterruption('room-join')
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -6203,13 +6203,19 @@ async function main() {
               console.log(`🔁 [suppressed] REPLAY ${capturedText.length} chars — user returned to listening, no new turn arrived`)
               lastInterruption.suppressedText = ''
               try {
-                ;(currentSession as any).say(capturedText)
+                const replayHandle = (currentSession as any).say(capturedText)
+                try {
+                  replayHandle?.addDoneCallback?.((h: any) => {
+                    console.log(`🔁 [suppressed] REPLAY ${h?.interrupted ? 'INTERRUPTED' : 'DONE'} ${capturedText.length} chars`)
+                  })
+                } catch {}
               } catch (err) {
                 console.warn('⚠️ Suppressed text replay failed:', err instanceof Error ? err.message : err)
               }
             } else {
-              const consumed = lastInterruption !== capturedInterruption || lastInterruption?.suppressedText !== capturedText
-              console.warn(`🤐 [suppressed] REPLAY SKIPPED ${capturedText.length} chars (agent: ${agentState}, user: ${userState}, session: ${!!currentSession}, newTurnConsumedOrChanged: ${consumed})`)
+              const consumed = !lastInterruption?.suppressedText
+              const replaced = !!lastInterruption && lastInterruption !== capturedInterruption
+              console.warn(`🤐 [suppressed] REPLAY SKIPPED ${capturedText.length} chars (agent: ${agentState}, user: ${userState}, session: ${!!currentSession}, consumed: ${consumed}, replaced: ${replaced})`)
             }
           }, 1200)
         }
@@ -6769,7 +6775,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('session reset')
+    clearInterruption('participant-disconnect')
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
