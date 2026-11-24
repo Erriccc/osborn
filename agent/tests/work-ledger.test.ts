@@ -220,6 +220,24 @@ t('redundant: the assistant already said it', () => {
   assert.equal(pend(rs, [{ at: T0 + 10_000, text: 'suite passed 42 tests green coverage improved' }]).length, 1)  // said before the result: no
   assert.equal(pend(rs, [{ at: T0 + 90_000, text: 'Anything else on the weather?' }]).length, 1)
 })
+t('redundant: a reply that began before the result never counts as telling it', () => {
+  const llm: any = createClaudeLLM({ workingDirectory: cwd, followThrough: true })
+  const x = L.loopIds.work('pre1')
+  llm.noteUserTurn('status?', 's-pre')
+  const began = Date.now() - 1000
+  llm.recordWork({ kind: 'work_opened', id: x, text: 'tester: login suite', role: 'tester' }, 's-pre')
+  llm.noteWorkResult(x, 'Login suite passed, twelve tests', 's-pre')
+  const rs = L.readLoopRecords('s-pre', cwd)  // the row as it waits to be surfaced
+  llm.deliverTurnResults('s-pre', ['The tester is still running the login suite tests.'], began)  // all said before it
+  assert.deepEqual(L.staleWork(rs, Date.now(), { spoken: llm.recentSpoken() }), [])
+  llm.deliverTurnResults('s-pre', ['The login suite passed, all twelve tests.'])  // a later reply (seam default: now)
+  assert.equal(L.staleWork(rs, Date.now() + 1, { spoken: llm.recentSpoken() })[0]?.reason, 'redundant')
+  const off: any = createClaudeLLM({ workingDirectory: cwd, followThrough: true })
+  delete process.env.OSBORN_WORK_LEDGER
+  off.deliverTurnResults('s-pre', ['anything said'])
+  process.env.OSBORN_WORK_LEDGER = 'on'
+  assert.deepEqual(off.recentSpoken(), [])  // flag off: nothing kept
+})
 t('stale: user moved on to something unrelated, result over 5 minutes old', () => {
   const rs = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), rec(120_000, { kind: 'prompt', text: 'what is the weather forecast tomorrow', origin: 'user_mic' } as any)]
   assert.deepEqual(pend(rs), [])

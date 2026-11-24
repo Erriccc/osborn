@@ -367,7 +367,7 @@ const MOVED_ON_AFTER_MS = 5 * 60 * 1000
  * `already told`: the assistant's speech after the result covers it. `moved on`: the user spoke again since, nothing
  * after shares a key term, and the result is over 5 minutes old. Unsure means skip: an unneeded notice costs more.
  */
-export function isStaleOrRedundant(row: LoopItem, ctx: { items: LoopItem[]; records: LoopRecord[]; now: number; spoken?: SpokenLine[] }): 'stale' | 'redundant' | null {
+function isStaleOrRedundant(row: LoopItem, ctx: { items: LoopItem[]; records: LoopRecord[]; now: number; spoken?: SpokenLine[] }): 'stale' | 'redundant' | null {
   const rAt = Date.parse(row.resultAt ?? '')
   if (!row.result || !Number.isFinite(rAt)) return null
   const key = loopKey('work', row.text)

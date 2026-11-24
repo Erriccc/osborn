@@ -1605,13 +1605,15 @@ export class ClaudeLLM extends llm.LLM {
   #workSeen = new Set<string>()
   /** Main-thread tool calls in the turn so far (a result the agent kept working after was used). */
   #turnTools = 0
-  /** The last few replies with their time (memory only, ledger on only): lets a result already told be skipped. */
+  /** The last few replies with when they began speaking (memory only, ledger on only): lets a result already told be skipped. */
   #spoken: SpokenLine[] = []
-  #noteSpoken(chunks: string[]): void {
+  /** When this turn's first spoken chunk went out: a reply that began before a result never counts as telling it. */
+  #turnTextAt = 0
+  #noteSpoken(chunks: string[], at: number): void {
     if (!workLedgerEnabled()) return
     const text = chunks.join('').trim()
     if (!text) return
-    this.#spoken.push({ at: Date.now(), text: text.slice(0, 2000) })
+    this.#spoken.push({ at, text: text.slice(0, 2000) })
     if (this.#spoken.length > 8) this.#spoken.shift()
   }
   recentSpoken(): SpokenLine[] { return [...this.#spoken] }
@@ -1652,8 +1654,8 @@ export class ClaudeLLM extends llm.LLM {
    * means the main agent had it (`seen`: not that the user heard it). Otherwise the row stays result_ready for
    * `surfaceUndelivered`, and the reply to that notice closes it.
    */
-  deliverTurnResults(sessionId: string | null | undefined, chunks: string[]): void {
-    this.#noteSpoken(chunks)
+  deliverTurnResults(sessionId: string | null | undefined, chunks: string[], spokeAt = Date.now()): void {
+    this.#noteSpoken(chunks, spokeAt)
     for (const [id, r] of this.#workResultTurn) {
       if (r.turn > this.#loopTurn) continue
       if (r.turn === this.#loopTurn && !r.waited) {
@@ -2549,6 +2551,7 @@ export class ClaudeLLM extends llm.LLM {
               callbacks.eventEmitter.emit('assistant_text', { text: cleanText, messageId: turnMessageId, chunkIndex })
               const ttsChunk = stripMarkdownForTTS(cleanText)
               if (ttsChunk.trim()) {
+                if (!this.#currentTurnChunks.length) this.#turnTextAt = Date.now()
                 this.#currentTurnChunks.push(ttsChunk)
                 this.#currentTurnChunkIndex++
                 console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk}"`)
@@ -2573,7 +2576,7 @@ export class ClaudeLLM extends llm.LLM {
           const turnMessageId = this.#currentTurnMessageId
           const turnChunks = [...this.#currentTurnChunks]
           this.#closeTurnPoints((msg as any).session_id, [...turnChunks, typeof msg.result === 'string' ? msg.result : ''].join('\n'))
-          this.deliverTurnResults((msg as any).session_id, turnChunks)
+          this.deliverTurnResults((msg as any).session_id, turnChunks, this.#turnTextAt)
           if (msg.result) {
             callbacks.eventEmitter.emit('assistant_result', { text: msg.result, messageId: turnMessageId })
           }
