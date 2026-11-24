@@ -489,8 +489,8 @@ export default function SettingsPage() {
       setTimeout(() => setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'snapshotting' } : op), 80000),
     ]
 
-    const verifyUpdate = (targetVersion: string | null) =>
-      pollVerifyUpdate(sandboxId, targetVersion, { fetchFn: fetch })
+    const verifyUpdate = (targetVersion: string | null, settleMs?: number) =>
+      pollVerifyUpdate(sandboxId, targetVersion, { fetchFn: fetch, settleMs })
 
     try {
       const result = await fetch('/api/sandbox', {
@@ -521,7 +521,7 @@ export default function SettingsPage() {
 
       if (result.success === false) {
         setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'verifying' } : op)
-        const verified = await verifyUpdate(target)
+        const verified = await verifyUpdate(target, 8000)
         setOperation(null)
         if (verified.success) {
           if (verified.version) setInstalledVersion(verified.version)
