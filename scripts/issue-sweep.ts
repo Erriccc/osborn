@@ -45,8 +45,8 @@ export function sweep({ issues, prs, openPrs = [] as any[], comments = {}, confi
     if (n !== p.number && !mentioned.has(n)) mentioned.set(n, p.number)
   }
   const refd = new Set(mentioned.keys())
-  const anyPr = new Set(refd)
-  for (const p of openPrs) for (const n of refs(`${p.title} ${p.body ?? ''}`)) if (n !== p.number) anyPr.add(n)
+  const openRef = new Set<number>()
+  for (const p of openPrs) for (const n of refs(`${p.title} ${p.body ?? ''}`)) if (n !== p.number) openRef.add(n)
   const note = (i) => labelNames(i).includes(FOLLOW_THROUGH_LABEL)
   const expiredClaims = []
   for (const i of open.filter(claimed)) {
@@ -64,8 +64,8 @@ export function sweep({ issues, prs, openPrs = [] as any[], comments = {}, confi
     excluded: issues.length - open.length,
     expiredClaims,
     closeCandidates: pick((i) => refd.has(i.number)).map((n) => ({ number: n, pr: mentioned.get(n) })),
-    unclaimed: pick((i) => !note(i) && !claimed(i) && !anyPr.has(i.number)),
-    claimable: pick((i) => !note(i) && !claimed(i) && age(i) > 1),
+    unclaimed: pick((i) => !note(i) && !claimed(i) && !openRef.has(i.number)),
+    claimable: pick((i) => !note(i) && !claimed(i) && !openRef.has(i.number) && age(i) > 1),
     stale7d: pick((i) => !note(i) && idle(i) >= 7),
     unlabelled: pick((i) => !labelNames(i).length),
     duplicates,
