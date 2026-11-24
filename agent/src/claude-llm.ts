@@ -32,6 +32,7 @@ import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
 import { isOwnApiCurl } from './canvas-key.js'
+import { retireTurnId, currentIdOnPush } from './stale-turn.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -1257,6 +1258,9 @@ export class ClaudeLLM extends llm.LLM {
 
   // Read-along tracking — per-turn message ID and chunk counter for TTS highlighting
   #currentTurnMessageId: string | null = null
+  /** Ids of turns a successful interrupt cut off (#539 D); leftover blocks carrying one are dropped by index.ts. */
+  #retiredTurnIds = new Set<string>()
+  isRetiredTurnId(id?: string | null): boolean { return !!id && this.#retiredTurnIds.has(id) }
   #currentTurnChunkIndex = 0
   #currentTurnChunks: string[] = []
   #currentTurnSpeed: number | undefined
@@ -1864,6 +1868,7 @@ export class ClaudeLLM extends llm.LLM {
         // (not decrement): an idle subprocess has no turn streaming. Safe — the
         // result handler clamps at > 0, so a late `result` can't drive it negative.
         this.#turnsInFlight = 0
+        retireTurnId(this.#retiredTurnIds, this.#currentTurnMessageId)  // the aborted turn may emit no result: its id must not name the next reply
         console.log('🛑 Interrupted persistent session (Esc equivalent — subprocess stays alive)')
         return true
       } catch (err: any) {
@@ -2300,6 +2305,7 @@ export class ClaudeLLM extends llm.LLM {
           // The turn may still run and fold this message in: its reply must not
           // carry the interrupted turn's id, which index.ts drops as stale (#456).
           if (late) this.#currentTurnMessageId = null
+          this.#currentTurnMessageId = currentIdOnPush(this.#retiredTurnIds, this.#currentTurnMessageId)
           if (this.#messageChannel && !this.#messageChannel.closed) {
             console.log('⚡ Persistent session: pushing deferred message (post-interrupt)')
             this.#messageChannel.push(userMessage)
@@ -2310,6 +2316,7 @@ export class ClaudeLLM extends llm.LLM {
         })
       } else {
         console.log('⚡ Persistent session: pushing message (no JSONL replay)')
+        this.#currentTurnMessageId = currentIdOnPush(this.#retiredTurnIds, this.#currentTurnMessageId)
         this.#messageChannel.push(userMessage)
       }
       return
