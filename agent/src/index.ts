@@ -3285,7 +3285,8 @@ async function main() {
       if (!gone && !timedOut && spawned) { slots.remove(slot.id, slot); spokeFreedAt.set(slot.id, Date.now()); if (spokeFreedAt.size > 50) spokeFreedAt.delete(spokeFreedAt.keys().next().value as string); void sendToFrontend({ type: 'background_session_stopped', slotId: slot.id }); armAloneTimer() }
       const hubUp = !!currentLLM && !!activeRoom && peopleIn(activeRoom) > 0
       console.log(`📬 [DISPATCH] ${project} ${status}; ${hubUp ? 'telling the hub' : 'notifying the phone'}`)
-      if (workId) currentLLM?.recordWork?.({ kind: 'work_result', id: workId, result: `${status}: ${last || '(no final message)'}` })
+      // owner/text too: after a session switch this lands in the new session's ledger, where it must still read as a task.
+      if (workId) currentLLM?.recordWork?.({ kind: 'work_result', id: workId, owner: `local:${project}`, text: `Sent to ${project}`, result:`${status}: ${last || '(no final message)'}` })
       if (hubUp) {
         try {
           const ctx = new llm.ChatContext()

@@ -38,10 +38,10 @@ const RECAP_MAX = 3
 /** A work row that was never delivered is dropped after this long, so a stuck row cannot linger. */
 export const WORK_TTL_MS = 6 * 60 * 60 * 1000
 /** Surfaced at most this often per row and this many times, then it waits for the recap. */
-export const WORK_SURFACE_MAX = 2
+const WORK_SURFACE_MAX = 2
 export const WORK_SURFACE_GAP_MS = 2 * 60 * 1000
 /** A result must be this old before it is surfaced: the turn that received it gets to report it first. */
-export const WORK_SETTLE_MS = 10 * 1000
+const WORK_SETTLE_MS = 10 * 1000
 /** OSBORN_WORK_LEDGER=off|0|false|no turns delegation tracking off; default on (foreground session only, see `recordWork`). */
 export const workLedgerEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => !/^(off|0|false|no)$/i.test(String(env.OSBORN_WORK_LEDGER ?? '').trim())
 
@@ -212,7 +212,7 @@ const WORK_STATE: Partial<Record<LoopKind, WorkState>> = {
   work_opened: 'opened', work_claimed: 'claimed', work_result: 'result_ready', work_delivered: 'delivered', work_dropped: 'dropped',
 }
 /** Old builds ignore these kinds (no OPENS entry), so a mixed fleet shares one ledger safely. */
-export const isWorkKind = (k: string): boolean => k.startsWith('work_')
+const isWorkKind =(k: string): boolean => k.startsWith('work_')
 const WORK_END: WorkState[] = ['delivered', 'dropped']
 
 function applyWork(item: LoopItem, r: LoopRecord): void {

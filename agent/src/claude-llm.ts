@@ -27,9 +27,8 @@ import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
 import { addressedPoints, turnPoints } from './points.js'
-import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_ITEM_CHARS, MAX_PROMPT_BYTES, takeLoopsRecap, workLedgerEnabled, type LoopRecordInput } from './loops-ledger.js'
-import { redactSecrets } from './content/secret-rules.js'
-import { clip } from './content/lens-ingest.js'
+import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, workLedgerEnabled, type LoopRecordInput } from './loops-ledger.js'
+import { outboundText } from './follow-through-client.js'
 import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
@@ -1609,7 +1608,7 @@ export class ClaudeLLM extends llm.LLM {
    */
   recordWork(rec: LoopRecordInput, sessionId?: string | null): void {
     if (!this.#opts.followThrough || !workLedgerEnabled()) return
-    const cut = (t?: string) => t === undefined ? undefined : clip(redactSecrets(t).replace(/\s+/g, ' ').trim(), MAX_ITEM_CHARS)
+    const cut = (t?: string) => t === undefined ? undefined : outboundText(t)
     this.recordLoop({ ...rec, ...(rec.text !== undefined ? { text: cut(rec.text) } : {}), ...(rec.result !== undefined ? { result: cut(rec.result) } : {}), source: 'inferred', origin: 'tool' }, sessionId)
   }
 

@@ -54,6 +54,12 @@ t('unknown kinds are tolerated (old build and new build share one file)', () => 
   assert.equal(item(rs).state, 'opened'); assert.equal(L.foldLoops(rs).has('x'), false)
 })
 
+t('a spoke result carries its own text: an orphan row (session switched) still reads as a task, a normal row keeps its opening text', () => {
+  const sr = rec(60_000, { kind: 'work_result', id, owner: 'local:p', text: 'Sent to p', result: 'completed: ok' })
+  assert.equal(item([sr]).text, 'Sent to p'); assert.equal(item([sr]).owner, 'local:p')
+  assert.equal(item([opened, claimed, sr]).text, 'writer: fix login')
+})
+
 t('work rows are never filed as issues', () => {
   assert.equal(L.fileableLoops([opened, claimed, result]).length, 0)
 })
@@ -106,7 +112,7 @@ t('flag: default on, off values turn it off', () => {
   assert.equal(L.workLedgerEnabled({ OSBORN_WORK_LEDGER: 'on' } as any), true)
 })
 
-t('ClaudeLLM: foreground records work, result once, turn reply delivers; background and flag-off record nothing', () => {
+t('ClaudeLLM: foreground records work, result once, a shown card delivers; background and flag-off record nothing', () => {
   const llm: any = createClaudeLLM({ workingDirectory: cwd, followThrough: true })
   llm.noteUserTurn('do it', 's-fg')
   llm.recordWork({ kind: 'work_opened', id, text: 'writer: fix login sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 ok', owner: 'local:writer', via: 'task' }, 's-fg')
