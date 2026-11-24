@@ -217,5 +217,21 @@ t('work rows rank after the user\'s own asks in the recap', () => {
   assert.ok(texts.every((x) => x.startsWith('my ask')), texts.join('|'))
 })
 
+t('stale work rows never recap, flag unset or on', () => {
+  const old = new Date(Date.now() - 3 * 86400_000).toISOString()
+  const prev = process.env.OSBORN_WORK_LEDGER
+  try {
+    for (const flag of [undefined, 'on']) {
+      const sid = `s-stale-${flag ?? 'off'}`
+      for (let i = 0; i < 30; i++) {
+        L.appendLoopRecord(sid, cwd, { kind: 'work_opened', id: L.loopIds.work(`${sid}${i}`), text: `researcher: task ${i}`, fg: true, at: old } as any)
+        L.appendLoopRecord(sid, cwd, { kind: 'work_result', id: L.loopIds.work(`${sid}${i}`), result: 'r', fg: true, at: old } as any)
+      }
+      if (flag) process.env.OSBORN_WORK_LEDGER = flag; else delete process.env.OSBORN_WORK_LEDGER
+      assert.ok(!L.takeLoopsRecap(cwd, undefined, 'live').some((x) => x.text.includes('researcher: task')))
+    }
+  } finally { if (prev === undefined) delete process.env.OSBORN_WORK_LEDGER; else process.env.OSBORN_WORK_LEDGER = prev }
+})
+
 rmSync(home, { recursive: true, force: true })
 console.log(`\n${pass} passed`)
