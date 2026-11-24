@@ -162,6 +162,14 @@ for (const v of ['on', '1', 'TRUE', 'yes', '']) assert.equal(speechTimelineHold(
   assert.equal(speechTimeline.awaitingContinuation(Date.now() + 2), false, 'a model turn commits')
   speechTimeline.reset()
 }
+// a dropped side remark: after reset the next reply is not held
+{
+  const t = new SpeechTimeline()
+  t.onTurnCommit(0); t.onTranscript(4, 1000)
+  assert.equal(t.shouldHold(1500, true), true)
+  t.reset()
+  assert.equal(t.shouldHold(1500, true), false, 'no hold after a drop reset')
+}
 // The toggle's note never steers a live turn
 assert.equal(steersTurn(getNoiseCancelNote(true)), false); assert.equal(steersTurn(getNoiseCancelNote(false)), false)
 // takeVoiceCommand and setNoiseGate are closures inside main() (not exported): their wiring is checked on the source text
@@ -169,6 +177,8 @@ assert.equal(steersTurn(getNoiseCancelNote(true)), false); assert.equal(steersTu
   const { readFileSync } = await import('node:fs')
   const ix = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
   assert.ok(/inPhoneRoom\(\) \|\| !isShhCue/.test(ix), 'shh not handled in a phone room')
+  assert.ok(/noiseGate\.on\('drop'[\s\S]{0,400}?speechTimeline\.reset\(\)[\s\S]{0,200}?replayTimer\.arm\(\)/.test(ix), 'a gate drop resets the timeline before the replay')
+  assert.ok(/setNoiseGate\(true, \{ quiet: true \}\)\s*\n\s*return noiseGate\.enabled/.test(ix), 'shh is forwarded when the gate cannot turn on')
   assert.equal((ix.match(/noiseGate\.setEnabled\([^)]*'ui'\)/g) || []).length, 1, 'the UI toggle and shh share setNoiseGate')
 }
 console.log('speech-timeline: ok')

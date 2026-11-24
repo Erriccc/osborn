@@ -4746,6 +4746,7 @@ async function main() {
   })
   noiseGate.on('drop', (d: { text: string; verdict: string; ts: number }) => {
     void sendToFrontend({ type: 'gate_dropped', text: d.text, verdict: d.verdict, ts: d.ts })
+    speechTimeline.reset()  // a drop proves that speech was not the user's continuation: no 6 s wait for the next reply
     replayTimer.arm()  // the held utterance never became a turn: buffered reply text may speak now
   })
   noiseGate.on('auto_exit', () => {
@@ -8059,7 +8060,7 @@ async function main() {
     if (inPhoneRoom() || !isShhCue(text)) return false
     console.log('🤫 [shh] side-conversation filter on, no reply')
     setNoiseGate(true, { quiet: true })
-    return true
+    return noiseGate.enabled  // OSBORN_NOISE_GATE=off: the gate cannot turn on, so the turn goes to the model
   }
 
   /**

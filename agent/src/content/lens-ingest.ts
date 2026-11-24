@@ -17,6 +17,7 @@
  */
 
 import { createHash } from 'node:crypto'
+import { envFlagUnlessOff } from '../env-keys.js'
 import { isContentLensEnabled } from './lens-launch.js'
 import { parsePage } from './lens-library-index.js'
 
@@ -58,10 +59,9 @@ export interface IngestOptions {
   log?: (m: string) => void
 }
 
-const OFF = ['0', 'off', 'false', 'no']
 export function isIngestEnabled(): boolean {
   if (!isContentLensEnabled()) return false
-  return !OFF.includes((process.env.OSBORN_CONTENT_INGEST ?? '').trim().toLowerCase())
+  return envFlagUnlessOff(process.env.OSBORN_CONTENT_INGEST)
 }
 
 /** True only for keys safe to send from a machine: anon JWTs or sb_publishable_ keys. */

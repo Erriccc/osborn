@@ -44,14 +44,9 @@ export type LensLaunchResult =
   | { status: 'spawned'; pid?: number; projectDir: string | null; worker: string }
   | { status: 'error'; error: string }
 
-/** ON unless the env var is 0 | off | false | no. */
-function envOn(name: string): boolean {
-  return envFlagUnlessOff(process.env[name])
-}
-
 /** ON by default; kill switch: OSBORN_CONTENT_LENS=0 | off | false | no. */
 export function isContentLensEnabled(): boolean {
-  return envOn('OSBORN_CONTENT_LENS')
+  return envFlagUnlessOff(process.env.OSBORN_CONTENT_LENS)
 }
 
 /**
@@ -326,7 +321,7 @@ export function librarySweepHealth(): Record<string, unknown> {
 
 /** ON by default; kill switch: OSBORN_FOLLOW_THROUGH=0 | off | false | no. */
 export function isFollowThroughEnabled(): boolean {
-  return envOn('OSBORN_FOLLOW_THROUGH')
+  return envFlagUnlessOff(process.env.OSBORN_FOLLOW_THROUGH)
 }
 
 export type LoopsFlushTarget = { sessionId: string; cwd: string } | 'drain' | 'last'

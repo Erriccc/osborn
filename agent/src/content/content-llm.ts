@@ -41,11 +41,11 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { ZAI_CODING_BASE, cleanEnvKey, zaiApiKey, zaiModel } from '../env-key.js'
+import { envFlagUnlessOff } from '../env-keys.js'
 import { isContentLensEnabled } from './lens-launch.js'
 import { withFileLock } from './lens-paths.js'
 
 const OPENROUTER = 'https://openrouter.ai/api/v1'
-const OFF = ['0', 'off', 'false', 'no']
 export const LEDGER_FILE = 'content-spend-ledger.json'
 export const DEFAULT_GEN_MODEL = 'minimax/minimax-m3'
 /** Pinned judge (proven in videos-test-3/vt3-render.ts): model + provider endpoint, no fallbacks. */
@@ -65,8 +65,7 @@ export const priceFor = (model: string) => PRICES[model] ?? UNKNOWN_PRICE
 /** OFF when OSBORN_CONTENT_PIPELINE, OSBORN_CONTENT_LENS or OSBORN_CONTENT_INGEST is 0/off/false/no: ingest off ⇒ no LLM spend at all. */
 export function isContentPipelineEnabled(): boolean {
   if (!isContentLensEnabled()) return false
-  const off = (k: string) => OFF.includes((process.env[k] ?? '').trim().toLowerCase())
-  return !off('OSBORN_CONTENT_PIPELINE') && !off('OSBORN_CONTENT_INGEST')
+  return envFlagUnlessOff(process.env.OSBORN_CONTENT_PIPELINE) && envFlagUnlessOff(process.env.OSBORN_CONTENT_INGEST)
 }
 
 /**
