@@ -13,9 +13,6 @@ export default function BrowserPage() {
     <main className="min-h-screen bg-neutral-950 px-4 py-6">
       <div className="mx-auto w-full max-w-3xl">
         <BrowserPanel />
-        <p className="mt-6 text-center text-xs text-neutral-600">
-          Watching wakes the engine (~40s to first pixels) and holds it awake while streaming.
-        </p>
       </div>
     </main>
   )

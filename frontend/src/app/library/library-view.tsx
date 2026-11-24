@@ -517,7 +517,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
           </div>
         ) : !user ? (
           // Sign in comes back here (/login honours same-site ?next=).
-          <SignInCard className="max-w-md mx-auto mt-10" icon={<DocIcon className="w-6 h-6 text-[var(--text-muted)]" />}
+          <SignInCard className="max-w-md mx-auto mt-10" icon={<DocIcon className="w-6 h-6" />}
             title="Sign in to view your library" body="Your library is private to your account."
             href={signInHref(pathname || '/library')} label="Sign in" />
         ) : error ? (

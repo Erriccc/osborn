@@ -14,19 +14,20 @@ export default function SignInCard({ title, body, href, label, icon, secondary, 
   return (
     <div className={`rounded-2xl border border-[var(--border-subtle)] bg-[var(--surface)] p-6 text-center ${className}`}>
       {icon && (
-        <div className="mx-auto mb-3 w-12 h-12 rounded-2xl bg-[var(--surface-2)] border border-[var(--border-subtle)] flex items-center justify-center">
+        <div className="mx-auto mb-3 w-12 h-12 rounded-2xl bg-surface-2 border border-[var(--border)] text-[var(--text-primary)] flex items-center justify-center">
           {icon}
         </div>
       )}
       <p className="text-[14px] text-[var(--text-primary)] font-medium">{title}</p>
       <p className="mt-1 text-[13px] text-[var(--text-secondary)]">{body}</p>
       <a href={href}
-        className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2.5 text-[13px] font-semibold hover:opacity-90 active:scale-[0.98] transition-all">
+        style={{ background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)', color: 'var(--background)' }}
+        className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-5 text-[15px] font-semibold hover:opacity-90 active:scale-[0.98] transition-all">
         {label}
       </a>
       {secondary && (
         <div className="mt-3">
-          <button type="button" onClick={secondary.onClick} className="text-[13px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] underline underline-offset-2 transition-colors">{secondary.label}</button>
+          <button type="button" onClick={secondary.onClick} className="text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)] underline underline-offset-2 transition-colors">{secondary.label}</button>
         </div>
       )}
     </div>
