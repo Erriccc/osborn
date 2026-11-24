@@ -34,6 +34,7 @@ import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssu
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
 import { isOwnApiCurl } from './canvas-key.js'
 import { currentIdOnPush } from './stale-turn.js'
+import { markPush, markHookDone } from './turn-timing.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., compact-learnings instruction).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -2341,6 +2342,7 @@ export class ClaudeLLM extends llm.LLM {
         console.log('⚡ Persistent session: interrupt in flight — deferring push until it settles')
         // Deadline (adversarial finding #2): a wedged interrupt control request
         // must not make the agent permanently deaf — push anyway after 8s.
+        const deferStart = Date.now()
         const deadline = new Promise<'late'>((res) => setTimeout(() => res('late'), 8000))
         Promise.race([pending, deadline]).then((late) => {
           // The turn may still run and fold this message in: its reply must not
@@ -2349,7 +2351,8 @@ export class ClaudeLLM extends llm.LLM {
           if (late) this.#currentTurnMessageId = null
           this.#currentTurnMessageId = currentIdOnPush(this.#retiredTurnIds, this.#currentTurnMessageId)
           if (this.#messageChannel && !this.#messageChannel.closed) {
-            console.log('⚡ Persistent session: pushing deferred message (post-interrupt)')
+            console.log(`⚡ Persistent session: pushing deferred message (post-interrupt, waited ${Date.now() - deferStart}ms${late ? ', deadline hit' : ''})`)
+            markPush(Date.now() - deferStart)
             this.#messageChannel.push(userMessage)
           } else {
             // Never drop a user message silently — make the loss loud in logs.
@@ -2359,6 +2362,7 @@ export class ClaudeLLM extends llm.LLM {
       } else {
         console.log('⚡ Persistent session: pushing message (no JSONL replay)')
         this.#currentTurnMessageId = currentIdOnPush(this.#retiredTurnIds, this.#currentTurnMessageId)
+        markPush(0)
         this.#messageChannel.push(userMessage)
       }
       return
@@ -3120,6 +3124,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // outer race is only a catastrophic-hang backstop (e.g. a momentarily locked
                 // store), set well above the embed budget so a slow embed degrades to keyword
                 // rather than being cut to nothing.
+                const hookT0 = Date.now()
                 const recalled = fromSubagent
                   ? ''
                   : await Promise.race([
@@ -3137,6 +3142,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // prefix, but ordering volatile content last keeps any future
                 // cache_control breakpoint inside this block useful too.
                 const additionalContext = [reminder, recalled, loopRecap, machineNudge].filter(Boolean).join('\n\n')
+                if (!fromSubagent) markHookDone(Date.now() - hookT0)
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [counters reset; speak-cadence ${SPEAK_CADENCE_N}]`)
                 return {
                   hookSpecificOutput: {

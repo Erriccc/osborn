@@ -1,6 +1,8 @@
 'use client'
 
+import { useEffect, useRef } from 'react'
 import { BarVisualizer } from '@livekit/components-react'
+import { levelToHeight, onGotIt, onMicLevel } from '@/lib/mic-level'
 import { resolveOrbState } from '@/lib/orb-state'
 
 // Modern status indicator
@@ -107,5 +109,57 @@ export function VoiceVisualizer({ state, audioTrack }: { state: string; audioTra
         </div>
       </div>
     </>
+  )
+}
+
+// Your own mic level plus a short "got it" tick when a transcript lands. Modelled on the
+// level bar of a phone-call / voice-message recorder: a few thin bars beside the status,
+// driven by the analyser VoiceRoom already runs (no second animation loop, no re-render).
+const STRIP_BARS = 5
+const BAR_WEIGHTS = [0.55, 0.8, 1, 0.8, 0.55]
+export function MicLevelStrip() {
+  const bars = useRef<(HTMLSpanElement | null)[]>([])
+  const tick = useRef<HTMLSpanElement | null>(null)
+  useEffect(() => {
+    const calm = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const offLevel = onMicLevel((v) => {
+      const h = levelToHeight(v)
+      bars.current.forEach((el, i) => {
+        if (!el) return
+        const s = Math.max(0.18, h * BAR_WEIGHTS[i])
+        el.style.transform = `scaleY(${calm ? (h > 0.12 ? 0.8 : 0.18) : s.toFixed(2)})`
+        el.style.opacity = h > 0.05 ? '1' : '0.45'
+      })
+    })
+    const offGot = onGotIt(() => {
+      const el = tick.current
+      if (!el) return
+      el.style.opacity = '1'
+      clearTimeout(timer)
+      timer = setTimeout(() => { el.style.opacity = '0' }, 1200)
+    })
+    return () => { offLevel(); offGot(); clearTimeout(timer) }
+  }, [])
+  return (
+    <div className="flex items-center gap-1.5 shrink-0 select-none" aria-hidden="true" title="Your mic level">
+      <div className="flex items-center gap-[2px] h-4 sm:h-5">
+        {Array.from({ length: STRIP_BARS }, (_, i) => (
+          <span
+            key={i}
+            ref={(el) => { bars.current[i] = el }}
+            className="block w-[3px] h-full rounded-full bg-[var(--accent)] origin-center motion-safe:transition-transform motion-safe:duration-75"
+            style={{ transform: 'scaleY(0.18)', opacity: 0.45 }}
+          />
+        ))}
+      </div>
+      <span
+        ref={tick}
+        className="text-[11px] leading-none text-[var(--accent)] border border-[var(--border-subtle)] rounded-full px-1.5 py-0.5 motion-safe:transition-opacity motion-safe:duration-300"
+        style={{ opacity: 0 }}
+      >
+        got it
+      </span>
+    </div>
   )
 }

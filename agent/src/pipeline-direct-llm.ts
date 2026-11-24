@@ -17,6 +17,7 @@ import { statusManager } from './status-manager.js'
 import { noiseGate, GATE_CONTEXT_TURNS } from './noise-gate.js'
 import { cleanTurnText, redactSecrets, isAmbientTurn } from './content/transcript-sanitizer.js'
 import { EventEmitter } from 'events'
+import { markChat } from './turn-timing.js'
 
 // Bypass marker for gate-approved contexts: the deferred gate stream re-enters
 // chat() with the SAME chatCtx after a forward verdict; the marker makes the
@@ -354,6 +355,7 @@ export class PipelineDirectLLM extends llm.LLM {
       }
     }
 
+    markChat()
     console.log(`📥 [pipeline] chat() call #${callN} (${userText.length} chars): "${userText}"`)
 
     // ── NOISE GATE (noise-cancellation mode) ─────────────────────────────────
