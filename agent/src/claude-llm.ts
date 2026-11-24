@@ -3490,12 +3490,11 @@ class ClaudeLLMStream extends llm.LLMStream {
               this.#llmRef.claimTaskDispatch(input?.agent_id, at0 ? String(at0) : undefined)
               this.#eventEmitter.emit('agent_started', { agent_type: input?.agent_type, agent_id: input?.agent_id, task })
               if (input?.agent_id) {
-                // Work ledger: the delegation and its owner; a local specialist claims at once.
+                // Work ledger: the delegation and its owner.
                 const wr = at0 ? roleOf(String(at0), this.#opts.agentRoles, NAMED_AGENTS) : undefined
                 const wid = loopIds.work(String(input.agent_id))
                 const w = { id: wid, ...(wr ? { role: wr } : {}), owner: wr ? `local:${wr}` : 'main', via: 'task' as const }
                 this.#llmRef.recordWork({ kind: 'work_opened', ...w, text: `${at0 || 'agent'}${rawTask ? `: ${rawTask}` : ''}` }, input?.session_id)
-                this.#llmRef.recordWork({ kind: 'work_claimed', ...w }, input?.session_id)
               }
               if (input?.agent_id) this.#llmRef.recordLoop({ kind: 'dispatch_started', id: loopIds.dispatch(String(input.agent_id)), text: `Unfinished ${at0 || 'agent'} run${task ? `: ${task}` : ''}`, source: 'inferred', origin: 'tool' }, input?.session_id)
               // Record the dispatch as LIVE so the frontend can reconcile orphaned

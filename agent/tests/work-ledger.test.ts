@@ -25,27 +25,25 @@ const at = (ms: number) => new Date(T0 + ms).toISOString()
 const rec = (ms: number, r: Partial<R>): R => ({ v: 1, at: at(ms), fg: true, ...r } as R)
 const id = L.loopIds.work('a1')
 const opened = rec(0, { kind: 'work_opened', id, text: 'writer: fix login', owner: 'local:writer', role: 'writer', via: 'task' })
-const claimed = rec(1, { kind: 'work_claimed', id, owner: 'local:writer' })
 const result = rec(60_000, { kind: 'work_result', id, result: 'Fixed it' })
 const delivered = rec(70_000, { kind: 'work_delivered', id, by: 'spoken' })
 const item = (rs: R[]) => L.foldLoops(rs).get(id)!
 
-t('fold states: opened, claimed, result_ready stay open', () => {
+t('fold states: opened, result_ready stay open', () => {
   assert.equal(item([opened]).state, 'opened')
-  assert.equal(item([opened, claimed]).state, 'claimed')
-  const it = item([opened, claimed, result])
+  const it = item([opened, result])
   assert.equal(it.state, 'result_ready'); assert.equal(it.open, true)
   assert.equal(it.owner, 'local:writer'); assert.equal(it.role, 'writer'); assert.equal(it.via, 'task'); assert.equal(it.result, 'Fixed it')
 })
 
 t('only delivery or a drop closes; a stop-like severed state never does', () => {
-  assert.equal(item([opened, claimed, result, delivered]).open, false)
-  assert.equal(item([opened, claimed, rec(5, { kind: 'work_dropped', id, reason: 'ttl' })]).state, 'dropped')
-  assert.equal(item([opened, claimed, rec(5, { kind: 'dispatch_stopped', id: L.loopIds.dispatch('a1') })]).open, true)
+  assert.equal(item([opened, result, delivered]).open, false)
+  assert.equal(item([opened, rec(5, { kind: 'work_dropped', id, reason: 'ttl' })]).state, 'dropped')
+  assert.equal(item([opened, rec(5, { kind: 'dispatch_stopped', id: L.loopIds.dispatch('a1') })]).open, true)
 })
 
 t('idempotent: a duplicate or late result never reopens a delivered row', () => {
-  const it = item([opened, claimed, result, delivered, rec(80_000, { kind: 'work_result', id, result: 'again' }), rec(81_000, { kind: 'work_surfaced', id })])
+  const it = item([opened, result, delivered, rec(80_000, { kind: 'work_result', id, result: 'again' }), rec(81_000, { kind: 'work_surfaced', id })])
   assert.equal(it.open, false); assert.equal(it.state, 'delivered'); assert.equal(it.result, 'Fixed it')
 })
 
@@ -57,18 +55,18 @@ t('unknown kinds are tolerated (old build and new build share one file)', () => 
 t('a spoke result carries its own text: an orphan row (session switched) still reads as a task, a normal row keeps its opening text', () => {
   const sr = rec(60_000, { kind: 'work_result', id, owner: 'local:p', text: 'Sent to p', result: 'completed: ok' })
   assert.equal(item([sr]).text, 'Sent to p'); assert.equal(item([sr]).owner, 'local:p')
-  assert.equal(item([opened, claimed, sr]).text, 'writer: fix login')
+  assert.equal(item([opened, sr]).text, 'writer: fix login')
 })
 
 t('work rows are never filed as issues', () => {
-  assert.equal(L.fileableLoops([opened, claimed, result]).length, 0)
+  assert.equal(L.fileableLoops([opened, result]).length, 0)
 })
 
 t('pendingDeliveries: only result_ready, settled, oldest first, bounded', () => {
-  const rs = [opened, claimed, result]
+  const rs = [opened, result]
   assert.deepEqual(L.pendingDeliveries(rs, T0 + 60_000 + 1000), [])            // not settled yet
   assert.equal(L.pendingDeliveries(rs, T0 + 61_000 + 10_000).length, 1)
-  assert.deepEqual(L.pendingDeliveries([opened, claimed], T0 + 1e7), [])         // no result yet
+  assert.deepEqual(L.pendingDeliveries([opened], T0 + 1e7), [])         // no result yet
   assert.deepEqual(L.pendingDeliveries([...rs, delivered], T0 + 1e6), [])
   const many: R[] = []
   for (let i = 0; i < 5; i++) many.push(rec(i, { kind: 'work_opened', id: L.loopIds.work('m' + i), text: 't' + i }), rec(1000 * (5 - i), { kind: 'work_result', id: L.loopIds.work('m' + i), result: 'r' + i }))
@@ -78,7 +76,7 @@ t('pendingDeliveries: only result_ready, settled, oldest first, bounded', () => 
 
 t('pendingDeliveries: each row at most twice, with a gap between', () => {
   const s1 = rec(80_000, { kind: 'work_surfaced', id })
-  const base = [opened, claimed, result, s1]
+  const base = [opened, result, s1]
   assert.deepEqual(L.pendingDeliveries(base, T0 + 81_000), [])
   assert.equal(L.pendingDeliveries(base, T0 + 80_000 + L.WORK_SURFACE_GAP_MS).length, 1)
   const twice = [...base, rec(300_000, { kind: 'work_surfaced', id })]
@@ -86,11 +84,11 @@ t('pendingDeliveries: each row at most twice, with a gap between', () => {
 })
 
 t('TTL: expiredWork lists old open rows; pendingDeliveries skips them', () => {
-  const rs = [opened, claimed, result]
+  const rs = [opened, result]
   assert.deepEqual(L.expiredWork(rs, T0 + 1000), [])
   assert.deepEqual(L.expiredWork(rs, T0 + L.WORK_TTL_MS + 1), [])                 // counted from the result
   assert.deepEqual(L.expiredWork(rs, T0 + 60_000 + L.WORK_TTL_MS + 1), [id])
-  assert.deepEqual(L.expiredWork([opened, claimed], T0 + L.WORK_TTL_MS + 1), [id])  // no result: from opening
+  assert.deepEqual(L.expiredWork([opened], T0 + L.WORK_TTL_MS + 1), [id])  // no result: from opening
   assert.deepEqual(L.pendingDeliveries(rs, T0 + L.WORK_TTL_MS + 1e6), [])
   assert.deepEqual(L.expiredWork([...rs, delivered], T0 + L.WORK_TTL_MS + 1), [])
 })
@@ -144,3 +142,4 @@ t('note: bounded, quoted, redacted, hidden characters stripped, at most two rows
 
 rmSync(home, { recursive: true, force: true })
 console.log(`\n${pass} passed`)
+

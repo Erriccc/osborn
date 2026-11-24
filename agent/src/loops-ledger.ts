@@ -57,7 +57,7 @@ export type LoopKind =
   | 'permission_pending' | 'permission_settled'
   | 'slot_refused' | 'budget_denied' | 'open_loop' | 'queued' | 'started'
   | 'filed' | 'recapped' | 'held'
-  | 'work_opened' | 'work_claimed' | 'work_result' | 'work_surfaced' | 'work_delivered' | 'work_dropped'
+  | 'work_opened' | 'work_result' | 'work_surfaced' | 'work_delivered' | 'work_dropped'
 
 export interface LoopRecord {
   v: 1
@@ -80,20 +80,19 @@ export interface LoopRecord {
   /** `held`: the repo that held the item back (public or unknown visibility). */
   repo?: string
   truncated?: boolean
-  /** `work_*`: who holds the work ('main', 'local:<role>', 'local:<project>'), its role, how it was sent, the work it came out of. */
+  /** `work_*`: who holds the work ('main', 'local:<role>', 'local:<project>'), its role, how it was sent. */
   owner?: string
   role?: string
   via?: WorkVia
-  parent?: string
   /** `work_result`: what came back, short, secrets redacted. */
   result?: string
   /** `work_dropped`: why it was closed without delivery. */
   reason?: string
 }
 
-export type WorkVia = 'task' | 'dispatch' | 'slot'
+export type WorkVia = 'task' | 'dispatch'
 export type WorkDelivery = 'spoken' | 'shown' | 'phone'
-export type WorkState = 'opened' | 'claimed' | 'result_ready' | 'delivered' | 'dropped'
+export type WorkState = 'opened' | 'result_ready' | 'delivered' | 'dropped'
 
 export type LoopRecordInput = Omit<LoopRecord, 'v' | 'at'> & { at?: string }
 
@@ -115,10 +114,8 @@ export interface LoopItem {
   owner?: string
   role?: string
   via?: WorkVia
-  parent?: string
   result?: string
   resultAt?: string
-  deliveredAt?: string
   surfaced?: number
   lastSurfacedAt?: string
 }
@@ -201,7 +198,6 @@ const OPENS: Partial<Record<LoopKind, (r: LoopRecord) => boolean>> = {
   started: () => false,
   // Delegated work (work ledger): open until its result is delivered or it is dropped, never by the run merely stopping.
   work_opened: () => true,
-  work_claimed: () => true,
   work_result: () => true,
   work_surfaced: () => true,
   work_delivered: () => false,
@@ -209,7 +205,7 @@ const OPENS: Partial<Record<LoopKind, (r: LoopRecord) => boolean>> = {
 }
 
 const WORK_STATE: Partial<Record<LoopKind, WorkState>> = {
-  work_opened: 'opened', work_claimed: 'claimed', work_result: 'result_ready', work_delivered: 'delivered', work_dropped: 'dropped',
+  work_opened: 'opened', work_result: 'result_ready', work_delivered: 'delivered', work_dropped: 'dropped',
 }
 /** Old builds ignore these kinds (no OPENS entry), so a mixed fleet shares one ledger safely. */
 const isWorkKind =(k: string): boolean => k.startsWith('work_')
@@ -221,9 +217,7 @@ function applyWork(item: LoopItem, r: LoopRecord): void {
   if (r.owner) item.owner = r.owner
   if (r.role) item.role = r.role
   if (r.via) item.via = r.via
-  if (r.parent) item.parent = r.parent
   if (r.kind === 'work_result') { item.result = r.result ?? r.text; item.resultAt = r.at }
-  if (r.kind === 'work_delivered') item.deliveredAt = r.at
   if (r.kind === 'work_surfaced') { item.surfaced = (item.surfaced ?? 0) + 1; item.lastSurfacedAt = r.at }
 }
 
@@ -438,7 +432,7 @@ export function listLedgers(): Array<{ sessionId: string; path: string; cwd?: st
 // ── Recap (tier b): at most RECAP_MAX lines, each item once ─────────────────
 
 /** Unfiled open items come back in this order: refused-at-capacity work, unanswered questions, the rest, then inferred points. */
-const UNFILED_RANK: Partial<Record<LoopKind, number>> = { queued: 0, question: 1, point: 3 }
+const UNFILED_RANK: Partial<Record<LoopKind, number>> = { queued: 0, question: 1, point: 3, work_opened: 3, work_result: 3, work_surfaced: 3 }
 
 /** `filed` marks an item the ledger says was filed; `url` is set only when it points into this project's own repo. */
 export interface RecapItem { text: string; url?: string; filed?: true }

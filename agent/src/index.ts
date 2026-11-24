@@ -58,7 +58,8 @@ import { clearPipelineFastBrainSession, prewarmBM25Index, probeFastBrain, fastBr
 import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
-import { loopIds, appendQueuedLoop, markQueuedStarted, pendingDeliveries, expiredWork, readLoopRecords, workLedgerEnabled } from './loops-ledger.js'
+import { outboundText } from './follow-through-client.js'
+import { loopIds, appendLoopRecord, appendQueuedLoop, markQueuedStarted, pendingDeliveries, expiredWork, readLoopRecords, workLedgerEnabled } from './loops-ledger.js'
 import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
@@ -3246,13 +3247,14 @@ async function main() {
     if (!slot.kickoffDone) { slot.reportPending = false; return fail('Slot did not start within a minute') }
     slot.dispatchInFlight = true
     // Work ledger: the hub's own record of what it sent, closed only when the result is told.
+    let hubLedger: { sid: string; cwd: string } | undefined
     const workId = opts.report ? loopIds.work(`dispatch:${opts.report.project}:${Date.now().toString(36)}`) : undefined
     if (workId) {
       const w = { id: workId, owner: `local:${opts.report!.project}`, via: 'dispatch' as const }
       currentLLM?.recordWork?.({ kind: 'work_opened', ...w, text: `Sent to ${opts.report!.project}: ${instruction}` })
-      currentLLM?.recordWork?.({ kind: 'work_claimed', ...w })
+      hubLedger = currentLLM?.sessionId && (currentLLM as any).workingDirectory ? { sid: currentLLM.sessionId, cwd: (currentLLM as any).workingDirectory as string } : undefined
     }
-    if (opts.report) reportSlotWhenIdle(slot, opts.report.project, spawned, workId)
+    if (opts.report) reportSlotWhenIdle(slot, opts.report.project, spawned, workId, hubLedger)
     // Reuse the cold-start emitter — pushMessage's fast path ignores a fresh emitter once the
     // subprocess exists (see spawnBackgroundSession). NO priority override: slot work is foreground
     // turn work, and a 'now' dispatch would abort the previous instruction mid-flight. Instructions queue/fold.
@@ -3266,7 +3268,9 @@ async function main() {
 
   // The slot's whole turn (writer chain included) is over when busyState().idle, as keepWorkingAfterLeave
   // reads it. The report is a hub turn when a person is in the room, else a phone notice.
-  function reportSlotWhenIdle(slot: SessionSlot, project: string, spawned: boolean, workId?: string): void {
+  function reportSlotWhenIdle(slot: SessionSlot, project: string, spawned: boolean, workId?: string, hub?: { sid: string; cwd: string }): void {
+    // Written to the hub's own ledger, not currentLLM: a hang-up parks the brain and nulls it.
+    const hubWrite = (rec: Parameters<typeof appendLoopRecord>[2]) => { if (hub && workLedgerEnabled()) appendLoopRecord(hub.sid, hub.cwd, { ...rec, source: 'inferred', origin: 'tool', fg: true }) }
     let last = ''
     slot.reportPending = true
     const onResult = ({ text }: { text: string }) => { if (text) last = text }
@@ -3286,7 +3290,7 @@ async function main() {
       const hubUp = !!currentLLM && !!activeRoom && peopleIn(activeRoom) > 0
       console.log(`📬 [DISPATCH] ${project} ${status}; ${hubUp ? 'telling the hub' : 'notifying the phone'}`)
       // owner/text too: after a session switch this lands in the new session's ledger, where it must still read as a task.
-      if (workId) currentLLM?.recordWork?.({ kind: 'work_result', id: workId, owner: `local:${project}`, text: `Sent to ${project}`, result:`${status}: ${last || '(no final message)'}` })
+      if (workId) hubWrite({ kind: 'work_result', id: workId, owner: `local:${project}`, text: `Sent to ${project}`, result: outboundText(`${status}: ${last || '(no final message)'}`) })
       if (hubUp) {
         try {
           const ctx = new llm.ChatContext()
@@ -3297,8 +3301,7 @@ async function main() {
           if (workId) workSpoken.set(workId, Date.now())
         } catch (err) { console.warn(`⚠️ Spoke report failed: ${(err as Error).message}`) }
       } else {
-        void notifyPhone(spokePhoneNotice(project, status, last))
-        if (workId) currentLLM?.recordWork?.({ kind: 'work_delivered', id: workId, by: 'phone' })
+        void notifyPhone(spokePhoneNotice(project, status, last)).then((ok) => { if (ok && workId) hubWrite({ kind: 'work_delivered', id: workId, by: 'phone' }) })
       }
     }, 5_000)
   }
@@ -3322,10 +3325,12 @@ async function main() {
     try {
       if (!workLedgerEnabled() || !currentLLM || !activeRoom || peopleIn(activeRoom) === 0) return
       if (agentState !== 'listening' || userState === 'speaking' || haikuInFlight || isProcessingQueue || voiceQueue.length > 0) return
-      // An id handed over that was never followed by speech stays open (and may be surfaced again, twice at most).
-      for (const [id, at] of workSpoken) if (Date.now() - at > 90_000) workSpoken.delete(id)
-      if (activeMeetingBotId || workSpoken.size > 0) return
+      if (activeMeetingBotId) return
       if (!((currentLLM as any).busyState?.()?.idle ?? false)) return
+      // An id handed over that was never followed by speech stays open (and may be surfaced again, twice at most);
+      // aged out only here, once the agent is idle, so a long silent tool run does not lose it.
+      for (const [id, at] of workSpoken) if (Date.now() - at > 90_000) workSpoken.delete(id)
+      if (workSpoken.size > 0) return
       const sid = currentLLM.sessionId
       const cwd = (currentLLM as any).workingDirectory as string | undefined
       if (!sid || !cwd) return

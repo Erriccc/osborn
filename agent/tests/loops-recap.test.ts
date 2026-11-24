@@ -208,5 +208,14 @@ t('#532: a filed item whose url fails the shape check is not labelled unfiled', 
   assert.match(out, /Filed while you were away: "x" \(link not shown\)/)
 })
 
+t('work rows rank after the user\'s own asks in the recap', () => {
+  const sid = 's-work'
+  for (let i = 0; i < 3; i++) L.appendLoopRecord(sid, cwd, { kind: 'ask', id: L.loopIds.ask(`wa ${i}`), text: `my ask ${i}`, source: 'explicit', origin: 'user_mic', fg: true })
+  L.appendLoopRecord(sid, cwd, { kind: 'work_opened', id: L.loopIds.work('w1'), text: 'Sent to x: do it', owner: 'local:x', source: 'inferred', origin: 'tool', fg: true, at: '2099-01-01T00:00:00.000Z' })
+  const texts = L.takeLoopsRecap(cwd).map((x) => x.text)
+  assert.equal(texts.length, 3)
+  assert.ok(texts.every((x) => x.startsWith('my ask')), texts.join('|'))
+})
+
 rmSync(home, { recursive: true, force: true })
 console.log(`\n${pass} passed`)
