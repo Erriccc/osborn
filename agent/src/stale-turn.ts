@@ -63,11 +63,48 @@ function replayStep(i: ReplayInput & { expired: boolean; attempts: number }):
   return { act: 'speak' }
 }
 
-type Pending = { suppressedText: string; timestamp: number; suppressedTurnId?: string }
+/**
+ * One buffered reply block (#549). Each block keeps its own turn id and its
+ * first-buffered time: an append never rewrites another block's provenance or
+ * age, so retired text is never spoken and old text always ages out.
+ */
+export type SuppressedBlock = { text: string; turnId?: string; at: number }
+type Pending = { suppressedBlocks: SuppressedBlock[]; timestamp: number }
 type Buffered = Pending & { spokenText: string; recentMessages: string }
-/** A context that holds only buffered reply text: nothing was heard, nothing else to fold in. */
-export const bufferOnly = (suppressedText: string, suppressedTurnId: string | undefined, timestamp: number): Buffered =>
-  ({ spokenText: '', recentMessages: '', suppressedText, suppressedTurnId, timestamp })
+/** A context that holds only buffered reply blocks: nothing was heard, nothing else to fold in. */
+export const bufferOnly = (suppressedBlocks: SuppressedBlock[], timestamp: number): Buffered =>
+  ({ spokenText: '', recentMessages: '', suppressedBlocks, timestamp })
+export const joinBlocks = (blocks: SuppressedBlock[]): string => blocks.map((b) => b.text).join('\n')
+export const totalChars = (blocks: SuppressedBlock[]): number => joinBlocks(blocks).length
+/** Blocks younger than the max age, measured from each block's own first-buffered time. */
+export const liveBlocks = (blocks: SuppressedBlock[], now: number): SuppressedBlock[] => blocks.filter((b) => !isExpired(b.at, now))
+const earliest = (blocks: SuppressedBlock[], fallback: number): number => blocks.length ? Math.min(...blocks.map((b) => b.at)) : fallback
+
+/** Add a block after the existing ones; the others are untouched, a missing id stays missing. */
+export function appendBlock<T extends Pending>(li: T | null, text: string, turnId: string | undefined, now: number): T | Buffered {
+  const block: SuppressedBlock = { text, turnId, at: now }
+  return li ? { ...li, suppressedBlocks: [...li.suppressedBlocks, block] } : bufferOnly([block], now)
+}
+
+/**
+ * Split buffered blocks for a replay: speak the live ones of turns that are not
+ * stale or retired (a block with no id counts as live), keep the stale or retired
+ * ones buffered (the next prompt still tells the agent they went unheard, never spoken),
+ * drop the expired ones.
+ */
+export function partitionForReplay(
+  blocks: SuppressedBlock[], now: number, isStale: (turnId?: string) => boolean,
+): { speak: SuppressedBlock[]; keep: SuppressedBlock[]; expired: number } {
+  const speak: SuppressedBlock[] = [], keep: SuppressedBlock[] = []
+  let expired = 0
+  for (const b of blocks) {
+    if (isExpired(b.at, now)) expired++
+    else if (isStale(b.turnId)) keep.push(b)
+    else speak.push(b)
+  }
+  return { speak, keep, expired }
+}
+
 type ReplayDeps<C extends Pending> = {
   current(): C | null
   userListening(): boolean
@@ -92,50 +129,45 @@ export class ReplayScheduler<C extends Pending> {
     this.cancel()
     if (fresh) this.#attempts = 0
     const captured = this.d.current()
-    if (!captured?.suppressedText || !this.d.userListening()) return
+    if (!captured?.suppressedBlocks.length || !this.d.userListening()) return
     this.#timer = setTimeout(() => {
       this.#timer = null
       const step = replayStep({
         ...this.d.inputs(captured),
         userListening: this.d.userListening(),
-        expired: isExpired(captured.timestamp, (this.d.now ?? Date.now)()),
+        expired: liveBlocks(captured.suppressedBlocks, (this.d.now ?? Date.now)()).length === 0,
         attempts: this.#attempts,
       })
       if (step.act === 'speak') this.d.speak()
       else if (step.act === 'expire') this.d.expire()
-      else if (step.act === 'rearm') { this.#attempts++; this.d.log(`REPLAY WAITING ${captured.suppressedText.length} chars (${step.reason}, retry ${this.#attempts})`); this.arm(false) }
-      else this.d.log(`REPLAY SKIPPED ${captured.suppressedText.length} chars (${step.reason})`)
+      else if (step.act === 'rearm') { this.#attempts++; this.d.log(`REPLAY WAITING ${totalChars(captured.suppressedBlocks)} chars (${step.reason}, retry ${this.#attempts})`); this.arm(false) }
+      else this.d.log(`REPLAY SKIPPED ${totalChars(captured.suppressedBlocks)} chars (${step.reason})`)
     }, this.d.delayMs ?? 1200)
   }
 }
 
-/** Pending text to speak ahead of a newer block (#539 B), and the context left once it is spoken. */
-export function takePending<T extends Pending>(li: T | null): { text: string; rest: T | null } {
-  return li?.suppressedText ? { text: li.suppressedText, rest: { ...li, suppressedText: '' } } : { text: '', rest: li }
+/** Pending blocks to speak ahead of a newer block (#539 B), and the context left once they are taken. */
+export function takePending<T extends Pending>(li: T | null): { blocks: SuppressedBlock[]; rest: T | null } {
+  return li?.suppressedBlocks.length ? { blocks: li.suppressedBlocks, rest: { ...li, suppressedBlocks: [] } } : { blocks: [], rest: li }
 }
 
 /**
  * An uninterrupted say finished (#539 C): the old interruption context is done,
- * but text buffered after the say started was not covered by it and stays pending.
+ * but blocks buffered after the say started were not covered by it and stay pending.
  */
 export function settleAfterSay(li: Buffered | null): Buffered | null {
-  return li?.suppressedText ? bufferOnly(li.suppressedText, li.suppressedTurnId, li.timestamp) : null
+  return li?.suppressedBlocks.length ? bufferOnly(li.suppressedBlocks, earliest(li.suppressedBlocks, li.timestamp)) : null
 }
 
 /**
- * A replayed say was cut off before it was heard (#539 B): its text goes back in
- * front of anything buffered since, with its original age and turn id, so the
- * next chat() folds it into the prompt. Expired text is not put back.
+ * A replayed say was cut off before it was heard (#539 B): its blocks go back in
+ * front of anything buffered since, each with its original age and turn id, so the
+ * next chat() folds them into the prompt. Expired blocks are not put back.
  */
-export function putBack<T extends Buffered>(
-  li: T | null, text: string, turnId: string | undefined, timestamp: number, now: number,
-): T | Buffered | null {
-  if (!text || isExpired(timestamp, now)) return li
-  if (!li) return bufferOnly(text, turnId, timestamp)
-  return {
-    ...li,
-    suppressedText: li.suppressedText ? `${text}\n${li.suppressedText}` : text,
-    suppressedTurnId: li.suppressedText ? li.suppressedTurnId : turnId,
-    timestamp: Math.min(li.timestamp, timestamp),
-  }
+export function putBack<T extends Buffered>(li: T | null, blocks: SuppressedBlock[], now: number): T | Buffered | null {
+  const live = liveBlocks(blocks, now)
+  if (!live.length) return li
+  if (!li) return bufferOnly(live, earliest(live, now))
+  const merged = [...live, ...li.suppressedBlocks].sort((a, b) => a.at - b.at)  // stable: equal times keep put-back first
+  return { ...li, suppressedBlocks: merged, timestamp: Math.min(li.timestamp, earliest(live, li.timestamp)) }
 }
