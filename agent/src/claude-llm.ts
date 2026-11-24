@@ -1610,14 +1610,14 @@ export class ClaudeLLM extends llm.LLM {
       if (origin === 'user_mic') {
         const asks = extractAsks(prompt)
         for (const ask of asks) this.recordLoop({ kind: 'ask', id: loopIds.ask(ask), text: ask, source: 'explicit', origin }, sessionId)
-        // A long turn (#455): each point is a local, inferred `ask`; the checklist rides on this turn's context.
+        // A long turn (#455): each point is a local `point` item; the checklist rides on this turn's context.
         // Only a mic turn replaces them: a [MEETING]/[SYSTEM]/[NOTIFICATION] message folded into the live turn must not.
         points = splitPoints(prompt)
         const lowAsks = asks.map((a) => a.toLowerCase())
         this.#turnDispatched = ''
         this.#turnPoints = points.slice(0, POINTS_FILE_CAP)
           .filter((p) => !lowAsks.some((a) => a.includes(p.toLowerCase()) || p.toLowerCase().includes(a)))
-        for (const p of this.#turnPoints) this.recordLoop({ kind: 'ask', id: loopIds.ask(p), text: p, source: 'inferred', origin }, sessionId)
+        for (const p of this.#turnPoints) this.recordLoop({ kind: 'point', id: loopIds.point(p), text: p, source: 'inferred', origin }, sessionId)
       }
       const checklist = points.length ? getPointsChecklist(points) : ''
       const sid = sessionId || this.#sessionId
@@ -1636,7 +1636,7 @@ export class ClaudeLLM extends llm.LLM {
   #closeTurnPoints(sessionId: string | null | undefined, reply: string): void {
     const pts = this.#turnPoints
     this.#turnPoints = []
-    for (const p of addressedPoints(pts, `${reply}\n${this.#turnDispatched}`)) this.recordLoop({ kind: 'ask_addressed', id: loopIds.ask(p), origin: 'user_mic' }, sessionId)
+    for (const p of addressedPoints(pts, `${reply}\n${this.#turnDispatched}`)) this.recordLoop({ kind: 'point_addressed', id: loopIds.point(p), origin: 'user_mic' }, sessionId)
   }
 
   /** TodoWrite: diff the agent's list by content and record new items and status changes. */

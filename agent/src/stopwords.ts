@@ -14,6 +14,8 @@ export const SPEECH_STOPWORDS: ReadonlySet<string> = new Set([
     'thing things sure think time kind sort something maybe stuff look looks good same work working').split(/\s+/),
 ])
 
+export const countWords = (s: string): number => (s.match(/[A-Za-z0-9][A-Za-z0-9'’.-]*/g) ?? []).length
+
 /** Lower-cased content terms (3+ chars, no speech stopwords). Keeps tokens like x-forwarded-host, 1006, 0.9.153. */
 export function terms(text: string): Set<string> {
   const out = new Set<string>()

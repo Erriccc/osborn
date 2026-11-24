@@ -3,7 +3,7 @@
  * transcript into its separate points, and later mark which ones the reply covered.
  */
 import { HIDDEN_CHARS } from './dispatch.js'
-import { SPEECH_STOPWORDS, terms } from './stopwords.js'
+import { SPEECH_STOPWORDS, countWords, terms } from './stopwords.js'
 import { clip } from './content/lens-ingest.js'
 import { cleanTurnText } from './content/transcript-sanitizer.js'
 
@@ -31,8 +31,6 @@ function contentWords(text: string): Set<string> {
   return out
 }
 
-const wordCount = (s: string) => (s.match(/\S+/g) ?? []).length
-
 /**
  * The separate points of a long turn, in order, or [] when the turn is short or has fewer than
  * POINTS_MIN_COUNT points. Only the person's own words count (injected blocks such as a session tail
@@ -41,7 +39,7 @@ const wordCount = (s: string) => (s.match(/\S+/g) ?? []).length
  */
 export function splitPoints(text: string): string[] {
   const clean = (cleanTurnText(String(text || '')) ?? '').replace(HIDDEN_CHARS, ' ').replace(/\s+/g, ' ').trim()
-  if (wordCount(clean) < POINTS_MIN_WORDS) return []
+  if (countWords(clean) < POINTS_MIN_WORDS) return []
   const segs: string[] = []
   for (const sentence of clean.split(/(?<=[.!?])\s+/)) {
     for (const part of sentence.split(MARKER)) {
@@ -49,7 +47,7 @@ export function splitPoints(text: string): string[] {
       for (let i = 0; i < 4 && LEAD_MARKER.test(s); i++) s = s.replace(LEAD_MARKER, '')
       s = s.replace(/^[\s,;:-]+|[\s,;:-]+$/g, '')
       if (!s || CHIT_CHAT.test(s)) continue
-      if (wordCount(s) < MIN_FRAGMENT_WORDS) {
+      if (countWords(s) < MIN_FRAGMENT_WORDS) {
         if (segs.length) segs[segs.length - 1] += ' ' + s
         continue
       }

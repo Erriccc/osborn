@@ -14,6 +14,7 @@ import { recordView, type DbRecord } from './lens-db.js'
 import { llmJson, type ContentLlmOptions } from './content-llm.js'
 import { FORMAT_CATALOG, SCRIPT_RULES, TIER_TEMPLATES, WORDS_PER_SECOND, type Tier } from './content-script-rules.js'
 import type { Brief } from './content-brief.js'
+import { countWords } from '../stopwords.js'
 
 export type Speaker = 'narrator' | 'dev' | 'agent'
 export interface ScriptLine {
@@ -40,7 +41,6 @@ const ROWS_MAX_CHARS = 40_000
 const PAGE_MAX_CHARS = 40_000
 const MAX_LINES = 60
 
-export const countWords = (s: string): number => (s.match(/[A-Za-z0-9][A-Za-z0-9'’.-]*/g) ?? []).length
 export const estimateSeconds = (lines: Pick<ScriptLine, 'text'>[]): number =>
   Number((lines.reduce((n, l) => n + countWords(l.text), 0) / WORDS_PER_SECOND).toFixed(1))
 export function tierBounds(tier: Tier): { min: number; max: number; target: number } {

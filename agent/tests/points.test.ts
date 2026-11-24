@@ -82,13 +82,13 @@ t('addressedPoints: a reply covering two of four leaves exactly two open', () =>
   assert.equal(P.addressedPoints(pts, 'Sure, on it.').length, 0)
 })
 
-t('foldLoops: ask_addressed closes, an unaddressed one is open and recapped; inferred is never fileable', () => {
-  const a = L.loopIds.ask('point a'), b = L.loopIds.ask('point b')
+t('foldLoops: point_addressed closes, an unaddressed one is open and recapped; a point is never fileable', () => {
+  const a = L.loopIds.point('point a'), b = L.loopIds.point('point b')
   const base = { origin: 'user_mic' as const, fg: true }
   const rs = [
-    { v: 1 as const, at: '2026-11-01T00:00:00Z', kind: 'ask' as const, id: a, text: 'point a', source: 'inferred' as const, ...base },
-    { v: 1 as const, at: '2026-11-01T00:00:01Z', kind: 'ask' as const, id: b, text: 'point b', source: 'inferred' as const, ...base },
-    { v: 1 as const, at: '2026-11-01T00:00:02Z', kind: 'ask_addressed' as const, id: a, ...base },
+    { v: 1 as const, at: '2026-11-01T00:00:00Z', kind: 'point' as const, id: a, text: 'point a', source: 'inferred' as const, ...base },
+    { v: 1 as const, at: '2026-11-01T00:00:01Z', kind: 'point' as const, id: b, text: 'point b', source: 'inferred' as const, ...base },
+    { v: 1 as const, at: '2026-11-01T00:00:02Z', kind: 'point_addressed' as const, id: a, ...base },
     { v: 1 as const, at: '2026-11-01T00:00:03Z', kind: 'bogus' as any, id: 'x' },
   ]
   assert.deepEqual(L.openLoops(rs).map((i) => i.text), ['point b'])
@@ -104,16 +104,16 @@ t('only mic turns split: meeting, system, phone and notification turns never do'
   assert.equal(llm.noteUserTurn(`[SYSTEM] ${RAMBLE}`, 's-m'), '')
   llm.setPhoneCall(true)
   assert.equal(llm.noteUserTurn(RAMBLE, 's-m'), '')
-  assert.equal(L.readLoopRecords('s-m', cwd).filter((r) => r.kind === 'ask').length, 0)
+  assert.equal(L.readLoopRecords('s-m', cwd).filter((r) => r.kind === 'point').length, 0)
 })
 
-t('a mic turn records inferred local asks and returns the checklist', () => {
+t('a mic turn records local points and returns the checklist', () => {
   const llm: any = createClaudeLLM({ workingDirectory: cwd, followThrough: true })
   const out: string = llm.noteUserTurn(RAMBLE, 's-mic')
   assert.match(out, /\[POINTS\] The user raised 5 points/)
-  const asks = L.readLoopRecords('s-mic', cwd).filter((r) => r.kind === 'ask')
-  assert.equal(asks.length, 4)
-  assert.ok(asks.every((r) => r.source === 'inferred'))
+  const pts = L.readLoopRecords('s-mic', cwd).filter((r) => r.kind === 'point')
+  assert.equal(pts.length, 4)
+  assert.ok(pts.every((r) => r.source === 'inferred'))
   assert.equal(L.fileableLoops(L.readLoopRecords('s-mic', cwd)).length, 0)
   assert.equal(llm.noteUserTurn(SHORT, 's-mic'), '')
 })
