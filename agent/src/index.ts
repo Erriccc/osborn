@@ -7,7 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { staleIdOnConsume, isStaleOrRetired, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay } from './stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
@@ -4116,7 +4116,7 @@ async function main() {
     if (!text || !currentSession) return
     if (isExpired(lastInterruption!.timestamp, Date.now())) { clearInterruption('expired 60s'); return }
     // Buffered before its turn was cut off (a phone "stop that" interrupts without a new turn): never spoken, the next prompt still carries it.
-    if (isStaleOrRetired(staleTurnId, (id) => !!currentLLM?.isRetiredTurnId(id), lastInterruption!.suppressedTurnId)) {
+    if (isStaleBlock(staleTurnId, lastInterruption!.suppressedTurnId, (id) => !!currentLLM?.isRetiredTurnId(id))) {
       console.log(`🔇 [suppressed] REPLAY DROPPED ${text.length} chars (its turn was interrupted)`)
       return
     }
@@ -5214,7 +5214,7 @@ async function main() {
 
       // A late block from a turn the user already cut off (#456): dropped, never
       // buffered, or the 1.2s replay below could still speak it.
-      if (isStaleOrRetired(staleTurnId, (id) => directLLM.isRetiredTurnId(id), data.messageId)) {
+      if (isStaleBlock(staleTurnId, data.messageId, (id) => directLLM.isRetiredTurnId(id))) {
         console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         return
       }

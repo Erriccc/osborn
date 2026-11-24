@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { staleIdOnConsume, isStaleBlock, currentIdOnPush, isStaleOrRetired, replayStep, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired, MAX_REPLAY_REARMS } from '../src/stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, currentIdOnPush, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired } from '../src/stale-turn.js'
 
 let stale: string | null = null
 // barge-in recorded but never consumed: later blocks of that turn still play
@@ -23,28 +23,15 @@ assert.equal(staleIdOnConsume({ spokenText: 'y', messageId: 'B' }, 'A'), 'B')
 {
   const retired = new Set<string>(['OLD'])
   const isRetired = (id: string) => retired.has(id)
-  assert.equal(isStaleOrRetired(null, isRetired, 'OLD'), true, 'leftover old-id block is stale')
+  assert.equal(isStaleBlock(null, 'OLD', isRetired), true, 'leftover old-id block is stale')
   assert.equal(currentIdOnPush(retired, 'OLD'), null, 'next push drops the retired id')
-  assert.equal(isStaleOrRetired(null, isRetired, 'NEW'), false, 'new reply is not stale')
-  assert.equal(isStaleOrRetired(null, isRetired, undefined), false)
+  assert.equal(isStaleBlock(null, 'NEW', isRetired), false, 'new reply is not stale')
+  assert.equal(isStaleBlock(null, undefined, isRetired), false)
+  assert.equal(isStaleBlock('NEW', 'NEW', isRetired), true, 'the consumed-stale id still counts')
   assert.equal(currentIdOnPush(new Set(), 'LIVE'), 'LIVE')
 }
 
-// #539 A: one step of the replay decision
-{
-  const ok = { hasSession: true, userListening: true, sameInterruption: true, hasText: true, agentSpeaking: false, gateTriaging: false, expired: false, attempts: 0 }
-  const step = (o: object) => replayStep({ ...ok, ...o }) as any
-  assert.equal(step({}).act, 'speak')
-  assert.equal(step({ hasSession: false }).reason, 'no session')
-  assert.equal(step({ userListening: false }).reason, 'user speaking')
-  assert.match(step({ sameInterruption: false }).reason, /new turn/)
-  assert.equal(step({ hasText: false }).reason, 'nothing buffered')
-  assert.equal(step({ expired: true }).act, 'expire')
-  assert.deepEqual(step({ gateTriaging: true }), { act: 'rearm', reason: 'noise gate triaging' })
-  assert.deepEqual(step({ agentSpeaking: true }), { act: 'rearm', reason: 'agent speaking' })
-  assert.equal(step({ gateTriaging: true, attempts: MAX_REPLAY_REARMS }).act, 'skip', 'bounded re-arms')
-  assert.equal(isExpired(0, 60_000), false); assert.equal(isExpired(0, 60_001), true)
-}
+assert.equal(isExpired(0, 60_000), false); assert.equal(isExpired(0, 60_001), true)
 
 // #539 A: the scheduler with fake timers and state (flap, triage, expiry)
 {
@@ -63,11 +50,11 @@ assert.equal(staleIdOnConsume({ spokenText: 'y', messageId: 'B' }, 'A'), 'B')
     now = end
   }
   try {
-    const st = { li: { suppressedText: 'reply A', timestamp: 0 } as any, listening: true, triaging: false, speaking: false }
+    const st = { li: { suppressedText: 'reply A', timestamp: 0 } as any, listening: true, triaging: false, speaking: false, session: true }
     const log: string[] = []
     const sch = new ReplayScheduler({
       current: () => st.li, userListening: () => st.listening,
-      inputs: (c) => ({ hasSession: true, sameInterruption: st.li === c, hasText: !!st.li?.suppressedText, agentSpeaking: st.speaking, gateTriaging: st.triaging }),
+      inputs: (c) => ({ hasSession: st.session, sameInterruption: st.li === c, hasText: !!st.li?.suppressedText, agentSpeaking: st.speaking, gateTriaging: st.triaging }),
       speak: () => { log.push('speak'); st.li = takePending(st.li).rest }, expire: () => { log.push('expire'); st.li = null },
       log: (m) => log.push(m), now: () => now,
     })
@@ -79,7 +66,7 @@ assert.equal(staleIdOnConsume({ spokenText: 'y', messageId: 'B' }, 'A'), 'B')
     assert.equal(st.li.suppressedText, '', 'spoken text is cleared (B/A never replay twice)')
     // gate triaging: skipped, re-armed, then speaks after the gate dropped the utterance
     log.length = 0; st.li = { suppressedText: 'reply B', timestamp: now }; st.triaging = true
-    sch.arm(); advance(1300); assert.match(log[0], /WAITING \(noise gate triaging/)
+    sch.arm(); advance(1300); assert.match(log[0], /WAITING 7 chars \(noise gate triaging/)
     st.triaging = false; advance(1300); assert.equal(log.at(-1), 'speak')
     // agent speaking, then done: re-arm continues until quiet
     log.length = 0; st.li = { suppressedText: 'reply C', timestamp: now }; st.speaking = true
@@ -89,7 +76,22 @@ assert.equal(staleIdOnConsume({ spokenText: 'y', messageId: 'B' }, 'A'), 'B')
     sch.arm(); advance(1300); assert.ok(log.includes('expire') && !log.includes('speak'), JSON.stringify(log)); assert.equal(st.li, null)
     // consumed by a new turn: identity changed -> skipped, nothing spoken
     log.length = 0; st.speaking = false; st.li = { suppressedText: 'x', timestamp: now }; sch.arm(); st.li = null; advance(1300)
-    assert.match(log[0], /SKIPPED/)
+    assert.match(log[0], /SKIPPED 1 chars \(replaced or consumed/)
+    // the agent never stops speaking: bounded re-arms, then it gives up without speaking
+    log.length = 0; st.li = { suppressedText: 'reply D', timestamp: now }; st.speaking = true
+    sch.arm(); advance(30_000); st.speaking = false
+    assert.equal(log.filter((m) => m.startsWith('REPLAY WAITING')).length, 5, JSON.stringify(log))
+    assert.match(log.at(-1)!, /SKIPPED 7 chars \(agent speaking, gave up\)/); assert.ok(!log.includes('speak'))
+    // the user spoke again before the timer fired (no cancel reached it), no session, or the text was taken
+    for (const [set, why] of [
+      [() => { st.listening = false }, /user speaking/],
+      [() => { st.session = false }, /no session/],
+      [() => { st.li.suppressedText = '' }, /nothing buffered/],
+    ] as const) {
+      log.length = 0; st.listening = true; st.session = true; st.li = { suppressedText: 'reply E', timestamp: now }
+      sch.arm(); set(); advance(1300)
+      assert.equal(log.length, 1, JSON.stringify(log)); assert.match(log[0], why)
+    }
   } finally { globalThis.setTimeout = realST; globalThis.clearTimeout = realCT }
 }
 
@@ -122,10 +124,6 @@ assert.equal(staleIdOnConsume({ spokenText: 'y', messageId: 'B' }, 'A'), 'B')
   li = putBack(li, text, 'T1', 100, 1000)
   assert.equal(li.suppressedText, 'B2\nB3', 'older text first, newer kept')
   assert.equal(li.timestamp, 100, 'keeps the original age')
-  // handleSpeechDone's carry merges (reads the buffer, replaces the object) in either order
-  const carried = li.suppressedText
-  const replaced = { spokenText: 'heard', recentMessages: '', suppressedText: carried, suppressedTurnId: li.suppressedTurnId, timestamp: 1100 }
-  assert.ok(replaced.suppressedText.includes('B2'), 'the folded prompt context contains B2')
   // put-back landing after a handleSpeechDone that carried ''
   const after = putBack({ ...base, spokenText: 'heard', suppressedText: '', timestamp: 900 } as any, 'B2', 'T1', 100, 1000) as any
   assert.equal(after.suppressedText, 'B2'); assert.equal(after.spokenText, 'heard'); assert.equal(after.suppressedTurnId, 'T1')
