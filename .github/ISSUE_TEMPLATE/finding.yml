@@ -5,7 +5,7 @@ body:
   - type: dropdown
     id: source
     attributes:
-      label: Source (also add the matching src: label)
+      label: "Source (also add the matching src: label)"
       options: ["src:muse", "src:loop", "src:osborn", "src:founder"]
     validations: {required: true}
   - type: input
@@ -22,7 +22,8 @@ body:
     id: evidence
     attributes:
       label: Evidence
-      description: Screenshot or clip links
+      description: Screenshot or clip links. For a log-only finding, paste the log excerpt inline instead. A finding with no evidence cannot be verified.
+    validations: {required: true}
   - type: textarea
     id: expected
     attributes:
