@@ -2,13 +2,14 @@
 import assert from 'node:assert/strict'
 import { pollVerifyUpdate } from '../src/lib/verify-update'
 
-function run(responses: any[], target: string | null) {
+function run(responses: any[], target: string | null, settleMs?: number) {
   let t = 0, i = 0
   return pollVerifyUpdate('s', target, {
     fetchFn: async () => { const d = responses[Math.min(i++, responses.length - 1)]; return { ok: true, json: async () => d } },
     now: () => t,
     sleep: async (ms) => { t += ms },
     pollMs: 10_000,
+    settleMs,
   }).then((r) => ({ r, t }))
 }
 
@@ -73,6 +74,23 @@ async function main() {
   o = await run([prog], '1.2.3')
   assert.match((o.r as any).error, /after 10 min/)
   assert.ok(o.t >= 600_000 && o.t < 620_000)
+  // final POST error, machine up with no version: reported within the short budget
+  const noVer = { machineState: 'running', installedVersion: null, lastUpdate: { status: 'error', targetVersion: '1.2.3', error: 'boom' } }
+  o = await run([noVer], '1.2.3', 8000)
+  assert.deepEqual(o.r, { success: false, error: 'boom' })
+  assert.ok(o.t <= 10_000)
+  // POST dropped (no settleMs): still waits the full settle
+  o = await run([noVer], '1.2.3')
+  assert.deepEqual(o.r, { success: false, error: 'boom' })
+  assert.ok(o.t >= 180_000)
+  // healthy update is never failed, in either branch
+  const ok = { machineState: 'running', installedVersion: '1.2.3', lastUpdate: { status: 'error', targetVersion: '1.2.3', error: 'boom' } }
+  for (const ms of [8000, undefined]) {
+    o = await run([ok], '1.2.3', ms)
+    assert.deepEqual(o.r, { success: true, version: '1.2.3' })
+  }
+  o = await run([{ ...noVer, machineState: 'starting' }, ok], '1.2.3', 0)
+  assert.equal(o.r.success, false) // settle budget spent before it came up
   console.log('verify-update tests passed')
 }
 main()
