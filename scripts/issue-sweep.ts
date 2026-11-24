@@ -80,7 +80,7 @@ export function render(r) {
     `## Expired claims\n${r.expiredClaims.length ? r.expiredClaims.map((c) => `- #${c.number} ${c.agent ?? ''} ${c.expiry ?? c.reason}`).join('\n') : 'none'}`,
     `## Open but mentioned by a merged PR (candidates to close, not closed)\n${r.closeCandidates.length ? r.closeCandidates.map((c) => `- #${c.number} (PR #${c.pr})`).join('\n') : 'none'}`,
     `## Likely duplicates\n${r.duplicates.length ? r.duplicates.map((g) => `- ${list(g)}`).join('\n') : 'none'}`,
-    `## Unclaimed (no q:claimed label, no merged or open PR mentions it)\n${list(r.unclaimed)}`,
+    `## Unclaimed (no q:claimed label, no open PR mentions it)\n${list(r.unclaimed)}`,
     `## Claimable by cloud agents (no q:claimed label, open over 24h)\n${list(r.claimable)}`,
     `## Stale 7d+\n${list(r.stale7d)}`,
     `## No label\n${list(r.unlabelled)}`,
