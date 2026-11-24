@@ -114,7 +114,9 @@ export default function AdminPage() {
   // Per-machine update progress, keyed by sandbox_id.
   const [updating, setUpdating] = useState<Record<string, UpdateState>>({})
 
-  const handleUpdate = useCallback(async (sandboxId: string) => {
+  const handleUpdate = useCallback(async (sandboxId: string, email: string | null) => {
+    // Destructive: updateOsborn cold-stops and replaces the machine, ending any live session.
+    if (!window.confirm(`Roll ${email ?? 'this user'}'s machine to the latest build? It restarts the machine and ends any voice session in progress.`)) return
     setUpdating((u) => ({ ...u, [sandboxId]: { phase: 'running' } }))
     try {
       const res = await fetch('/api/admin/update', {
@@ -300,7 +302,7 @@ export default function AdminPage() {
 }
 
 /* ── Version + update control ─────────────────────────────────── */
-function VersionCell({ user, state, onUpdate }: { user: AdminUser; state?: UpdateState; onUpdate: (sandboxId: string) => void }) {
+function VersionCell({ user, state, onUpdate }: { user: AdminUser; state?: UpdateState; onUpdate: (sandboxId: string, email: string | null) => void }) {
   const { osborn_version: version, sandbox_id: sandboxId } = user
   return (
     <div className="flex items-center gap-2 whitespace-nowrap">
@@ -313,7 +315,7 @@ function VersionCell({ user, state, onUpdate }: { user: AdminUser; state?: Updat
           </span>
         ) : (
           <button
-            onClick={() => onUpdate(sandboxId)}
+            onClick={() => onUpdate(sandboxId, user.email)}
             className="h-7 px-2.5 rounded-md border border-[var(--border-subtle)] bg-[var(--surface)] text-[var(--text-secondary)] text-[12px] font-medium hover:text-[var(--text-primary)] hover:bg-[var(--surface-raised)] transition-colors"
           >
             Update

@@ -6,6 +6,7 @@ import {
   updateOsborn,
   resolveNewestSandboxImage,
   imageVersionFromRef,
+  parseVersion,
 } from '@/lib/machines'
 
 /**
@@ -51,7 +52,7 @@ export async function POST(req: Request) {
   // An explicit version must be a plain x.y.z; reject junk before handing it to updateOsborn.
   let version: string | undefined
   if (body.version !== undefined && body.version !== null && body.version !== '') {
-    if (typeof body.version !== 'string' || !/^\d+\.\d+\.\d+$/.test(body.version.trim())) {
+    if (typeof body.version !== 'string' || !parseVersion(body.version)) {
       return NextResponse.json({ error: 'version must be x.y.z' }, { status: 400 })
     }
     version = body.version.trim()
@@ -65,8 +66,10 @@ export async function POST(req: Request) {
   }
   const sb = createClient(url, serviceKey, { auth: { persistSession: false } })
 
-  // Resolve the machine's owner (updateOsborn re-forwards THAT user's platform env) and reuse
-  // their existing sync token so the volume keeps syncing. Keyed by sandbox_id.
+  // Resolve the machine's owner (updateOsborn re-forwards THAT user's platform env) and pass
+  // their canonical DB sync token — exactly as the user-facing update-osborn path does via
+  // getSyncToken, so a rotated token propagates to the machine rather than keeping its stale
+  // baked one. Keyed by sandbox_id.
   const { data: owner, error: ownerErr } = await sb
     .from('instances')
     .select('user_id, sync_token')
@@ -80,9 +83,17 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: 'No user owns that machine' }, { status: 404 })
   }
 
-  // Default target: newest BUILT image version (never an unbuilt npm tag).
+  // Default target: newest BUILT image version. If the registry can't be resolved,
+  // imageVersionFromRef(:latest fallback) is null — DON'T fall through to updateOsborn's npm-latest
+  // default, which could target an unbuilt tag; fail loudly instead so the roll is never a surprise.
   if (!version) {
     version = imageVersionFromRef(await resolveNewestSandboxImage()) ?? undefined
+    if (!version) {
+      return NextResponse.json(
+        { error: 'Could not resolve the newest built version (registry unavailable) — retry, or pass an explicit version' },
+        { status: 503 },
+      )
+    }
   }
 
   const syncToken = typeof owner.sync_token === 'string' ? owner.sync_token : undefined
