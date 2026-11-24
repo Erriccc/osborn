@@ -1865,6 +1865,7 @@ export class ClaudeLLM extends llm.LLM {
         return true
       } catch (err: any) {
         console.error('⚠️ Persistent interrupt failed:', err?.message)
+        this.#currentTurnMessageId = null  // as the push deadline: a reply folded into the running turn gets its own id
       }
     }
     // Fallback: interrupt any active one-shot queries (realtime mode research)
@@ -2290,8 +2291,11 @@ export class ClaudeLLM extends llm.LLM {
         console.log('⚡ Persistent session: interrupt in flight — deferring push until it settles')
         // Deadline (adversarial finding #2): a wedged interrupt control request
         // must not make the agent permanently deaf — push anyway after 8s.
-        const deadline = new Promise<void>((res) => setTimeout(res, 8000))
-        Promise.race([pending, deadline]).then(() => {
+        const deadline = new Promise<'late'>((res) => setTimeout(() => res('late'), 8000))
+        Promise.race([pending, deadline]).then((late) => {
+          // The turn may still run and fold this message in: its reply must not
+          // carry the interrupted turn's id, which index.ts drops as stale (#456).
+          if (late) this.#currentTurnMessageId = null
           if (this.#messageChannel && !this.#messageChannel.closed) {
             console.log('⚡ Persistent session: pushing deferred message (post-interrupt)')
             this.#messageChannel.push(userMessage)
@@ -2333,6 +2337,7 @@ export class ClaudeLLM extends llm.LLM {
     if (this.#backgroundConsumerRunning) return
     this.#backgroundConsumerRunning = true
     const pq = this.#persistentQuery!
+    this.#currentTurnMessageId = null  // a killed turn emits no result: never reuse its (maybe cut-off) id
 
     try {
       for await (const message of pq) {

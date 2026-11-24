@@ -273,5 +273,57 @@ await t('4.5 auth restart pending + switch at idle: exactly one close, B spawns 
   assert.equal(llm.authRestartPending, false)
 })
 
+// ── #456 turn message id ──────────────────────────────────────────────────────
+const asst = (text: string) => ({ type: 'assistant', parent_tool_use_id: null, message: { content: [{ type: 'text', text }] } })
+
+await t('#456 tts_say messageId: new id after a result', async () => {
+  const fq = makeFakeQueryFn()
+  const llm: any = newLLM(fq, { skipTTSQueue: true })
+  const ids: string[] = []
+  const c = cb(llm); (c.eventEmitter as EventEmitter).on('tts_say', (d: any) => ids.push(d.messageId))
+  llm.pushMessage('hi', {} as any, c)
+  const q = fq.spawned[0]
+  q.emit(asst('First answer here.')); await tick(); await tick()
+  q.emit({ type: 'result', result: 'ok' }); await tick(); await tick()
+  q.emit(asst('Second answer here.')); await tick(); await tick()
+  assert.equal(ids.length, 2, JSON.stringify(ids))
+  assert.ok(ids[0] && ids[1] && ids[0] !== ids[1])
+})
+
+await t('#456 tts_say messageId: new subprocess after a killed turn gets a new id', async () => {
+  const fq = makeFakeQueryFn()
+  const llm: any = newLLM(fq, { skipTTSQueue: true })
+  const ids: string[] = []
+  const c = cb(llm); (c.eventEmitter as EventEmitter).on('tts_say', (d: any) => ids.push(d.messageId))
+  llm.pushMessage('hi', {} as any, c)
+  fq.spawned[0].emit(asst('Cut off answer.')); await tick(); await tick()
+  llm.closeSession()
+  llm.pushMessage('again', {} as any, c)
+  fq.spawned[1].emit(asst('Fresh answer.')); await tick(); await tick()
+  assert.equal(ids.length, 2, JSON.stringify(ids))
+  assert.ok(ids[0] !== ids[1])
+})
+
+for (const how of ['fails', 'misses the 8s deadline'] as const) {
+  await t(`#456 tts_say messageId: interrupt ${how} → the reply folded into the running turn gets a new id`, async () => {
+    const fq = makeFakeQueryFn()
+    const llm: any = newLLM(fq, { skipTTSQueue: true })
+    const ids: string[] = []
+    const c = cb(llm); (c.eventEmitter as EventEmitter).on('tts_say', (d: any) => ids.push(d.messageId))
+    llm.pushMessage('hi', {} as any, c)
+    const q: any = fq.spawned[0]
+    q.interrupt = how === 'fails' ? () => Promise.reject(new Error('boom')) : () => new Promise(() => {})
+    q.emit(asst('Cut off answer.')); await tick(); await tick()
+    void llm.interruptQuery(); await tick()
+    const realSetTimeout = globalThis.setTimeout
+    if (how !== 'fails') (globalThis as any).setTimeout = (f: any, ms: number) => realSetTimeout(f, ms === 8000 ? 0 : ms)
+    try { llm.pushMessage('again', {} as any, c) } finally { (globalThis as any).setTimeout = realSetTimeout }
+    await tick(); await tick()
+    q.emit(asst('Reply to again.')); await tick(); await tick()
+    assert.equal(ids.length, 2, JSON.stringify(ids))
+    assert.ok(ids[0] !== ids[1])
+  })
+}
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

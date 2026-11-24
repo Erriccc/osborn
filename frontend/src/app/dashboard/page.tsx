@@ -29,7 +29,7 @@ import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
-import { signInHref } from '@/lib/signin-href'
+import { signInHere, signInHref } from '@/lib/signin-href'
 import Link from 'next/link'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { pollVerifyUpdate } from '@/lib/verify-update'
@@ -378,7 +378,7 @@ export default function Dashboard() {
     const resolve = (u: User | null) => {
       setUser(u)
       setLoading(false)
-      if (!u && isSupabaseConfigured()) router.replace(signInHref(window.location.pathname + window.location.search))
+      if (!u && isSupabaseConfigured()) router.replace(signInHere())
     }
     const timeout = setTimeout(() => resolve(null), 3000)
     getBrowserUser(supabase)

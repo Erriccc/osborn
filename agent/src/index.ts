@@ -7,6 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
+import { staleIdOnConsume, isStaleBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
@@ -4007,6 +4008,8 @@ async function main() {
   // all pre-queued chunks before going to listen. Safe on 1.8.1 + Soniox WebSocket
   // (the 1.4.x crash path was OpenAI HTTP fetch abort → recoverable:false — gone now).
   const activeSpeechHandles = new Set<any>()
+  // Turns the user cut off: their later tts_say blocks are dropped (#456)
+  let staleTurnId: string | null = null
 
   // Last interruption context — gathered at interrupt time, consumed when user's message arrives
   let lastInterruption: {
@@ -4014,6 +4017,7 @@ async function main() {
     recentMessages: string   // last 10 assistant messages from JSONL (full untruncated)
     suppressedText: string   // agent text we did NOT play because the user was speaking (see tts_say gate below)
     fullBlockText?: string   // full intended TTS block text — fallback when JSONL is empty
+    messageId?: string       // the turn the barge-in cut off; marked stale only once it is consumed
     timestamp: number
   } | null = null
 
@@ -4022,7 +4026,7 @@ async function main() {
    * If interrupted: gather spoken text + JSONL context. Does NOT send to Claude yet —
    * that happens when the user's transcribed message arrives via chat().
    */
-  async function handleSpeechDone(handle: any, fullText: string, fullBlockText?: string) {
+  async function handleSpeechDone(handle: any, fullText: string, fullBlockText?: string, messageId?: string) {
     if (!handle.interrupted) {
       lastInterruption = null
       return
@@ -4063,6 +4067,7 @@ async function main() {
       recentMessages,
       suppressedText: carriedSuppressed,
       fullBlockText: fullBlockText && fullBlockText !== fullText ? fullBlockText : undefined,
+      messageId,
       timestamp: Date.now(),
     }
     console.log(`📋 Interruption context stored (text: ${fullText.length} chars, JSONL: ${recentMessages.length} chars, block: ${fullBlockText?.length ?? 0} chars, suppressed carried: ${carriedSuppressed.length} chars)`)
@@ -4114,6 +4119,7 @@ async function main() {
       suppressedText: lastInterruption.suppressedText,
       fullBlockText: lastInterruption.fullBlockText,
     }
+    staleTurnId = staleIdOnConsume(lastInterruption, staleTurnId)
     lastInterruption = null
     return ctx
   }
@@ -5131,6 +5137,12 @@ async function main() {
         return
       }
 
+      // A late block from a turn the user already cut off (#456): dropped, never
+      // buffered, or the 1.2s replay below could still speak it.
+      if (isStaleBlock(staleTurnId, data.messageId)) {
+        console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
+        return
+      }
       // Suppress while the user is mid-utterance. Without this, agent text generated
       // in parallel by the Claude SDK plays right over the user — same problem as
       // pre-interrupt overlap, but at the *output* side. The suppressed text gets
@@ -5241,7 +5253,7 @@ async function main() {
                 fullChars: data.text.length,
                 heard: spokenText.slice(0, 80) + (spokenText.length > 80 ? '...' : '')
               }))
-              handleSpeechDone(sh, spokenText, data.text)
+              handleSpeechDone(sh, spokenText, data.text, data.messageId)
             } else {
               console.log(`✅ [${sayId}] session.say DONE`)
               if (currentSpeechHandle === sh) lastInterruption = null
