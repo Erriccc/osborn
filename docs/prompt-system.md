@@ -21,3 +21,12 @@ The system has layered prompts at different levels — all centralized in `promp
 | **Session context briefings** | `fast-brain.ts` (`prepareBriefingScript`, `prepareRecoveryScript`) | Session resume/recovery | LLM-rewritten briefings matching the user's vocabulary from chatHistory. |
 
 **Points checklist (`[POINTS]`, #455).** For a long foreground turn (60+ words, at least 3 separate points after dropping chit-chat and explicit asks), `ClaudeLLM.noteUserTurn` returns a short checklist that rides on the same `UserPromptSubmit` `additionalContext` as the follow-through recap. The text is `agent/src/prompts/points-checklist.md`, built by `getPointsChecklist()` in `prompts.ts`: the points are quoted data, not instructions, and the whole block stays under 1400 bytes. Only a follow-through (foreground) session computes or records points; background slots return nothing. Points are local ledger items (never filed) and close at turn end when the reply or its non-delegating tool calls cover them (`points.ts`).
+
+## Main-agent speaking, questions and delegation (one rule, every layer)
+
+The pipeline main agent reads `direct-mode-research.md` (system prompt; realtime reads `getResearchSystemPrompt`), `turn-shape-reminder.md` (each turn), `points-checklist.md` and the cadence note (`claude-llm.ts`). They say the same things:
+- Speaking: no speech before the first grounding lookup; one short line before a long chain or slow step, and at least every `SPEAK_CADENCE_N` (6) calls. The code nudge stays.
+- Questions: at most one, only when its answer changes what you do next.
+- Delegation: THE BUDGET and the DELEGATION RUBRIC (conditions, not counts) live once in `prompts/main-agent-budget.md`, included in both system prompts. `MAIN_DIRECT_CALL_CAP` (10) and `SPEAK_CADENCE_N` (6) are exported from `prompts.ts` and filled into the prompt files as `{{directCallCap}}` / `{{speakCadence}}`; the cap is a ceiling, not a target. Delegations and chain steps do not count against it.
+- `DIRECT_MODE_PROMPT` in `prompts.ts` never reaches Claude; keep its wording in line but do not tune it.
+- On boot the agent copies the packaged skills in `BOOT_INSTALLED_SKILLS` (only `dispatch`) into `~/.claude/skills` once (`installMissingCoreSkills`); an existing folder is never overwritten, and installed names are recorded in `~/.osborn/installed-core-skills.json` so a skill the user deleted does not come back on a local install (cloud sandboxes re-seed on every boot). Other packaged skills are not copied (each one enters the system prompt).
