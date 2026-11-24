@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { staleIdOnConsume, isStaleBlock, currentIdOnPush, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired } from '../src/stale-turn.js'
+import { noiseGate } from '../src/noise-gate.js'
 
 let stale: string | null = null
 // barge-in recorded but never consumed: later blocks of that turn still play
@@ -93,6 +94,20 @@ assert.equal(isExpired(0, 60_000), false); assert.equal(isExpired(0, 60_001), tr
       assert.equal(log.length, 1, JSON.stringify(log)); assert.match(log[0], why)
     }
   } finally { globalThis.setTimeout = realST; globalThis.clearTimeout = realCT }
+}
+
+// #539 A: the replay's gateTriaging input is true only while classify() holds an utterance
+{
+  const key = process.env.OPENROUTER_API_KEY
+  delete process.env.OPENROUTER_API_KEY
+  try {
+    const ctx = { recentTurns: [], activeWork: '' }
+    assert.equal(noiseGate.triaging, false)
+    const held = [noiseGate.classify('x', ctx), noiseGate.classify('y', ctx)]
+    assert.equal(noiseGate.triaging, true, 'held while triage runs')
+    await Promise.all(held)
+    assert.equal(noiseGate.triaging, false, 'released once every triage settled')
+  } finally { if (key !== undefined) process.env.OPENROUTER_API_KEY = key }
 }
 
 // #539 B: older pending text is taken (and cleared) before a newer block speaks

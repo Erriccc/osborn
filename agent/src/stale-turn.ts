@@ -66,7 +66,7 @@ function replayStep(i: ReplayInput & { expired: boolean; attempts: number }):
 type Pending = { suppressedText: string; timestamp: number; suppressedTurnId?: string }
 type Buffered = Pending & { spokenText: string; recentMessages: string }
 /** A context that holds only buffered reply text: nothing was heard, nothing else to fold in. */
-const bufferOnly = (suppressedText: string, suppressedTurnId: string | undefined, timestamp: number): Buffered =>
+export const bufferOnly = (suppressedText: string, suppressedTurnId: string | undefined, timestamp: number): Buffered =>
   ({ spokenText: '', recentMessages: '', suppressedText, suppressedTurnId, timestamp })
 type ReplayDeps<C extends Pending> = {
   current(): C | null

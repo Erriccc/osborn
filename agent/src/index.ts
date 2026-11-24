@@ -7,7 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { staleIdOnConsume, isStaleBlock, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay } from './stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, bufferOnly } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
@@ -4092,7 +4092,7 @@ async function main() {
       lastInterruption.suppressedTurnId = messageId
       lastInterruption.timestamp = Date.now()
     } else {
-      lastInterruption = { spokenText: '', recentMessages: '', suppressedText: t, suppressedTurnId: messageId, timestamp: Date.now() }
+      lastInterruption = bufferOnly(t, messageId, Date.now())
     }
     console.log(`🤐 [suppressed] BUFFERED +${t.length} chars, total ${lastInterruption.suppressedText.length} (agent: ${agentState}, user: ${userState})`)
   }
