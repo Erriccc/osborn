@@ -206,12 +206,10 @@ const work = (n: number, openMs: number, resMs: number, text: string, result: st
 const NOW = T0 + 10 * 60_000
 const pend = (rs: R[], spoken: import('../src/loops-ledger.js').SpokenLine[] = [], now = NOW) => L.pendingDeliveries(rs, now, { spoken, max: 5 }).map((i) => i.id)
 
-t('stale: superseded by a newer result for the same role and task', () => {
-  const rs = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), ...work(2, 70_000, 200_000, 'writer: fix login', 'Patched the login redirect again')]
-  assert.deepEqual(pend(rs), [wid(2)])
-  assert.deepEqual(L.staleWork(rs, NOW), [{ id: wid(1), reason: 'redundant' }])
-  const other = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), ...work(2, 70_000, 200_000, 'writer: add billing', 'Billing page added', 'writer')]
-  assert.equal(pend(other).length, 2)
+t('no text-based supersession: two unrelated "Run tests" results both survive', () => {
+  const rs = [...work(1, 0, 60_000, 'tester: Run tests', 'Login: 3 failures in auth.test.ts'), ...work(2, 70_000, 200_000, 'tester: Run tests', 'Signup: all pass', 'tester')]
+  assert.deepEqual(pend(rs).sort(), [wid(1), wid(2)].sort())
+  assert.deepEqual(L.staleWork(rs, NOW), [])
 })
 t('redundant: the assistant already said it', () => {
   const rs = work(1, 0, 60_000, 'tester: run suite', 'Suite passed: 42 tests green, coverage improved')
@@ -245,7 +243,13 @@ t('redundant: a later reply sharing one key term does not count as telling a sho
   assert.equal(pend(rs, later("I'll run the tests next")).length, 1)
   const two = work(1, 0, 60_000, 'writer: fix login', 'Login fixed')
   assert.equal(pend(two, later("I'll check the login page")).length, 1)  // 1 of 2 terms: not told
-  assert.deepEqual(pend(two, later('The login is fixed now')), [])
+  assert.equal(pend(two, later('The login is fixed now')).length, 1)  // under 3 key terms: never closed as told
+})
+t('redundant: "All tests pass" is not closed by an unrelated "signup tests pass"', () => {
+  const rs = work(1, 0, 60_000, 'tester: Run tests', 'All tests pass')
+  assert.equal(pend(rs, [{ at: T0 + 90_000, text: 'The signup tests pass' }]).length, 1)
+  const long = work(1, 0, 60_000, 'tester: login suite', 'Suite passed: 42 tests green, coverage improved')
+  assert.equal(pend(long, [{ at: T0 + 90_000, text: 'Billing is done, 42 tests green' }]).length, 1)  // overlap but nothing of the task
 })
 t('the spoken ring: cleared on a session switch, reachable through the pipeline wrapper', () => {
   const p: any = createPipelineDirectLLM({ workingDirectory: cwd, voiceMode: 'direct', skipTTSQueue: true, mcpServers: {} } as any)
@@ -256,30 +260,35 @@ t('the spoken ring: cleared on a session switch, reachable through the pipeline 
   assert.deepEqual(inner.recentSpoken(), [])
   assert.deepEqual(p.recentSpoken(), [])
 })
-t('stale: user moved on to something unrelated, result over 5 minutes old', () => {
-  const rs = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), rec(120_000, { kind: 'prompt', text: 'what is the weather forecast tomorrow', origin: 'user_mic' } as any)]
+const surf = (n: number) => rec(100_000, { kind: 'work_surfaced', id: wid(n) } as any)
+t('stale: user moved on to something unrelated, result over 5 minutes old and already offered', () => {
+  const rs = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), surf(1), rec(120_000, { kind: 'prompt', text: 'what is the weather forecast tomorrow', origin: 'user_mic' } as any)]
   assert.deepEqual(pend(rs), [])
   assert.deepEqual(L.staleWork(rs, NOW), [{ id: wid(1), reason: 'stale' }])
   assert.equal(pend(rs, [], T0 + 4 * 60_000).length, 1)  // under 5 minutes: kept
-  const related = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), rec(120_000, { kind: 'prompt', text: 'did the login change land', origin: 'user_mic' } as any)]
+  const related = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), surf(1), rec(120_000, { kind: 'prompt', text: 'did the login change land', origin: 'user_mic' } as any)]
   assert.equal(pend(related).length, 1)
-  const meeting = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), rec(120_000, { kind: 'prompt', text: 'weather forecast', origin: 'meeting' } as any)]
+  const meeting = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), surf(1), rec(120_000, { kind: 'prompt', text: 'weather forecast', origin: 'meeting' } as any)]
   assert.equal(pend(meeting).length, 1)  // only the user's own turn counts
+})
+t('a result that only waited for the notice throttle survives an unrelated user turn', () => {
+  const rs = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), rec(120_000, { kind: 'prompt', text: 'what is the weather forecast tomorrow', origin: 'user_mic' } as any)]
+  assert.deepEqual(L.staleWork(rs, NOW), [])  // never surfaced: stays pending
+  assert.equal(pend(rs).length, 1)
 })
 t('too old: the 20-minute window stays', () => {
   assert.deepEqual(pend(work(1, 0, 60_000, 'writer: x', 'Done something'), [], T0 + 25 * 60_000), [])
 })
-t('30 stale/redundant rows produce zero notices', () => {
+t('stale/redundant rows produce zero notices; unsurfaced moved-on rows stay pending', () => {
   const rs: R[] = []
-  for (let n = 0; n < 10; n++) rs.push(...work(n, n, 60_000 + n, 'writer: fix login', `Patched redirect variant${n}`))          // 9 superseded
   for (let n = 10; n < 20; n++) rs.push(...work(n, n, 60_000 + n, `tester: area${n}`, `Alpha${n} beta${n} gamma${n} passed`, 'tester'))  // told aloud
-  for (let n = 20; n < 30; n++) rs.push(...work(n, n, 60_000 + n, `reviewer: pr${n}`, `Reviewed zebra${n} quartz${n}`, 'reviewer'))  // moved on
+  for (let n = 20; n < 30; n++) rs.push(...work(n, n, 60_000 + n, `reviewer: pr${n}`, `Reviewed zebra${n} quartz${n}`, 'reviewer'), surf(n))  // moved on, offered
+  for (let n = 30; n < 33; n++) rs.push(...work(n, n, 60_000 + n, `reviewer: pr${n}`, `Reviewed zebra${n} quartz${n}`, 'reviewer'))  // moved on, never offered
   rs.push(rec(100_000, { kind: 'prompt', text: 'unrelated sandwich question', origin: 'user_mic' } as any))
-  const spoken = [{ at: T0 + 80_000, text: Array.from({ length: 10 }, (_, k) => `alpha${k + 10} beta${k + 10} gamma${k + 10} passed`).join(' ') }]
-  const left = pend(rs, spoken)
-  assert.deepEqual(left, [])
+  const spoken = [{ at: T0 + 80_000, text: Array.from({ length: 10 }, (_, k) => `tester area${k + 10} alpha${k + 10} beta${k + 10} gamma${k + 10} passed`).join(' ') }]
   const dead = L.staleWork(rs, NOW, { spoken })
-  assert.equal(dead.length, 30)
+  assert.equal(dead.length, 20)
+  assert.deepEqual(pend(rs, spoken).sort(), [wid(30), wid(31), wid(32)].sort())
 })
 
 rmSync(home, { recursive: true, force: true })
