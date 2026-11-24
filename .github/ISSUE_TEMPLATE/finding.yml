@@ -5,7 +5,7 @@ body:
   - type: dropdown
     id: source
     attributes:
-      label: Source (also add the matching src: label)
+      label: "Source (also add the matching src: label)"
       options: ["src:muse", "src:loop", "src:osborn", "src:founder"]
     validations: {required: true}
   - type: input
