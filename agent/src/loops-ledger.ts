@@ -357,7 +357,7 @@ export function markQueuedStarted(cwd: string, project: string, instruction: str
 
 /** What the assistant said aloud, with when (a short ring kept in memory by ClaudeLLM). */
 export interface SpokenLine { at: number; text: string }
-/** A result the reply already covers when this share of its key terms was said (borderline counts: no notice). */
+/** A result the reply already covers when this share (and at least 2) of its key terms was said (borderline counts: no notice). */
 const REDUNDANT_OVERLAP = 0.4
 const MOVED_ON_AFTER_MS = 5 * 60 * 1000
 
@@ -377,7 +377,7 @@ function isStaleOrRedundant(row: LoopItem, ctx: { items: LoopItem[]; records: Lo
   const said = terms(after.map((s) => s.text).join(' '))
   let hit = 0
   for (const t of rt) if (said.has(t)) hit++
-  if (hit / rt.size >= REDUNDANT_OVERLAP) return 'redundant'
+  if (hit >= 2 && hit / rt.size >= REDUNDANT_OVERLAP) return 'redundant'
   const prompts = ctx.records.filter((r) => r.kind === 'prompt' && r.origin === 'user_mic' && Date.parse(r.at) > rAt)
   if (prompts.length && ctx.now - rAt > MOVED_ON_AFTER_MS) {
     const later = terms([...prompts.map((r) => r.text ?? ''), ...after.map((s) => s.text)].join(' '))
