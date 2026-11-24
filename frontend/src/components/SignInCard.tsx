@@ -7,8 +7,8 @@ export default function SignInCard({ title, body, href, label, icon, secondary, 
   href: string
   label: string
   icon?: ReactNode
-  /** A quiet text link under the primary action (for example Back). */
-  secondary?: { label: string; href?: string; onClick?: () => void }
+  /** A quiet text action under the primary one (for example Back). */
+  secondary?: { label: string; onClick: () => void }
   className?: string
 }) {
   return (
@@ -26,11 +26,7 @@ export default function SignInCard({ title, body, href, label, icon, secondary, 
       </a>
       {secondary && (
         <div className="mt-3">
-          {secondary.href ? (
-            <a href={secondary.href} className="text-[13px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] underline underline-offset-2 transition-colors">{secondary.label}</a>
-          ) : (
-            <button type="button" onClick={secondary.onClick} className="text-[13px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] underline underline-offset-2 transition-colors">{secondary.label}</button>
-          )}
+          <button type="button" onClick={secondary.onClick} className="text-[13px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] underline underline-offset-2 transition-colors">{secondary.label}</button>
         </div>
       )}
     </div>
