@@ -1597,8 +1597,12 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   /** Delegated work ids that got a result: the turn and how many reply chunks it had spoken by then. */
-  #workResultTurn = new Map<string, { turn: number; chunks: number }>()
+  #workResultTurn = new Map<string, { turn: number; chunks: number; tools: number; waited: boolean }>()
   #workSeen = new Set<string>()
+  /** Main-thread tool calls in the turn so far (a result the agent kept working after was used). */
+  #turnTools = 0
+  /** Surfaced work ids: the turn they were surfaced in; the reply to that notice closes them. */
+  #workSurfaced = new Map<string, number>()
 
   /**
    * Work ledger: one `work_*` record, only for the foreground session and only while OSBORN_WORK_LEDGER is not off.
@@ -1607,6 +1611,7 @@ export class ClaudeLLM extends llm.LLM {
   recordWork(rec: LoopRecordInput, sessionId?: string | null): void {
     if (!this.#opts.followThrough || !workLedgerEnabled()) return
     const cut = (t?: string) => t === undefined ? undefined : outboundText(t)
+    if (rec.kind === 'work_surfaced' && rec.id) this.#workSurfaced.set(rec.id, this.#loopTurn)
     this.recordLoop({ ...rec, ...(rec.text !== undefined ? { text: cut(rec.text) } : {}), ...(rec.result !== undefined ? { result: cut(rec.result) } : {}), source: 'inferred', origin: 'tool' }, sessionId)
   }
 
@@ -1614,7 +1619,7 @@ export class ClaudeLLM extends llm.LLM {
   noteWorkResult(id: string, result: string, sessionId?: string | null): void {
     if (this.#workSeen.has(id)) return
     this.#workSeen.add(id)
-    this.#workResultTurn.set(id, { turn: this.#loopTurn, chunks: this.#currentTurnChunks.length })
+    this.#workResultTurn.set(id, { turn: this.#loopTurn, chunks: this.#currentTurnChunks.length, tools: this.#turnTools, waited: false })
     this.recordWork({ kind: 'work_result', id, result: result || '(no final message)' }, sessionId)
   }
 
@@ -1628,11 +1633,29 @@ export class ClaudeLLM extends llm.LLM {
    * Turn end: reply text spoken after a result arrived in this turn is that result being told (text before it,
    * such as "sending the reviewer", is not). Otherwise the row stays result_ready for `surfaceUndelivered`.
    */
-  #deliverTurnResults(sessionId: string | null | undefined, chunks: string[]): void {
+  resetTurnTools(): void { this.#turnTools = 0 }
+  noteMainTool(): void { this.#turnTools++ }
+
+  /** Turn end (also the test seam). */
+  deliverTurnResults(sessionId: string | null | undefined, chunks: string[]): void {
     for (const [id, r] of this.#workResultTurn) {
       if (r.turn > this.#loopTurn) continue
+      if (r.turn === this.#loopTurn && !r.waited) {
+        // Same turn: text after the result is told, a later tool call means the agent used it.
+        if (chunks.slice(r.chunks).join('').trim()) { this.#workResultTurn.delete(id); this.recordWork({ kind: 'work_delivered', id, by: 'spoken' }, sessionId) }
+        else if (this.#turnTools > r.tools) { this.#workResultTurn.delete(id); this.recordWork({ kind: 'work_delivered', id, by: 'seen' }, sessionId) }
+        else r.waited = true
+        continue
+      }
+      // The next turn: any text or tool call from the main agent counts as having used it.
       this.#workResultTurn.delete(id)
-      if (r.turn === this.#loopTurn && chunks.slice(r.chunks).join('').trim()) this.recordWork({ kind: 'work_delivered', id, by: 'spoken' }, sessionId)
+      if (chunks.join('').trim() || this.#turnTools > 0) this.recordWork({ kind: 'work_delivered', id, by: 'seen' }, sessionId)
+    }
+    // The reply to a surfaced notice closes the rows it named.
+    for (const [id, turn] of this.#workSurfaced) {
+      if (turn >= this.#loopTurn) continue
+      this.#workSurfaced.delete(id)
+      if (chunks.join('').trim()) this.recordWork({ kind: 'work_delivered', id, by: 'spoken' }, sessionId)
     }
   }
 
@@ -2509,7 +2532,9 @@ export class ClaudeLLM extends llm.LLM {
                 console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk}"`)
                 callbacks.eventEmitter.emit('tts_say', { text: ttsChunk, messageId: turnMessageId, chunkIndex, speed: this.#currentTurnSpeed })
               }
-            } else if (block.type === 'tool_use' && this.#turnPoints.length) {
+            } else if (block.type === 'tool_use') {
+              this.noteMainTool()
+              if (!this.#turnPoints.length) continue
               // What this turn dispatched, to close its points at turn end (#455).
               // A Task/Agent prompt is the main agent restating the turn, not a sign the points were handled.
               // Same for the dispatch tool: a delegation alone never closes a point.
@@ -2526,7 +2551,7 @@ export class ClaudeLLM extends llm.LLM {
           const turnMessageId = this.#currentTurnMessageId
           const turnChunks = [...this.#currentTurnChunks]
           this.#closeTurnPoints((msg as any).session_id, [...turnChunks, typeof msg.result === 'string' ? msg.result : ''].join('\n'))
-          this.#deliverTurnResults((msg as any).session_id, turnChunks)
+          this.deliverTurnResults((msg as any).session_id, turnChunks)
           if (msg.result) {
             callbacks.eventEmitter.emit('assistant_result', { text: msg.result, messageId: turnMessageId })
           }
@@ -2537,6 +2562,7 @@ export class ClaudeLLM extends llm.LLM {
           this.#currentTurnMessageId = null
           this.#currentTurnChunkIndex = 0
           this.#currentTurnChunks = []
+          this.resetTurnTools()
           this.#currentTurnSpeed = undefined
           // Stale-dispatch pruning (adversarial finding #6): any Task dispatch id
           // still unclaimed at turn end never reached SubagentStart (denied,
