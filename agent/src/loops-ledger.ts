@@ -349,8 +349,8 @@ export function listLedgers(): Array<{ sessionId: string; path: string; cwd?: st
 
 // ── Recap (tier b): at most RECAP_MAX lines, each item once ─────────────────
 
-/** Unfiled open items come back in this order: refused-at-capacity work, unanswered questions, the rest. */
-const UNFILED_RANK: Partial<Record<LoopKind, number>> = { queued: 0, question: 1 }
+/** Unfiled open items come back in this order: refused-at-capacity work, unanswered questions, the rest, then inferred points. */
+const UNFILED_RANK: Partial<Record<LoopKind, number>> = { queued: 0, question: 1, point: 3 }
 
 export interface RecapItem { text: string; url?: string }
 

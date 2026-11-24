@@ -26,7 +26,7 @@ import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
-import { addressedPoints, splitPoints, POINTS_FILE_CAP } from './points.js'
+import { addressedPoints, turnPoints } from './points.js'
 import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, type LoopRecordInput } from './loops-ledger.js'
 import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
@@ -1612,11 +1612,9 @@ export class ClaudeLLM extends llm.LLM {
         for (const ask of asks) this.recordLoop({ kind: 'ask', id: loopIds.ask(ask), text: ask, source: 'explicit', origin }, sessionId)
         // A long turn (#455): each point is a local `point` item; the checklist rides on this turn's context.
         // Only a mic turn replaces them: a [MEETING]/[SYSTEM]/[NOTIFICATION] message folded into the live turn must not.
-        points = splitPoints(prompt)
-        const lowAsks = asks.map((a) => a.toLowerCase())
+        points = turnPoints(prompt, asks)
         this.#turnDispatched = ''
-        this.#turnPoints = points.slice(0, POINTS_FILE_CAP)
-          .filter((p) => !lowAsks.some((a) => a.includes(p.toLowerCase()) || p.toLowerCase().includes(a)))
+        this.#turnPoints = points
         for (const p of this.#turnPoints) this.recordLoop({ kind: 'point', id: loopIds.point(p), text: p, source: 'inferred', origin }, sessionId)
       }
       const checklist = points.length ? getPointsChecklist(points) : ''
@@ -2459,7 +2457,9 @@ export class ClaudeLLM extends llm.LLM {
               }
             } else if (block.type === 'tool_use' && this.#turnPoints.length) {
               // What this turn dispatched, to close its points at turn end (#455).
-              this.#turnDispatched += [block.input?.description, block.input?.prompt, block.input?.instruction].filter((x) => typeof x === 'string').join(' ') + '\n'
+              // A Task/Agent prompt is the main agent restating the turn, not a sign the points were handled.
+              const delegating = block.name === 'Task' || block.name === 'Agent'
+              this.#turnDispatched += [block.input?.description, delegating ? undefined : block.input?.prompt, block.input?.instruction].filter((x) => typeof x === 'string').join(' ') + '\n'
             }
           }
         }

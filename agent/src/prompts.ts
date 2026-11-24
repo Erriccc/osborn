@@ -4,7 +4,7 @@ import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { getSessionWorkspace } from './config.js'
 import { SIGNOFF_COMMAND } from './steward-gate.js'
-import { HIDDEN_CHARS, DISPATCH_TOOL } from './dispatch.js'
+import { CONTROL_OR_BIDI, DISPATCH_TOOL } from './dispatch.js'
 import { redactSecrets } from './content/secret-rules.js'
 import type { RecapItem } from './loops-ledger.js'
 
@@ -1766,6 +1766,7 @@ export function getSpokeReport(r: { project: string; sessionId: string; status: 
     `\`\`\`\n${summary.replace(/```/g, "'''")}\n\`\`\`\nTell the user this result aloud in a sentence or two.${offer}`)
 }
 
+const HIDDEN_CHARS = new RegExp(`${CONTROL_OR_BIDI.source}|[\\u200b-\\u200d\\u2060\\ufeff\\u{E0000}-\\u{E007F}]`, 'gu')
 /** Ledger text is agent-writable: no control, bidi, zero-width or tag characters, one line, secrets redacted, short, quoted. */
 const recapText = (t: unknown): string =>
   JSON.stringify(redactSecrets(String(t || '').replace(HIDDEN_CHARS, '').replace(/\s+/g, ' ').trim()).slice(0, 120))

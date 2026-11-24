@@ -22,8 +22,6 @@ const MAX_INSTRUCTION = 2000
 
 /** Control characters other than tab and newline: NUL, C0/C1 (incl. U+0085, U+009B), bidi marks and overrides (U+200E/F, U+202A-E, U+2066-9). */
 export const CONTROL_OR_BIDI = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/
-/** CONTROL_OR_BIDI plus zero-width and tag characters, global: what to strip from text quoted to a model. */
-export const HIDDEN_CHARS = new RegExp(`${CONTROL_OR_BIDI.source}|[\\u200b-\\u200d\\u2060\\ufeff\\u{E0000}-\\u{E007F}]`, 'gu')
 
 /** Text with no control characters (newline and tab allowed). */
 export const dispatchFieldsOk = (project: unknown, instruction: unknown): boolean =>

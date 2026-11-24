@@ -27,10 +27,10 @@ const SHORT = 'Remind me to rotate the staging key before Friday.'
 
 t('a rambling five-point turn splits to five and chit-chat is dropped', () => {
   const pts = P.splitPoints(RAMBLE)
-  assert.equal(pts.length, 5, JSON.stringify(pts))
+  assert.equal(pts.length, 4, JSON.stringify(pts))
   assert.ok(pts.every((p) => !/^(okay|yeah|anyway|thanks)/i.test(p)))
   assert.match(pts[0], /login page/)
-  assert.match(pts[4], /weekends/)
+  assert.match(pts[3], /nightly export/)
 })
 
 t('noisy fixtures split on markers without punctuation', () => {
@@ -63,15 +63,14 @@ t('caps: checklist 6, filing 4', () => {
     'The search box keeps stale text after submitting a query.',
     'Mobile footer overlaps the menu on narrow phones.',
   ].join(' ')
-  assert.equal(P.splitPoints(many).length, 6)
-  assert.equal(P.POINTS_FILE_CAP, 4)
+  assert.equal(P.splitPoints(many).length, 4)
 })
 
 t('injected blocks are not the user\'s points: a session tail before a short reply yields nothing', () => {
   const tail = ['<session_tail>', ...RAMBLE.split('. ').map((l, i) => `2026-11-01T00:00:0${i % 10}  Assistant: ${l}.`), '</session_tail>'].join('\n')
   assert.deepEqual(P.splitPoints(`${tail}\n\nyes go ahead with that`), [])
   assert.deepEqual(P.splitPoints(`<system-reminder>${RAMBLE}</system-reminder>\n\nok`), [])
-  assert.equal(P.splitPoints(`${tail}\n\n${RAMBLE}`).length, 5)
+  assert.equal(P.splitPoints(`${tail}\n\n${RAMBLE}`).length, 4)
 })
 
 t('addressedPoints: a reply covering two of four leaves exactly two open', () => {
@@ -110,7 +109,7 @@ t('only mic turns split: meeting, system, phone and notification turns never do'
 t('a mic turn records local points and returns the checklist', () => {
   const llm: any = createClaudeLLM({ workingDirectory: cwd, followThrough: true })
   const out: string = llm.noteUserTurn(RAMBLE, 's-mic')
-  assert.match(out, /\[POINTS\] The user raised 5 points/)
+  assert.match(out, /\[POINTS\] The user raised 4 points/)
   const pts = L.readLoopRecords('s-mic', cwd).filter((r) => r.kind === 'point')
   assert.equal(pts.length, 4)
   assert.ok(pts.every((r) => r.source === 'inferred'))
@@ -128,6 +127,34 @@ t('the block stays under the byte cap and forged control/bidi text is neutralise
   }
   assert.ok(!/sk-ant-api03-a{20}/.test(getPointsChecklist(forged)))
   assert.equal(getPointsChecklist([]), '')
+})
+
+t('recap: an unfiled ask outranks newer points, points fill leftover slots', () => {
+  const base = { origin: 'user_mic' as const, fg: true }
+  const sid = 's-rank'
+  const cwd = join(home, 'proj-rank')
+  mkdirSync(cwd, { recursive: true })
+  L.appendLoopRecord(sid, cwd, { v: 1 as const, at: '2026-12-01T00:00:00Z', kind: 'ask' as const, id: L.loopIds.ask('do the old ask'), text: 'do the old ask', source: 'explicit' as const, ...base })
+  for (let i = 0; i < 4; i++) L.appendLoopRecord(sid, cwd, { v: 1 as const, at: `2026-12-01T00:01:0${i}Z`, kind: 'point' as const, id: L.loopIds.point(`pt ${i}`), text: `pt ${i}`, source: 'inferred' as const, ...base })
+  const out = L.takeLoopsRecap(cwd).map((x) => x.text)
+  assert.equal(out.length, 3)
+  assert.equal(out[0], 'do the old ask')
+  assert.ok(out.slice(1).every((x) => /^pt /.test(x)))
+})
+
+t('an attached file is not the person\'s points', () => {
+  const file = '\n\n[File: notes.txt]\n' + 'The export job fails every night at midnight for large accounts. The alert emails never arrive for anyone. The dashboard chart shows stale numbers after a deploy. The billing tab name confuses customers a lot.'.repeat(4)
+  assert.deepEqual(P.splitPoints('Please summarize this file for me.' + file), [])
+  assert.deepEqual(P.splitPoints('Please summarize this file for me.\n\n[Image: a.png](http://x/y.png)' + file), [])
+})
+
+t('lead markers only strip whole words', () => {
+  const pad = ' The search box keeps stale text after submitting a query today. Mobile footer overlaps the menu on narrow phones always. Large uploads leave the spinner running forever without progress. Onboarding emails should stop going out during weekends for trial users. The webhook retries should back off exponentially and cap at one hour.'
+  const j = (x: string) => P.splitPoints(x + pad).join(' | ')
+  assert.match(j('Next.js builds fail on the preview branch for every pull request now.'), /^Next\.js builds fail/)
+  assert.match(j('First-time users cannot finish the signup form on mobile devices at all.'), /^First-time users/)
+  assert.match(j('Next quarter we plan to migrate the whole billing system to a new vendor.'), /^Next quarter we plan/)
+  assert.ok(!/(^|\| )\. ?\.|\. \./.test(j('Yeah. The login page throws a blank screen after the redirect from the email link.')))
 })
 
 console.log(`${pass} passed`)
