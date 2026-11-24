@@ -15,7 +15,7 @@ const jaccard = (a, b) => {
 const labelNames = (i) => (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name))
 
 /** issues: open issues (no PRs); prs: merged PRs {number,title,body}; comments: {[issue#]: [{body,created_at}]} */
-export function sweep({ issues, prs, comments = {}, config = {}, now = Date.now(), dupThreshold = 0.5 }) {
+export function sweep({ issues, prs, comments = {}, config = {} as { parked?: number[]; founderDecision?: number[] }, now = Date.now(), dupThreshold = 0.5 }) {
   const skip = new Set([...(config.parked ?? []), ...(config.founderDecision ?? [])])
   const open = issues.filter((i) => !skip.has(i.number))
   const age = (i) => (now - Date.parse(i.created_at)) / DAY
