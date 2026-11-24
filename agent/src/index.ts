@@ -4096,6 +4096,19 @@ async function main() {
   }
 
   /**
+   * Cancel every queued handle after a barge-in: LiveKit otherwise auto-starts
+   * the next one over the user, who waits for the whole queue to drain.
+   */
+  function flushQueuedSpeech() {
+    if (activeSpeechHandles.size === 0) return
+    console.log(`🔇 Flushing ${activeSpeechHandles.size} queued speech handle(s) after barge-in`)
+    for (const h of activeSpeechHandles) {
+      try { h.interrupt?.() } catch {}
+    }
+    activeSpeechHandles.clear()
+  }
+
+  /**
    * Speak suppressed text through the session (#539 A/B): tracked in
    * activeSpeechHandles so 'agent speaking' sees it and a barge-in flushes it.
    * Clears the buffer first; counts only in the log.
@@ -4112,6 +4125,7 @@ async function main() {
         h.addDoneCallback((sh: any) => {
           activeSpeechHandles.delete(sh)
           console.log(`🔁 [suppressed] REPLAY ${sh?.interrupted ? 'INTERRUPTED' : 'DONE'} ${text.length} chars`)
+          if (sh?.interrupted) flushQueuedSpeech()  // a newer block queued behind it must not start over the user
           armSuppressedReplay('replay finished')
         })
       }
@@ -5198,7 +5212,7 @@ async function main() {
 
       // A late block from a turn the user already cut off (#456): dropped, never
       // buffered, or the 1.2s replay below could still speak it.
-      if (isStaleOrRetired(staleTurnId, { has: (id) => !!(directLLM as any)?.isRetiredTurnId?.(id) }, data.messageId)) {
+      if (isStaleOrRetired(staleTurnId, { has: (id) => directLLM.isRetiredTurnId(id) }, data.messageId)) {
         console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         return
       }
@@ -5268,17 +5282,7 @@ async function main() {
             activeSpeechHandles.delete(sh)
             if (sh.interrupted) {
               console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
-              // Cancel all other queued handles so the queue flushes on barge-in.
-              // Without this, LiveKit auto-starts the next queued handle even after
-              // the current one is interrupted — user has to wait for the whole queue
-              // to drain before the agent goes to listen.
-              if (activeSpeechHandles.size > 0) {
-                console.log(`🔇 Flushing ${activeSpeechHandles.size} queued speech handle(s) after barge-in`)
-                for (const h of activeSpeechHandles) {
-                  try { h.interrupt?.() } catch {}
-                }
-                activeSpeechHandles.clear()
-              }
+              flushQueuedSpeech()
               const audioOutput = (currentSession as any)?.output?.audio
               const sdkTranscript = audioOutput?.lastPlaybackEvent?.synchronizedTranscript
               const sdkPlaybackSec = audioOutput?.lastPlaybackEvent?.playbackPosition ?? 0
