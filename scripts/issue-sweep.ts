@@ -1,14 +1,12 @@
-#!/usr/bin/env node
 // Report-only issue sweep (docs/issue-flow.md). Reads GitHub, writes nothing there.
 import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { terms } from '../agent/src/stopwords.js'
 
 const DAY = 864e5
 const CLAIM = /^claim:\s+(\S+)\s+(\S+)\s+(\d{4}-\d{2}-\d{2}T\S+)/m
-const STOP = new Set('the and for that this with from into not but are was when after before does doesn'.split(' '))
 
-const terms = (s) => new Set((s.toLowerCase().match(/[a-z0-9][a-z0-9._-]*[a-z0-9]/g) ?? []).filter((t) => t.length >= 3 && !STOP.has(t)))
 const jaccard = (a, b) => {
   let n = 0
   for (const t of a) if (b.has(t)) n++

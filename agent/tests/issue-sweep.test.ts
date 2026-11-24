@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
-// @ts-ignore plain .mjs script
-import { sweep, render } from '../../scripts/issue-sweep.mjs'
+import { sweep, render } from '../../scripts/issue-sweep.js'
 
 const now = Date.parse('2026-11-24T00:00:00Z')
 const d = (n: number) => new Date(now - n * 864e5).toISOString()
