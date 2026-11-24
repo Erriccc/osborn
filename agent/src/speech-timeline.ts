@@ -18,15 +18,24 @@ export const speechTimelineHold = (env: NodeJS.ProcessEnv = process.env): boolea
 
 export class SpeechTimeline {
   #agentSpeaking = false
+  #answered = false
   #lastTurnCommitAt: number | null = null
   #spokeAfterAt: number | null = null
 
-  onAgentState(speaking: boolean): void { this.#agentSpeaking = speaking }
+  onAgentState(speaking: boolean): void {
+    this.#agentSpeaking = speaking
+    if (speaking) this.#answered = true
+  }
 
-  /** A user transcript (interim or final) of `words` words. Not counted under 3 words or while the agent speaks (its own echo). */
+  /**
+   * A user transcript (interim or final) of `words` words. Counts only within the window after the
+   * newest commit and before the agent has spoken since it (later speech is a new turn, not the rest
+   * of the thought); never under 3 words or while the agent speaks (its own echo).
+   */
   onTranscript(words: number, now = Date.now()): void {
-    if (this.#agentSpeaking || words < MIN_WORDS) return
-    if (this.#lastTurnCommitAt !== null && now > this.#lastTurnCommitAt) this.#spokeAfterAt = now
+    if (this.#agentSpeaking || this.#answered || words < MIN_WORDS || this.#lastTurnCommitAt === null) return
+    const since = now - this.#lastTurnCommitAt
+    if (since > 0 && since < CONTINUATION_WINDOW_MS) this.#spokeAfterAt = now
   }
 
   /** A user turn reached the agent. Returns how long after the PREVIOUS commit the user kept talking, or null. */
@@ -35,6 +44,7 @@ export class SpeechTimeline {
       ? { continuedAfterMs: this.#spokeAfterAt - this.#lastTurnCommitAt } : null
     this.#lastTurnCommitAt = now
     this.#spokeAfterAt = null
+    this.#answered = false
     return prev
   }
 

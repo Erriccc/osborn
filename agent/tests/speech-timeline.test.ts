@@ -49,7 +49,18 @@ for (const v of ['on', '1', 'TRUE']) assert.equal(speechTimelineHold({ OSBORN_SP
   tl.onAgentState(true); tl.onTranscript(6, 300)
   assert.equal(tl.awaitingContinuation(400), false, 'while the agent speaks')
   tl.onAgentState(false); tl.onTranscript(6, 500)
-  assert.equal(tl.awaitingContinuation(600), true)
+  assert.equal(tl.awaitingContinuation(600), false, 'the agent already answered: the user is replying, not continuing')
+  assert.equal(tl.onTurnCommit(2000), null)
+  tl.onTranscript(6, 2500)
+  assert.equal(tl.awaitingContinuation(2600), true, 'a new commit opens a new window')
+}
+// a normal follow-up turn is not a continuation: after the window, or after the agent replied
+{
+  const tl = new SpeechTimeline()
+  tl.onTurnCommit(0); tl.onTranscript(5, CONTINUATION_WINDOW_MS + 1000)
+  assert.equal(tl.onTurnCommit(CONTINUATION_WINDOW_MS + 2000), null, 'speech after the window: no note')
+  tl.onAgentState(true); tl.onAgentState(false); tl.onTranscript(5, CONTINUATION_WINDOW_MS + 3000)
+  assert.equal(tl.onTurnCommit(CONTINUATION_WINDOW_MS + 4000), null, 'speech after the agent replied: no note')
 }
 
 // A held block is never lost when the user never speaks again: the replay waits out the window, then speaks
