@@ -1290,14 +1290,14 @@ function VoiceRoomInner({
         peak = 0; duckOnsetAt = 0; duckedAt = 0
         lastSpeaking = speaking
       }
+      const micCtx = analyser!.analyser.context as AudioContext
+      if (micCtx.state === 'suspended') void micCtx.resume().catch(() => {})
       if (!speaking) {
         // Nothing playing to duck — glide back to full for the next utterance.
         targetVol = 1
         aboveSince = 0; belowSince = 0
         if (now - lastLevelPub >= MIC_LEVEL_INTERVAL_MS) { lastLevelPub = now; try { publishMicLevel(analyser!.calculateVolume()) } catch { /* analyser closed */ } }
       } else {
-        const micCtx = analyser!.analyser.context as AudioContext
-        if (micCtx.state === 'suspended') void micCtx.resume().catch(() => {})
         const vol = analyser!.calculateVolume() // instant 0..1 RMS of YOUR mic
         if (vol > peak) peak = vol
         if (now - lastLevelPub >= MIC_LEVEL_INTERVAL_MS) { lastLevelPub = now; publishMicLevel(vol) }
