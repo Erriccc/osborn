@@ -27,7 +27,7 @@ import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
 import { addressedPoints, turnPoints } from './points.js'
-import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, workLedgerEnabled, type LoopRecordInput } from './loops-ledger.js'
+import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, workLedgerEnabled, type LoopRecordInput, type SpokenLine } from './loops-ledger.js'
 import { outboundText } from './follow-through-client.js'
 import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
@@ -1605,6 +1605,16 @@ export class ClaudeLLM extends llm.LLM {
   #workSeen = new Set<string>()
   /** Main-thread tool calls in the turn so far (a result the agent kept working after was used). */
   #turnTools = 0
+  /** The last few replies with their time (memory only, ledger on only): lets a result already told be skipped. */
+  #spoken: SpokenLine[] = []
+  #noteSpoken(chunks: string[]): void {
+    if (!workLedgerEnabled()) return
+    const text = chunks.join('').trim()
+    if (!text) return
+    this.#spoken.push({ at: Date.now(), text: text.slice(0, 2000) })
+    if (this.#spoken.length > 8) this.#spoken.shift()
+  }
+  recentSpoken(): SpokenLine[] { return [...this.#spoken] }
   /** Surfaced work ids: the turn they were surfaced in; the reply to that notice closes them. */
   #workSurfaced = new Map<string, number>()
 
@@ -1643,6 +1653,7 @@ export class ClaudeLLM extends llm.LLM {
    * `surfaceUndelivered`, and the reply to that notice closes it.
    */
   deliverTurnResults(sessionId: string | null | undefined, chunks: string[]): void {
+    this.#noteSpoken(chunks)
     for (const [id, r] of this.#workResultTurn) {
       if (r.turn > this.#loopTurn) continue
       if (r.turn === this.#loopTurn && !r.waited) {

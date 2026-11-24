@@ -22,6 +22,7 @@ import { envFlagOn } from './env-keys.js'
 import { appendJsonlLine, readJsonlLines } from './jsonl-sidecar.js'
 import { claudeDir } from './content/lens-paths.js'
 import { clip } from './content/lens-ingest.js'
+import { terms } from './stopwords.js'
 import { githubIssueBase } from './steward-verdict.js'
 
 const LOOPS_FILE = 'loops.jsonl'
@@ -355,10 +356,58 @@ export function markQueuedStarted(cwd: string, project: string, instruction: str
   return hit
 }
 
+/** What the assistant said aloud, with when (a short ring kept in memory by ClaudeLLM). */
+export interface SpokenLine { at: number; text: string }
+/** A result the reply already covers when this share of its key terms was said (borderline counts: no notice). */
+const REDUNDANT_OVERLAP = 0.4
+const MOVED_ON_AFTER_MS = 5 * 60 * 1000
+
+/**
+ * Why a result should not be told, or null. `superseded`: a newer result for the same role and task text exists.
+ * `already told`: the assistant's speech after the result covers it. `moved on`: the user spoke again since, nothing
+ * after shares a key term, and the result is over 5 minutes old. Unsure means skip: an unneeded notice costs more.
+ */
+export function isStaleOrRedundant(row: LoopItem, ctx: { items: LoopItem[]; records: LoopRecord[]; now: number; spoken?: SpokenLine[] }): 'stale' | 'redundant' | null {
+  const rAt = Date.parse(row.resultAt ?? '')
+  if (!row.result || !Number.isFinite(rAt)) return null
+  const key = loopKey('work', row.text)
+  if (ctx.items.some((o) => o.id !== row.id && o.role === row.role && o.resultAt && Date.parse(o.resultAt) > rAt && loopKey('work', o.text) === key)) return 'redundant'
+  const rt = terms(row.result)
+  if (!rt.size) return null
+  const after = (ctx.spoken ?? []).filter((s) => s.at >= rAt)
+  const said = terms(after.map((s) => s.text).join(' '))
+  let hit = 0
+  for (const t of rt) if (said.has(t)) hit++
+  if (hit / rt.size >= REDUNDANT_OVERLAP) return 'redundant'
+  const prompts = ctx.records.filter((r) => r.kind === 'prompt' && r.origin === 'user_mic' && Date.parse(r.at) > rAt)
+  if (prompts.length && ctx.now - rAt > MOVED_ON_AFTER_MS) {
+    const later = terms([...prompts.map((r) => r.text ?? ''), ...after.map((s) => s.text)].join(' '))
+    if (![...rt].some((t) => later.has(t))) return 'stale'
+  }
+  return null
+}
+
+/** Open undelivered results to close as dropped, never told: `{id, reason}`. Same window and start cut as pendingDeliveries. */
+export function staleWork(records: LoopRecord[], now: number, opts: { sinceMs?: number; spoken?: SpokenLine[] } = {}): Array<{ id: string; reason: 'stale' | 'redundant' }> {
+  const items = [...foldLoops(records).values()]
+  const out: Array<{ id: string; reason: 'stale' | 'redundant' }> = []
+  for (const i of items) {
+    if (!(i.fg && i.open && i.state === 'result_ready' && i.resultAt)) continue
+    const at = Date.parse(i.resultAt)
+    if (opts.sinceMs !== undefined && at < opts.sinceMs) continue
+    if (now - at > WORK_SURFACE_WINDOW_MS) continue
+    const reason = isStaleOrRedundant(i, { items, records, now, spoken: opts.spoken })
+    if (reason) out.push({ id: i.id, reason })
+  }
+  return out
+}
+
 /** Work rows whose result exists but was never delivered, oldest first, bounded: what to surface at the next idle moment. */
-export function pendingDeliveries(records: LoopRecord[], now: number, opts: { max?: number; ttlMs?: number; sinceMs?: number } = {}): LoopItem[] {
+export function pendingDeliveries(records: LoopRecord[], now: number, opts: { max?: number; ttlMs?: number; sinceMs?: number; spoken?: SpokenLine[] } = {}): LoopItem[] {
   const ttl = opts.ttlMs ?? WORK_TTL_MS
+  const dead = new Set(staleWork(records, now, opts).map((d) => d.id))
   return [...foldLoops(records).values()]
+    .filter((i) => !dead.has(i.id))
     .filter((i) => i.fg && i.open && i.state === 'result_ready' && !!i.result && !!i.resultAt)
     .filter((i) => {
       const age = now - Date.parse(i.resultAt!)
