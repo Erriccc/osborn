@@ -961,7 +961,7 @@ export default function Dashboard() {
       // verifyUpdate which polls the result store + signals.
       if (result.__droppedFetch) {
         setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'verifying' } : op)
-        const verified = await verifyUpdate(target, 8000)
+        const verified = await verifyUpdate(target)
         setOperation(null)
         if (verified.success) {
           if (verified.version) setInstalledVersion(verified.version)
@@ -983,7 +983,7 @@ export default function Dashboard() {
       // Verify before declaring failure.
       if (result.success === false) {
         setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'verifying' } : op)
-        const verified = await verifyUpdate(target)
+        const verified = await verifyUpdate(target, 8000)
         setOperation(null)
         if (verified.success) {
           if (verified.version) setInstalledVersion(verified.version)
