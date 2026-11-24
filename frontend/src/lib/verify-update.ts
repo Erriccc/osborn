@@ -51,7 +51,8 @@ export async function pollVerifyUpdate(sandboxId: string, targetVersion: string 
         if (data.lastUpdate?.status === 'error' && lastTargetMatches) {
           lastError = data.lastUpdate.error ?? 'Update failed'
           // Honour it only once the live signals settled; a machine still coming up may yet land on the target.
-          const down = ['stopped', 'failed', 'destroyed', 'suspended'].includes(data.machineState)
+          // machineState is SandboxInfo.status (mapMachineState): suspended → sleeping, failed/destroyed → error.
+          const down = ['stopped', 'sleeping', 'error'].includes(data.machineState)
           if (down || (data.installedVersion && data.installedVersion !== targetVersion)) {
             return { success: false, error: lastError as string }
           }
@@ -65,7 +66,7 @@ export async function pollVerifyUpdate(sandboxId: string, targetVersion: string 
     await sleep(deps.pollMs ?? 4000)
   }
   // Never success without an observed version.
-  if (lastSignals.installedVersion && (!targetVersion || lastSignals.installedVersion === targetVersion)) {
+  if (targetVersion && lastSignals.installedVersion === targetVersion) {
     return { success: true, version: lastSignals.installedVersion }
   }
   if (lastError) return { success: false, error: lastError }
