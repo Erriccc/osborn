@@ -203,5 +203,13 @@ t('queued: appendQueuedLoop writes into the target project ledger (not the hub),
   })
 }
 
+t('work_* rows fold beside the old kinds without changing them, and never file', () => {
+  const id = L.loopIds.todo('keep me'); const w = L.loopIds.work('w1')
+  const rs = [rec({ kind: 'todo', id, text: 'keep me', status: 'pending' }), rec({ kind: 'work_opened', id: w, text: 'writer: x' }), rec({ kind: 'work_result', id: w, result: 'done' })]
+  assert.deepEqual(open(rs), [id, w].sort())
+  assert.deepEqual(L.fileableLoops(rs).map((i) => i.id), [id])
+  assert.equal(L.foldLoops([...rs, rec({ kind: 'work_delivered', id: w, by: 'phone' })]).get(w)!.open, false)
+})
+
 rmSync(root, { recursive: true, force: true })
 console.log(`\n${pass} passed`)

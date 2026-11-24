@@ -27,7 +27,8 @@ import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
 import { addressedPoints, turnPoints } from './points.js'
-import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, type LoopRecordInput } from './loops-ledger.js'
+import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, workLedgerEnabled, type LoopRecordInput } from './loops-ledger.js'
+import { outboundText } from './follow-through-client.js'
 import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
@@ -1595,6 +1596,46 @@ export class ClaudeLLM extends llm.LLM {
     appendLoopRecord(sid, cwd, { turn: this.#loopTurn, ...rec, fg })
   }
 
+  /** Delegated work ids that got a result: the turn and how many reply chunks it had spoken by then. */
+  #workResultTurn = new Map<string, { turn: number; chunks: number }>()
+  #workSeen = new Set<string>()
+
+  /**
+   * Work ledger: one `work_*` record, only for the foreground session and only while OSBORN_WORK_LEDGER is not off.
+   * No model call. Text is redacted and bounded here, so nothing downstream sees a secret.
+   */
+  recordWork(rec: LoopRecordInput, sessionId?: string | null): void {
+    if (!this.#opts.followThrough || !workLedgerEnabled()) return
+    const cut = (t?: string) => t === undefined ? undefined : outboundText(t)
+    this.recordLoop({ ...rec, ...(rec.text !== undefined ? { text: cut(rec.text) } : {}), ...(rec.result !== undefined ? { result: cut(rec.result) } : {}), source: 'inferred', origin: 'tool' }, sessionId)
+  }
+
+  /** A result arrived: ready to deliver, once per id (a SubagentStop that fires twice records once). */
+  noteWorkResult(id: string, result: string, sessionId?: string | null): void {
+    if (this.#workSeen.has(id)) return
+    this.#workSeen.add(id)
+    this.#workResultTurn.set(id, { turn: this.#loopTurn, chunks: this.#currentTurnChunks.length })
+    this.recordWork({ kind: 'work_result', id, result: result || '(no final message)' }, sessionId)
+  }
+
+  /** The result went out as a chat card (verdict or result entry): shown, so delivered. */
+  noteWorkShown(id: string, sessionId?: string | null): void {
+    this.#workResultTurn.delete(id)
+    this.recordWork({ kind: 'work_delivered', id, by: 'shown' }, sessionId)
+  }
+
+  /**
+   * Turn end: reply text spoken after a result arrived in this turn is that result being told (text before it,
+   * such as "sending the reviewer", is not). Otherwise the row stays result_ready for `surfaceUndelivered`.
+   */
+  #deliverTurnResults(sessionId: string | null | undefined, chunks: string[]): void {
+    for (const [id, r] of this.#workResultTurn) {
+      if (r.turn > this.#loopTurn) continue
+      this.#workResultTurn.delete(id)
+      if (r.turn === this.#loopTurn && chunks.slice(r.chunks).join('').trim()) this.recordWork({ kind: 'work_delivered', id, by: 'spoken' }, sessionId)
+    }
+  }
+
   /**
    * A real user turn (main thread): the raw prompt as evidence, the user's own asks as
    * explicit items (mic only), the last-session pointer, and once per instance the
@@ -2139,6 +2180,7 @@ export class ClaudeLLM extends llm.LLM {
     for (const [agentId, type] of this.#typeByAgentId) {
       this.recordLoop({ kind: 'dispatch_severed', id: loopIds.dispatch(agentId), text: `Unfinished ${type} run (cut off)`, source: 'inferred', origin: 'tool' })
     }
+    this.#workResultTurn.clear()
     if (this.#pendingPermission) {
       this.recordLoop({ kind: 'permission_settled', id: loopIds.permission(this.#pendingPermission.requestId), by: 'abort' })
     }
@@ -2484,6 +2526,7 @@ export class ClaudeLLM extends llm.LLM {
           const turnMessageId = this.#currentTurnMessageId
           const turnChunks = [...this.#currentTurnChunks]
           this.#closeTurnPoints((msg as any).session_id, [...turnChunks, typeof msg.result === 'string' ? msg.result : ''].join('\n'))
+          this.#deliverTurnResults((msg as any).session_id, turnChunks)
           if (msg.result) {
             callbacks.eventEmitter.emit('assistant_result', { text: msg.result, messageId: turnMessageId })
           }
@@ -3444,6 +3487,13 @@ class ClaudeLLMStream extends llm.LLMStream {
               // Pair this agent_id with its dispatching tool_use_id (per-flow stop chain).
               this.#llmRef.claimTaskDispatch(input?.agent_id, at0 ? String(at0) : undefined)
               this.#eventEmitter.emit('agent_started', { agent_type: input?.agent_type, agent_id: input?.agent_id, task })
+              if (input?.agent_id) {
+                // Work ledger: the delegation and its owner.
+                const wr = at0 ? roleOf(String(at0), this.#opts.agentRoles, NAMED_AGENTS) : undefined
+                const wid = loopIds.work(String(input.agent_id))
+                const w = { id: wid, ...(wr ? { role: wr } : {}), owner: wr ? `local:${wr}` : 'main', via: 'task' as const }
+                this.#llmRef.recordWork({ kind: 'work_opened', ...w, text: `${at0 || 'agent'}${rawTask ? `: ${rawTask}` : ''}` }, input?.session_id)
+              }
               if (input?.agent_id) this.#llmRef.recordLoop({ kind: 'dispatch_started', id: loopIds.dispatch(String(input.agent_id)), text: `Unfinished ${at0 || 'agent'} run${task ? `: ${task}` : ''}`, source: 'inferred', origin: 'tool' }, input?.session_id)
               // Record the dispatch as LIVE so the frontend can reconcile orphaned
               // "running" rows against statusManager.getActiveDispatchIds(). Without a
@@ -3464,6 +3514,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               const aid = input?.agent_id ?? ('sa-' + Date.now())
               statusManager.upsertDispatch(aid, { subagentType: at, dispatchState: 'completed', artifact: msg })
               if (input?.agent_id) this.#llmRef.recordLoop({ kind: 'dispatch_stopped', id: loopIds.dispatch(String(input.agent_id)) }, input?.session_id)
+              if (input?.agent_id) this.#llmRef.noteWorkResult(loopIds.work(String(input.agent_id)), msg, input?.session_id)
               this.#eventEmitter.emit('task_completed', { agent_type: at, agent_id: aid, last_assistant_message: String(msg).slice(0, 400) })
               // Steward verdict card (#221): parsed, kept in the session's sidecar, sent to the chat.
               const atRole = roleOf(at, this.#opts.agentRoles, NAMED_AGENTS)
@@ -3475,12 +3526,14 @@ class ClaudeLLMStream extends llm.LLMStream {
                   : { kind: 'steward_clear', id: loopIds.steward() }, input?.session_id)
                 this.#recordSteward(verdict)
                 this.#eventEmitter.emit('steward_verdict', verdict)
+                if (input?.agent_id) this.#llmRef.noteWorkShown(loopIds.work(String(input.agent_id)), input?.session_id)
               } else if (atRole && ROLES[atRole].resultCard) {
                 // A writer's or tester's return as a transcript entry (#212), same sidecar.
                 const result = agentResultRecord(String(at), atRole, msg)
                 if (result) {
                   this.#recordSteward(result)
                   this.#eventEmitter.emit('agent_result', result)
+                  if (input?.agent_id) this.#llmRef.noteWorkShown(loopIds.work(String(input.agent_id)), input?.session_id)
                 }
               }
               // Pattern #1 verifier chaining — CORRECT timing (moved here from PostToolUse).
