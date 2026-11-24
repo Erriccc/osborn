@@ -17,6 +17,7 @@ const MIN_FRAGMENT_WORDS = 6
 // A bare ordinal or "also" splits only after punctuation ("every second" must not); the longer phrases split anywhere.
 const MARKER = /(?<=[,;.!?])\s+(?=(?:also|second(?:ly)?|third(?:ly)?|next|oh and)\b)|\s+(?=(?:and another thing|another thing|one more thing|and then there'?s)\b)/i
 const LEAD_MARKER = /^(?:and another thing|another thing|one more thing|oh and|and then there'?s|also|(?:second(?:ly)?|third(?:ly)?|next|first(?:ly)?)(?=[,:]|$)|and|so|okay|ok|well|um|uh|right|alright|yeah|anyway)(?=[\s,:]|$)[\s,:-]*/i
+const OPENER = /^(?:hey|hi|hello|so|alright|okay|ok|well|right)\b/i
 const CHIT_CHAT = /^(?:(?:okay|ok|so|yeah|yes|no|right|alright|anyway|hmm+|um+|uh+|well|cool|great|thanks|thank you|sounds good|you know|i mean|got it|sure|please|and)\b[\s,.!?-]*)+$/i
 
 /** The speech terms of `text` with a possessive or trailing plural s folded. */
@@ -41,6 +42,7 @@ export function splitPoints(text: string): string[] {
   const clean = own.replace(/\s+/g, ' ').trim()
   if (countWords(clean) < POINTS_MIN_WORDS) return []
   const segs: string[] = []
+  let opener = false
   for (const sentence of clean.split(/(?<=[.!?])\s+/)) {
     for (const part of sentence.split(MARKER)) {
       let s = part
@@ -51,6 +53,7 @@ export function splitPoints(text: string): string[] {
         if (segs.length) segs[segs.length - 1] += ' ' + s
         continue
       }
+      if (!segs.length) opener = OPENER.test(part.trim())
       segs.push(s)
     }
   }
@@ -65,6 +68,8 @@ export function splitPoints(text: string): string[] {
     if (dup >= 0) kept[dup] = { s, w }
     else kept.push({ s, w })
   }
+  // A spoken opener ("Hey, quick update...") is not a point when it would cost a real one at the cap.
+  if (opener && kept.length > POINTS_CAP && kept[0].s === segs[0]) kept.shift()
   if (kept.length < POINTS_MIN_COUNT) return []
   return kept.map((k) => clip(k.s, MAX_ITEM_CHARS))
 }
@@ -75,6 +80,7 @@ export function splitPoints(text: string): string[] {
  * long words; anything unsure stays open.
  */
 export function addressedPoints(points: string[], reply: string): string[] {
+  if (!points.length) return []
   const have = contentWords(reply)
   return points.filter((p) => {
     const words = [...contentWords(p)]
@@ -87,9 +93,17 @@ export function addressedPoints(points: string[], reply: string): string[] {
 /** The points of a turn to track (the first POINTS_CAP of `total`), minus any that restate an explicit ask (those are filed as asks). */
 export function turnPoints(prompt: string, asks: string[]): { points: string[]; total: number } {
   const lowAsks = asks.map((a) => a.toLowerCase())
-  const kept = splitPoints(prompt).filter((p) => {
+  const kept: string[] = []
+  for (let p of splitPoints(prompt)) {
     const l = p.toLowerCase()
-    return !lowAsks.some((a) => a.includes(l) || l.includes(a))
-  })
+    if (lowAsks.some((a) => a.includes(l))) continue
+    // A short ask folded into the point: drop the ask's text, keep the point if enough remains.
+    for (const a of lowAsks) {
+      const i = a ? p.toLowerCase().indexOf(a) : -1
+      if (i >= 0) p = (p.slice(0, i) + ' ' + p.slice(i + a.length)).replace(/\s+/g, ' ').replace(/^[\s,;:.-]+|[\s,;:-]+$/g, '')
+    }
+    if (p === '' || contentWords(p).size < 2) continue
+    kept.push(p)
+  }
   return kept.length < POINTS_MIN_COUNT ? { points: [], total: 0 } : { points: kept.slice(0, POINTS_CAP), total: kept.length }
 }

@@ -172,7 +172,7 @@ t('turnPoints: fewer than 3 points left after the ask filter yields none', () =>
 })
 
 t('a restatement replaces its point in place, so it survives the cap', () => {
-  const body = 'The login page shows a blank screen after the email link redirect today. The dashboard chart for weekly signups shows last month numbers instead. Rename the billing settings tab because customers cannot find invoices anywhere. The nightly export job failed twice this week without any alert. Onboarding emails should stop going out during weekends for trial users. Seriously, the login blank screen after the email link redirect is the big one. Also please thank the whole team for everything they did this quarter okay.'
+  const body = 'The login page shows a blank screen after the email link redirect today and nobody has noticed it yet. The dashboard chart for weekly signups shows last month numbers instead of the current ones. Rename the billing settings tab because customers cannot find invoices anywhere. The nightly export job failed twice this week without any alert. Onboarding emails should stop going out during weekends for trial users. Seriously, the login blank screen after the email link redirect is the big one. Also please thank the whole team for everything they did this quarter okay.'
   const pts = P.splitPoints(body)
   assert.ok(pts.some((p) => /big one/.test(p)), JSON.stringify(pts))
   assert.match(pts[0], /big one/)
@@ -190,6 +190,23 @@ t('turnPoints: asks do not waste cap slots, and the checklist names the true cou
 t('a point with fewer than two content words is folded, not tracked', () => {
   const pts = P.splitPoints(RAMBLE.replace('Yeah.', 'The thing is I want you to do it again.'))
   assert.ok(pts.every((p) => !/^the thing is/i.test(p)), JSON.stringify(pts))
+})
+
+t('turnPoints: a short ask folded into a point does not drop the point', () => {
+  const pad = ' The login page shows a blank screen after the email link redirect today and nobody has noticed it yet. The dashboard chart for weekly signups shows last month numbers instead of the current ones. Rename the billing settings tab because customers cannot find invoices anywhere. The nightly export job failed twice this week without any alert reaching the team at all.'
+  const a = P.turnPoints('Onboarding emails should stop going out during weekends for trial users. Remind me about pricing.' + pad, ['remind me about pricing.'])
+  assert.ok(a.points.some((p) => /Onboarding emails/.test(p)) && a.points.every((p) => !/pricing/i.test(p)), JSON.stringify(a))
+  const b = P.turnPoints('The login page shows a blank screen after the email link redirect today and nobody has noticed it yet. The dashboard chart for weekly signups shows last month numbers instead of the current ones. The nightly export job failed twice this week without any alert reaching the team at all, which is really worrying for the whole support group. Don\'t forget the pricing.', ["don't forget the pricing."])
+  assert.equal(b.points.length, 3, JSON.stringify(b))
+})
+
+t('a spoken opener does not take a point slot when real points fill the cap', () => {
+  const real = ' The login page shows a blank screen after the email link redirect today and nobody has noticed it yet. The dashboard chart for weekly signups shows last month numbers instead of the current ones. Rename the billing settings tab because customers cannot find invoices anywhere. The nightly export job failed twice this week without any alert reaching the team at all.'
+  for (const o of ['Hey, quick update on a bunch of stuff from this morning\'s testing session.', 'So I just finished testing the new build and found several problems.', 'Alright, let me walk you through what I noticed today.']) {
+    const pts = P.splitPoints(o + real)
+    assert.equal(pts.length, 4, o + JSON.stringify(pts))
+    assert.match(pts[0], /login page/)
+  }
 })
 
 console.log(`${pass} passed`)

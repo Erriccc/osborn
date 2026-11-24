@@ -1638,6 +1638,7 @@ export class ClaudeLLM extends llm.LLM {
   #closeTurnPoints(sessionId: string | null | undefined, reply: string): void {
     const pts = this.#turnPoints
     this.#turnPoints = []
+    if (!pts.length) return
     for (const p of addressedPoints(pts, `${reply}\n${this.#turnDispatched}`)) this.recordLoop({ kind: 'point_addressed', id: loopIds.point(p), origin: 'user_mic' }, sessionId)
   }
 
