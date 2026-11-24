@@ -18,6 +18,8 @@ import { noiseGate, GATE_CONTEXT_TURNS } from './noise-gate.js'
 import { cleanTurnText, redactSecrets, isAmbientTurn } from './content/transcript-sanitizer.js'
 import { EventEmitter } from 'events'
 import { markChat } from './turn-timing.js'
+import { speechTimeline, speechTimelineHold } from './speech-timeline.js'
+import { getContinuationNote } from './prompts.js'
 
 // Bypass marker for gate-approved contexts: the deferred gate stream re-enters
 // chat() with the SAME chatCtx after a forward verdict; the marker makes the
@@ -380,15 +382,20 @@ export class PipelineDirectLLM extends llm.LLM {
       })
     }
 
+    // #581: userTurn is committed to the speaking timeline below, once a voice action has not taken it.
+    const userTurn = !!userText.trim() && !isAmbientTurn(userText)
+
     // ── PHONE VOICE ACTIONS (#367) ───────────────────────────────────────────
     // "stop that", "what are you doing?", a yes/no to a pending approval … run
     // as the app's own action, not a model turn. Before the interruption
     // enrichment, so its context waits for the next real turn. The empty
     // deferred stream gives LiveKit a reply with nothing to say.
-    if (userText.trim() && !isAmbientTurn(userText) && this.#opts.takeVoiceAction?.(userText)) {
+    if (userTurn && this.#opts.takeVoiceAction?.(userText)) {
       console.log(`📞 [voice-action] handled without the model: "${userText.slice(0, 60)}"`)
       return new NoiseGateStream(this, { chatCtx, toolCtx, connOptions }, async () => {})
     }
+    // A handled voice action (or shh) is not a turn: only now does the timeline commit.
+    const continued = userTurn ? speechTimeline.onTurnCommit() : null
 
     // ── SESSION TAIL injection (seam-only) ───────────────────────────────────
     // Inject the tail ONCE on the first real user turn after a compaction
@@ -533,6 +540,11 @@ export class PipelineDirectLLM extends llm.LLM {
     } else if (sessionTailBlock && userText.trim()) {
       // No interrupt context — post-compaction session tail on a shallow copy.
       ctxForClaude = withLastUserContent(chatCtx, sessionTailBlock + '\n\n' + userText)
+    }
+
+    if (continued && speechTimelineHold()) {
+      console.log(`🧩 [pipeline] user kept talking after the previous turn started (${Math.round(continued.continuedAfterMs / 1000)}s)`)
+      ctxForClaude = withNotePrepended(ctxForClaude, getContinuationNote(continued.continuedAfterMs))
     }
 
     // Client notices (favorite_changed, L2b): UI actions that are context, not a

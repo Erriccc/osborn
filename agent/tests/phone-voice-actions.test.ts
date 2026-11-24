@@ -318,7 +318,7 @@ t('index.ts: voice actions go through runAppAction and its allow-list', () => {
   assert.match(voice, /runAppAction\(\{ type: 'stop_dispatch'/)
   assert.match(voice, /if \(!PHONE_TOOLS_ENABLED\) return/)
   assert.match(src, /function takePhoneVoiceAction\(text: string\): boolean \{\s+if \(!inPhoneRoom\(\)\) return false/)
-  assert.equal((src.match(/takeVoiceAction: takePhoneVoiceAction/g) || []).length, 2, 'both pipeline builds')
+  assert.equal((src.match(/takeVoiceAction: takeVoiceCommand/g) || []).length, 2, 'both pipeline builds')
 })
 
 t('pipeline-direct-llm: a handled voice action stops before any enrichment or model call', () => {

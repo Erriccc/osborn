@@ -58,7 +58,7 @@ function replayStep(i: ReplayInput & { expired: boolean; attempts: number }):
   if (!i.sameInterruption) return { act: 'skip', reason: 'replaced or consumed by a new turn' }
   if (!i.hasText) return { act: 'skip', reason: 'nothing buffered' }
   if (i.expired) return { act: 'expire' }
-  const busy = i.gateTriaging ? 'noise gate triaging' : i.agentSpeaking ? 'agent speaking' : ''
+  const busy = i.gateTriaging ? 'speech hold or noise gate' : i.agentSpeaking ? 'agent speaking' : ''
   if (busy) return i.attempts < MAX_REPLAY_REARMS ? { act: 'rearm', reason: busy } : { act: 'skip', reason: `${busy}, gave up` }
   return { act: 'speak' }
 }

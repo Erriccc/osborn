@@ -68,7 +68,7 @@ assert.equal(isExpired(0, 60_000), false); assert.equal(isExpired(0, 60_001), tr
     assert.equal(st.li.suppressedBlocks.length, 0, 'spoken text is cleared (B/A never replay twice)')
     // gate triaging: skipped, re-armed, then speaks after the gate dropped the utterance
     log.length = 0; st.li = mk('reply B', now); st.triaging = true
-    sch.arm(); advance(1300); assert.match(log[0], /WAITING 7 chars \(noise gate triaging/)
+    sch.arm(); advance(1300); assert.match(log[0], /WAITING 7 chars \(speech hold or noise gate/)
     st.triaging = false; advance(1300); assert.equal(log.at(-1), 'speak')
     // agent speaking, then done: re-arm continues until quiet
     log.length = 0; st.li = mk('reply C', now); st.speaking = true

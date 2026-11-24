@@ -63,7 +63,7 @@ import { loopIds, noticeThrottled, appendLoopRecord, appendQueuedLoop, markQueue
 import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
-import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote } from './prompts.js'
+import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote, getNoiseCancelNote } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled, launchLoopsFlush, flushLastSessionThenExit } from './content/lens-launch.js'
 import { hasContentModelKey } from './content/content-llm.js'
@@ -78,7 +78,7 @@ import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
 import { missingRequiredEnv } from './env-keys.js'
 import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl, notifyPhone, isWatchBridgeEnabled, phonePushPending, settlePermissionPush } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
-import { noiseGate } from './noise-gate.js'
+import { noiseGate, isShhCue } from './noise-gate.js'
 import { installDuck, DUCK_LEVEL } from './duck.js'
 import { meetingAddressing, isRoutableTarget } from './meeting-addressing.js'
 import { listSecretStatus, setSecrets, deleteSecret } from './secrets-store.js'
@@ -92,6 +92,7 @@ import { llm } from '@livekit/agents'
 import { z } from 'zod'
 import { closeSessionBounded } from './lib/settle-within.js'
 import { markTranscript, markReplay } from './turn-timing.js'
+import { speechTimeline } from './speech-timeline.js'
 
 // ============================================================
 // PIPELINE MODE: STT (Deepgram) → Claude Agent SDK → TTS
@@ -4207,7 +4208,7 @@ async function main() {
       sameInterruption: lastInterruption === captured,
       hasText: !!lastInterruption?.suppressedBlocks.length,
       agentSpeaking: activeSpeechHandles.size > 0 || agentState === 'speaking',
-      gateTriaging: noiseGate.triaging,
+      gateTriaging: noiseGate.triaging || speechTimeline.shouldHold(),  // or the user's next chunk will take the text (#581)
     }),
     speak: () => speakBuffered('user quiet, no new turn'),
     expire: () => {
@@ -4615,7 +4616,7 @@ async function main() {
       isProcessingQueue = false
       currentSpeechHandle = null
       activeSpeechHandles.clear()
-      clearInterruption('performSessionSwitch')
+      clearInterruption('performSessionSwitch'); speechTimeline.reset()
       if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
       stopProactiveLoop()
       if (activeResearch) {
@@ -4745,6 +4746,7 @@ async function main() {
   })
   noiseGate.on('drop', (d: { text: string; verdict: string; ts: number }) => {
     void sendToFrontend({ type: 'gate_dropped', text: d.text, verdict: d.verdict, ts: d.ts })
+    speechTimeline.reset()  // a drop proves that speech was not the user's continuation: no 6 s wait for the next reply
     replayTimer.arm()  // the held utterance never became a turn: buffered reply text may speak now
   })
   noiseGate.on('auto_exit', () => {
@@ -5288,8 +5290,10 @@ async function main() {
       // pre-interrupt overlap, but at the *output* side. The suppressed text gets
       // folded into lastInterruption so the next chat() to Claude carries it as
       // "you wrote this but the user did not hear it — re-articulate if relevant."
-      if (userState === 'speaking') {
+      // Unless OSBORN_SPEECH_TIMELINE_HOLD is off, also held when the user spoke again after this turn was committed (#581): the next chunk's turn carries it, else the replay speaks it.
+      if (userState === 'speaking' || speechTimeline.shouldHold()) {
         appendSuppressedText(data.text, data.messageId)
+        if (userState !== 'speaking') replayTimer.arm()
         return
       }
 
@@ -5665,7 +5669,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('room-disconnect')
+    clearInterruption('room-disconnect'); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -5914,7 +5918,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('room-join')
+    clearInterruption('room-join'); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -6120,7 +6124,7 @@ async function main() {
         getAndConsumeInterruptionContext,
         getAndConsumeClientNotes,
         onFastBrainResult: onPipelineFastBrainResult,
-        takeVoiceAction: takePhoneVoiceAction,
+        takeVoiceAction: takeVoiceCommand,
       })
       // Pass pipelineLLM to createDirectSession so it uses it instead of creating a new ClaudeLLM
       myLLM = pipelineLLM
@@ -6231,6 +6235,7 @@ async function main() {
       // Agent state tracking
       sess.on('agent_state_changed' as any, (ev: any) => {
         agentState = ev.newState
+        speechTimeline.onAgentState(ev.newState === 'speaking')
         // Clear processing guard when model transitions to any new state
         isProcessingQueue = false
         // Native duck: never leave the next utterance quiet
@@ -6353,6 +6358,7 @@ async function main() {
         const words = t.trim().split(/\s+/).filter(Boolean).length
         const tag = isFinal ? '📝 FINAL' : '✏️  interim'
         markTranscript(isFinal)
+        speechTimeline.onTranscript(words)
         console.log(`${tag} transcript (${words}w, ${t.length}c) [${new Date().toISOString()}]: "${t.slice(0, 120)}${t.length > 120 ? '…' : ''}"`)
       })
 
@@ -6603,7 +6609,7 @@ async function main() {
                 getAndConsumeInterruptionContext,
                 getAndConsumeClientNotes,
                 onFastBrainResult: onPipelineFastBrainResult,
-                takeVoiceAction: takePhoneVoiceAction,
+                takeVoiceAction: takeVoiceCommand,
               })
               result = await createDirectSession(recoverySessionId, pipelineLLM)
             }
@@ -6886,7 +6892,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('participant-disconnect')
+    clearInterruption('participant-disconnect'); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -7626,16 +7632,8 @@ async function main() {
       // conversational behavior in the same direction.
       else if (data.type === 'noise_cancel') {
         const turningOn = !!data.enabled
-        const wasOn = noiseGate.enabled
-        noiseGate.setEnabled(turningOn, 'ui')
+        setNoiseGate(turningOn, { quiet: false })
         await sendToFrontend({ type: 'noise_cancel_state', enabled: noiseGate.enabled, reason: noiseGate.reason })
-        if (noiseGate.enabled !== wasOn) {
-          try {
-            (currentLLM as any)?.sendPrompt?.(turningOn
-              ? '[SYSTEM note — the user enabled noise-cancellation mode: they are in a noisy, multi-speaker environment (other conversations around them). Enter your meeting-mode behavior now even though no Recall meeting is connected: listen more than you speak, keep spoken replies short and only when clearly addressed, and expect filtered/sparse transcripts. Do not read this note aloud.]'
-              : '[SYSTEM note — the user disabled noise-cancellation mode: the room is back to a normal one-on-one voice conversation. Exit meeting-mode behavior and resume normal conversational responses. Do not read this note aloud.]')
-          } catch {}
-        }
       }
       // Tombstone recovery — "send anyway" on a gate-dropped utterance. The text
       // is allow-listed for one pass so the gate can't re-drop it.
@@ -8053,6 +8051,27 @@ async function main() {
     const replies: any[] = []
     await dispatchAction(data, { reply: async (d, to) => { replies.push(d); return publishToRoom(d, to) } })
     return replies
+  }
+
+  /** Spoken commands handled before the model turn: the phone actions, then "shh" (#587, any room; the gate's 'state' event tells the frontend). */
+  function takeVoiceCommand(text: string): boolean {
+    if (takePhoneVoiceAction(text)) return true
+    // On a call the caller gets no confirmation and has no voice way off: the classifier would drop directed speech.
+    if (inPhoneRoom() || !isShhCue(text)) return false
+    console.log('🤫 [shh] side-conversation filter on, no reply')
+    setNoiseGate(true, { quiet: true })
+    return noiseGate.enabled  // OSBORN_NOISE_GATE=off: the gate cannot turn on, so the turn goes to the model
+  }
+
+  /**
+   * The one place the side-conversation filter is switched (UI toggle and "shh"). quiet = no model turn:
+   * the [SYSTEM note] the UI path sends goes through sendPrompt, which starts a model turn, so "shh" skips it.
+   */
+  function setNoiseGate(on: boolean, o: { quiet: boolean }): void {
+    const wasOn = noiseGate.enabled
+    noiseGate.setEnabled(on, 'ui')
+    if (o.quiet || noiseGate.enabled === wasOn) return
+    try { (currentLLM as any)?.sendPrompt?.(getNoiseCancelNote(on)) } catch {}
   }
 
   // Phone voice actions (#367): on a call, a short command ("stop that", "what
