@@ -13,6 +13,8 @@
 // - Per-run links: this run's tasks with clip / clip+audio / logs, plus a
 //   shareable link to this in-app view.
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type WheelEvent } from 'react'
+import SignInCard from '@/components/SignInCard'
+import { signInHref } from '@/lib/signin-href'
 import { useMenuDismiss } from '@/lib/use-menu-dismiss'
 
 type EngineState = {
@@ -376,16 +378,10 @@ export function BrowserPanel() {
 
   if (signedOut) {
     return (
-      <div className="flex flex-col items-center gap-3 rounded-xl border border-neutral-800 bg-neutral-950 px-6 py-12 text-center text-neutral-200">
-        <span className="text-2xl">🎥</span>
-        <h2 className="text-base font-semibold text-neutral-100">Sign in to watch and drive the browser engine</h2>
-        <p className="max-w-md text-sm text-neutral-400">
-          The live browser view and its controls are available to signed-in accounts.
-        </p>
-        <a href="/login?next=/browser" className="rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-black hover:bg-amber-400">
-          Sign in
-        </a>
-      </div>
+      <SignInCard className="max-w-md mx-auto mt-10"
+        icon={<svg className="w-6 h-6 text-[var(--text-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18" /></svg>}
+        title="Sign in to use the browser" body="The live browser view is for signed-in accounts."
+        href={signInHref('/browser')} label="Sign in" />
     )
   }
 

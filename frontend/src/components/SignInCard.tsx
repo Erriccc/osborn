@@ -1,12 +1,14 @@
 import type { ReactNode } from 'react'
 
 /** The signed-out card: a title, a line of why, and one primary Sign in. */
-export default function SignInCard({ title, body, href, label, icon, className = '' }: {
+export default function SignInCard({ title, body, href, label, icon, secondary, className = '' }: {
   title: string
   body: string
   href: string
   label: string
   icon?: ReactNode
+  /** A quiet text link under the primary action (for example Back). */
+  secondary?: { label: string; href?: string; onClick?: () => void }
   className?: string
 }) {
   return (
@@ -22,6 +24,15 @@ export default function SignInCard({ title, body, href, label, icon, className =
         className="mt-4 inline-flex items-center gap-2 rounded-xl bg-[var(--accent)] text-[var(--background)] px-4 py-2.5 text-[13px] font-semibold hover:opacity-90 active:scale-[0.98] transition-all">
         {label}
       </a>
+      {secondary && (
+        <div className="mt-3">
+          {secondary.href ? (
+            <a href={secondary.href} className="text-[13px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] underline underline-offset-2 transition-colors">{secondary.label}</a>
+          ) : (
+            <button type="button" onClick={secondary.onClick} className="text-[13px] text-[var(--text-muted)] hover:text-[var(--text-secondary)] underline underline-offset-2 transition-colors">{secondary.label}</button>
+          )}
+        </div>
+      )}
     </div>
   )
 }

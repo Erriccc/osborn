@@ -1,5 +1,6 @@
 'use client'
 
+import { signInHref } from '@/lib/signin-href'
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
 import { useDocumentTitle } from '@/lib/use-document-title'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
@@ -161,7 +162,7 @@ export default function SettingsPage() {
       clearTimeout(timeout)
       setUser(user)
       setLoading(false)
-      if (!user) router.replace('/login')
+      if (!user) router.replace(signInHref('/settings'))
     }).catch(() => { clearTimeout(timeout); setLoading(false) })
   }, [])
 
