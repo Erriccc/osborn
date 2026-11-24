@@ -116,10 +116,8 @@ export default function ChatPage() {
           @keyframes breathe { 0%, 100% { transform: scale(1); opacity: 0.7; } 50% { transform: scale(1.15); opacity: 1; } }
           @keyframes ring { 0% { transform: scale(0.8); opacity: 0.5; } 100% { transform: scale(2.2); opacity: 0; } }
         `}</style>
-        {/* Below sm the room is pinned to the visible viewport (fixed inset-0):
-            iOS Chrome/Safari size 100dvh against a toolbar state that is not the
-            one on screen, which left the page a band short with black below. */}
-        <main className="fixed inset-0 sm:static sm:h-[100dvh] w-full overflow-hidden bg-[var(--background)] relative pt-[env(safe-area-inset-top)]">
+        {/* Phones: fixed to the visible viewport; iOS sizes 100dvh against the wrong toolbar state. */}
+        <main className="fixed inset-0 sm:relative sm:inset-auto sm:h-[100dvh] w-full overflow-hidden bg-[var(--background)] pt-[env(safe-area-inset-top)]">
           <VoiceRoom waitingMode={!connected} />
           {/* A rejoin keeps VoiceRoom (and the composer's text) mounted underneath. */}
           {(!connected || rejoining) && (
