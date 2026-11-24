@@ -18,11 +18,13 @@ import { noiseGate, GATE_CONTEXT_TURNS } from './noise-gate.js'
 import { cleanTurnText, redactSecrets, isAmbientTurn } from './content/transcript-sanitizer.js'
 import { EventEmitter } from 'events'
 import { markChat } from './turn-timing.js'
+import { speechTimeline, continuationNote, rambleHoldMs } from './speech-timeline.js'
 
 // Bypass marker for gate-approved contexts: the deferred gate stream re-enters
 // chat() with the SAME chatCtx after a forward verdict; the marker makes the
 // second pass skip the gate and run the normal (enrichment + Claude) path.
 const gateApproved = new WeakSet<llm.ChatContext>()
+const rambleHeld = new WeakSet<llm.ChatContext>()
 
 // ============================================================
 // SESSION TAIL — compact recent-conversation block prepended to the first real
@@ -426,6 +428,25 @@ export class PipelineDirectLLM extends llm.LLM {
     // interruptQuery() for a transcript chunk, aborting working turns nonstop.
     // Leave the pending context for the next REAL user message.
     const isMeetingChunkEarly = isAmbientTurn(userText)  // meeting chunks and spoke reports
+    // ── TURN COMMIT + RAMBLE HOLD (#581) ─────────────────────────────────────
+    // The timeline learns this turn reached the model; if the user kept talking
+    // after the previous commit, the prompt says so. The hold (flag, default
+    // off) waits briefly after a long monologue for a follow-on chunk.
+    const realTurn = !!userText.trim() && !isMeetingChunkEarly
+    if (realTurn && !rambleHeld.has(chatCtx)) {
+      const hold = rambleHoldMs(speechTimeline.lastTalkedMs)
+      if (hold > 0) {
+        rambleHeld.add(chatCtx)
+        console.log(`⏳ [ramble-hold] ${hold}ms after ${Math.round(speechTimeline.lastTalkedMs / 1000)}s of talking`)
+        return new NoiseGateStream(this, { chatCtx, toolCtx, connOptions }, async () => {
+          await new Promise((r) => setTimeout(r, hold))
+          this.chat({ chatCtx, toolCtx, connOptions, abortController })
+        })
+      }
+    }
+    const continued = realTurn ? speechTimeline.onTurnCommit() : null
+    const contNote = continuationNote(continued)
+
     // What the inner ClaudeLLM receives: the original chatCtx, or an enriched
     // shallow copy of it (see withLastUserContent).
     let ctxForClaude: llm.ChatContext = chatCtx
@@ -533,6 +554,11 @@ export class PipelineDirectLLM extends llm.LLM {
     } else if (sessionTailBlock && userText.trim()) {
       // No interrupt context — post-compaction session tail on a shallow copy.
       ctxForClaude = withLastUserContent(chatCtx, sessionTailBlock + '\n\n' + userText)
+    }
+
+    if (contNote) {
+      console.log(`🧩 [pipeline] user kept talking after the previous turn started (${Math.round(continued!.continuedAfterMs / 1000)}s)`)
+      ctxForClaude = withNotePrepended(ctxForClaude, contNote)
     }
 
     // Client notices (favorite_changed, L2b): UI actions that are context, not a

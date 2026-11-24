@@ -277,4 +277,14 @@ class NoiseGate extends EventEmitter {
 }
 
 /** Singleton — one gate per agent process (one voice session per machine). */
+/**
+ * "shh" (#587): a deliberate cue that turns the side-conversation filter on.
+ * Only when it is the whole utterance or its first word, so "shh" said
+ * mid-sentence to someone else never matches.
+ */
+export function isShhCue(text: string): boolean {
+  const first = String(text || '').toLowerCase().replace(/[^a-z\s]+/g, ' ').trim().split(/\s+/)[0]
+  return /^(?:sh{2,}|shush)$/.test(first || '')
+}
+
 export const noiseGate = new NoiseGate()
