@@ -370,7 +370,7 @@ export function pendingDeliveries(records: LoopRecord[], now: number, opts: { ma
     .slice(0, opts.max ?? 1)
 }
 
-/** True while a new notice would break the global limit: one per 5 minutes, three per hour, counted from `work_surfaced` records. */
+/** True while a new notice would break the limit: one per 5 minutes, three per hour, counted from this session's `work_surfaced` records. */
 export function noticeThrottled(records: LoopRecord[], now: number): boolean {
   const at = records.filter((r) => r.kind === 'work_surfaced').map((r) => Date.parse(r.at)).filter((t) => t <= now)
   if (at.some((t) => now - t < WORK_NOTICE_GAP_MS)) return true
