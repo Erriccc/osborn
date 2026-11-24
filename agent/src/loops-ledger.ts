@@ -35,6 +35,15 @@ export const MAX_PROMPT_BYTES = 3500
 /** An item's text is a short paraphrase, never a long transcript quote. */
 export const MAX_ITEM_CHARS = 200
 const RECAP_MAX = 3
+/** A work row that was never delivered is dropped after this long, so a stuck row cannot linger. */
+export const WORK_TTL_MS = 6 * 60 * 60 * 1000
+/** Surfaced at most this often per row and this many times, then it waits for the recap. */
+export const WORK_SURFACE_MAX = 2
+export const WORK_SURFACE_GAP_MS = 2 * 60 * 1000
+/** A result must be this old before it is surfaced: the turn that received it gets to report it first. */
+export const WORK_SETTLE_MS = 10 * 1000
+/** OSBORN_WORK_LEDGER=off|0|false|no turns delegation tracking off; default on (foreground session only, see `recordWork`). */
+export const workLedgerEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => !/^(off|0|false|no)$/i.test(String(env.OSBORN_WORK_LEDGER ?? '').trim())
 
 export type LoopOrigin = 'user_mic' | 'meeting' | 'phone' | 'tool' | 'system'
 export type LoopSource = 'explicit' | 'inferred'
@@ -48,6 +57,7 @@ export type LoopKind =
   | 'permission_pending' | 'permission_settled'
   | 'slot_refused' | 'budget_denied' | 'open_loop' | 'queued' | 'started'
   | 'filed' | 'recapped' | 'held'
+  | 'work_opened' | 'work_claimed' | 'work_result' | 'work_surfaced' | 'work_delivered' | 'work_dropped'
 
 export interface LoopRecord {
   v: 1
@@ -62,7 +72,7 @@ export interface LoopRecord {
   fg?: boolean
   turn?: number
   status?: string
-  by?: 'user' | 'abort'
+  by?: 'user' | 'abort' | WorkDelivery
   url?: string
   cwd?: string
   /** `queued`: the instruction itself, kept to start it later (`text` is a short title). */
@@ -70,7 +80,20 @@ export interface LoopRecord {
   /** `held`: the repo that held the item back (public or unknown visibility). */
   repo?: string
   truncated?: boolean
+  /** `work_*`: who holds the work ('main', 'local:<role>', 'local:<project>'), its role, how it was sent, the work it came out of. */
+  owner?: string
+  role?: string
+  via?: WorkVia
+  parent?: string
+  /** `work_result`: what came back, short, secrets redacted. */
+  result?: string
+  /** `work_dropped`: why it was closed without delivery. */
+  reason?: string
 }
+
+export type WorkVia = 'task' | 'dispatch' | 'slot'
+export type WorkDelivery = 'spoken' | 'shown' | 'phone'
+export type WorkState = 'opened' | 'claimed' | 'result_ready' | 'delivered' | 'dropped'
 
 export type LoopRecordInput = Omit<LoopRecord, 'v' | 'at'> & { at?: string }
 
@@ -87,6 +110,17 @@ export interface LoopItem {
   filedUrl?: string
   filedAt?: string
   recapped?: boolean
+  /** `work_*` rows only: derived by the fold. */
+  state?: WorkState
+  owner?: string
+  role?: string
+  via?: WorkVia
+  parent?: string
+  result?: string
+  resultAt?: string
+  deliveredAt?: string
+  surfaced?: number
+  lastSurfacedAt?: string
 }
 
 // ── Pure helpers ────────────────────────────────────────────────────────────
@@ -165,6 +199,32 @@ const OPENS: Partial<Record<LoopKind, (r: LoopRecord) => boolean>> = {
   queued: () => true,
   // The queued item was sent (the hub's dispatch matched it): closed, so it is neither offered nor filed.
   started: () => false,
+  // Delegated work (work ledger): open until its result is delivered or it is dropped, never by the run merely stopping.
+  work_opened: () => true,
+  work_claimed: () => true,
+  work_result: () => true,
+  work_surfaced: () => true,
+  work_delivered: () => false,
+  work_dropped: () => false,
+}
+
+const WORK_STATE: Partial<Record<LoopKind, WorkState>> = {
+  work_opened: 'opened', work_claimed: 'claimed', work_result: 'result_ready', work_delivered: 'delivered', work_dropped: 'dropped',
+}
+/** Old builds ignore these kinds (no OPENS entry), so a mixed fleet shares one ledger safely. */
+export const isWorkKind = (k: string): boolean => k.startsWith('work_')
+const WORK_END: WorkState[] = ['delivered', 'dropped']
+
+function applyWork(item: LoopItem, r: LoopRecord): void {
+  const st = WORK_STATE[r.kind]
+  if (st) item.state = st
+  if (r.owner) item.owner = r.owner
+  if (r.role) item.role = r.role
+  if (r.via) item.via = r.via
+  if (r.parent) item.parent = r.parent
+  if (r.kind === 'work_result') { item.result = r.result ?? r.text; item.resultAt = r.at }
+  if (r.kind === 'work_delivered') item.deliveredAt = r.at
+  if (r.kind === 'work_surfaced') { item.surfaced = (item.surfaced ?? 0) + 1; item.lastSurfacedAt = r.at }
 }
 
 /** Fold the ledger: the last record per item id wins. `prompt` and `session` lines are never items. */
@@ -185,6 +245,8 @@ export function foldLoops(records: LoopRecord[]): Map<string, LoopItem> {
     const opens = Object.hasOwn(OPENS, r.kind) ? OPENS[r.kind] : undefined
     if (!opens) continue
     const prev = items.get(r.id)
+    // A finished row stays finished: a duplicate or late record (a SubagentStop that fires twice) never reopens it.
+    if (prev?.state && WORK_END.includes(prev.state) && isWorkKind(r.kind)) continue
     const origin: LoopOrigin = r.origin ?? prev?.origin ?? 'tool'
     const item: LoopItem = prev ?? {
       id: r.id, kind: r.kind, text: '', source: 'inferred', origin, fg: false, at: r.at, open: true,
@@ -197,6 +259,7 @@ export function foldLoops(records: LoopRecord[]): Map<string, LoopItem> {
       if (typeof r.turn === 'number') item.turn = r.turn
     }
     item.open = opens(r)
+    if (isWorkKind(r.kind)) applyWork(item, r)
     items.set(r.id, item)
   }
   return items
@@ -215,7 +278,8 @@ export function publicRepos(records: LoopRecord[]): Set<string> {
 /** Open items this machine may file: written by the foreground voice session only. */
 export function fileableLoops(records: LoopRecord[]): LoopItem[] {
   // A point inferred from a long turn stays local until a read-back exists (#461).
-  return openLoops(records).filter((i) => i.fg && i.kind !== 'point')
+  // Delegated work is tracked for delivery here, never filed.
+  return openLoops(records).filter((i) => i.fg && i.kind !== 'point' && !isWorkKind(i.kind))
 }
 
 function isLoopRecord(o: any): o is LoopRecord {
@@ -241,6 +305,8 @@ export const loopIds = {
   todo: (content: string) => `todo:${loopKey('todo', content)}`,
   task: (taskId: string) => `task:${taskId}`,
   dispatch: (agentId: string) => `dispatch:${agentId}`,
+  /** `work:<agentId>` for a sub-agent, `work:dispatch:<project>:<hash>` for a spoke. */
+  work: (key: string) => `work:${key}`,
   question: (toolUseId: string) => `question:${toolUseId}`,
   permission: (requestId: string) => `perm:${requestId}`,
   slot: (text: string) => `slot:${loopKey('slot', text)}`,
@@ -287,6 +353,28 @@ export function markQueuedStarted(cwd: string, project: string, instruction: str
     if (foldLoops(readLoopRecordsAt(l.path)).get(id)?.open && appendLoopRecord(l.sessionId, cwd, { kind: 'started', id })) hit = true
   }
   return hit
+}
+
+/** Work rows whose result exists but was never delivered, oldest first, bounded: what to surface at the next idle moment. */
+export function pendingDeliveries(records: LoopRecord[], now: number, opts: { max?: number; ttlMs?: number } = {}): LoopItem[] {
+  const ttl = opts.ttlMs ?? WORK_TTL_MS
+  return [...foldLoops(records).values()]
+    .filter((i) => i.fg && i.open && i.state === 'result_ready' && !!i.result && !!i.resultAt)
+    .filter((i) => {
+      const age = now - Date.parse(i.resultAt!)
+      if (!(age >= WORK_SETTLE_MS) || age > ttl) return false
+      if ((i.surfaced ?? 0) >= WORK_SURFACE_MAX) return false
+      return !i.lastSurfacedAt || now - Date.parse(i.lastSurfacedAt) >= WORK_SURFACE_GAP_MS
+    })
+    .sort((a, b) => a.resultAt!.localeCompare(b.resultAt!))
+    .slice(0, opts.max ?? 2)
+}
+
+/** Ids of open work rows older than the TTL, to close with `work_dropped`. A row that never reports cannot gate anything. */
+export function expiredWork(records: LoopRecord[], now: number, ttlMs = WORK_TTL_MS): string[] {
+  return [...foldLoops(records).values()]
+    .filter((i) => i.open && !!i.state && now - Date.parse(i.at) > ttlMs)
+    .map((i) => i.id)
 }
 
 // ── IO ──────────────────────────────────────────────────────────────────────
@@ -366,7 +454,10 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
     const filed: Array<{ sessionId: string; item: LoopItem }> = []
     const unfiled: Array<{ sessionId: string; item: LoopItem }> = []
     for (const { sessionId, path } of ledgersIn(projectOsbDir(workingDir))) {
-      for (const item of foldLoops(readLoopRecordsAt(path)).values()) {
+      const folded = foldLoops(readLoopRecordsAt(path))
+      for (const item of folded.values()) {
+        // A tracked delegation (work:<id>) already says it: no second line from its dispatch:<id> row.
+        if (item.id.startsWith('dispatch:') && folded.get(loopIds.work(item.id.slice(9)))?.open) continue
         // Foreground items only, as for filing: a background slot keeps its ledger local.
         if (item.recapped || !item.fg) continue
         if (!item.text) continue
