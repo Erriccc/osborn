@@ -7,7 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { staleIdOnConsume, isStaleBlock, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
@@ -4146,11 +4146,13 @@ async function main() {
       gateTriaging: noiseGate.triaging,
     }),
     speak: () => speakBuffered('user quiet, no new turn'),
-    // Every buffered block aged out; a heard context under 60s old stays for the turn that consumes it (#549).
     expire: () => {
-      if (!lastInterruption || isExpired(lastInterruption.timestamp, Date.now())) return clearInterruption('expired 60s')
-      console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (expired 60s, heard context kept)`)
-      lastInterruption = { ...lastInterruption, suppressedBlocks: [] }
+      const d = expireDecision(lastInterruption, Date.now())
+      if (d === 'clear') clearInterruption('expired 60s')
+      else if (d === 'drop-blocks') {
+        console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (expired 60s, heard context kept)`)
+        lastInterruption = { ...lastInterruption, suppressedBlocks: [] }
+      }
     },
     log: (m) => console.warn(`🤐 [suppressed] ${m} (agent: ${agentState}, user: ${userState})`),
   })

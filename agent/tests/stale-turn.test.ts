@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { staleIdOnConsume, isStaleBlock, currentIdOnPush, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired, appendBlock, partitionForReplay, liveBlocks, joinBlocks } from '../src/stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, currentIdOnPush, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks } from '../src/stale-turn.js'
 import { noiseGate } from '../src/noise-gate.js'
 
 let stale: string | null = null
@@ -177,5 +177,16 @@ assert.equal(isExpired(0, 60_000), false); assert.equal(isExpired(0, 60_001), tr
   // a say started, then a block arrives: settleAfterSay keeps it with its own time
   const kept = settleAfterSay({ ...appendBlock(null, 'post', 'T9', 7_000), spokenText: 'x' } as any)
   assert.deepEqual(kept!.suppressedBlocks, [{ text: 'post', turnId: 'T9', at: 7_000 }])
+}
+
+// #549: the replay timer's expire keeps a fresh heard context, dropping only its expired blocks
+{
+  const heard = (timestamp: number, at: number) => ({ spokenText: 'heard', recentMessages: 'r', timestamp, suppressedBlocks: [{ text: 'old', at }] })
+  assert.equal(expireDecision(heard(59_500, 0), 60_100), 'drop-blocks', 'a barge-in 0.6s old survives its expired block')
+  assert.equal(expireDecision(heard(0, 0), 60_100), 'clear', 'the heard context itself is over 60s old')
+  assert.equal(expireDecision(appendBlock(null, 'only', 'T', 0), 60_100), 'clear', 'buffer-only, every block expired')
+  assert.equal(expireDecision({ ...heard(59_500, 0), spokenText: '' }, 60_100), 'clear', 'nothing heard: nothing to keep')
+  assert.equal(expireDecision(null, 60_100), 'keep', 'no context: no-op')
+  assert.equal(expireDecision(heard(59_500, 30_000), 60_100), 'keep', 'a live block: nothing expired')
 }
 console.log('stale-turn: ok')

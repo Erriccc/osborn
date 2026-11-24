@@ -146,6 +146,15 @@ export class ReplayScheduler<C extends Pending> {
   }
 }
 
+/**
+ * The replay timer found every buffered block expired (#549): drop only the blocks
+ * while a heard context under 60s old waits for the turn that consumes it, else clear.
+ */
+export function expireDecision(li: Buffered | null, now: number): 'clear' | 'drop-blocks' | 'keep' {
+  if (!li || liveBlocks(li.suppressedBlocks, now).length) return 'keep'
+  return li.spokenText && !isExpired(li.timestamp, now) ? 'drop-blocks' : 'clear'
+}
+
 /** Pending blocks to speak ahead of a newer block (#539 B), and the context left once they are taken. */
 export function takePending<T extends Pending>(li: T | null): { blocks: SuppressedBlock[]; rest: T | null } {
   return li?.suppressedBlocks.length ? { blocks: li.suppressedBlocks, rest: { ...li, suppressedBlocks: [] } } : { blocks: [], rest: li }
