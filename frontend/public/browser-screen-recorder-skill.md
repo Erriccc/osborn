@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 68
+Version: 69
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v69
+- With no `BSR_DRIVER`, `drive.sh` now names the driver after `BSR_PROFILE` (`profile-<name>`), so parallel passes with different profiles get their own tabs, task numbers and journey instead of sharing your username's. Set `BSR_DRIVER` to keep one id across profiles; with neither set the driver is still your username.
 
 ## What's new in v68
 - When `/act` finds nothing in the DOM to match (a canvas, an embedded frame) the engine makes one screenshot-based attempt (one look, then one click, type or key press) and reports `effect.fallback:'vision'`; if nothing observable changed, or it did something it cannot confirm, the answer is `ok:false, code:'unverified'`. Skipped for conditional or destructive wording unless you send `"vision":true`; opt out per call with `"vision":false` or engine-wide with `OSBORN_NO_VISION_RETRY=1`; its tokens are not exact. See `references/harness-api.md`.
