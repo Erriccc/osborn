@@ -59,9 +59,11 @@ RESOLVE=()
 if [ -n "$IP" ]; then
   if [ "$PIN" = 1 ]; then RESOLVE=(--resolve "$HOST:$PORT:$IP"); else echo "drive.sh: BSR_IP ignored - $HOST is an IP or loopback address, not a DNS name" >&2; fi
 fi
-DRIVER="${BSR_DRIVER:-$(whoami 2>/dev/null || echo default)}"
 # nounset-safe empty-array expansion (bash 3.2 on macOS errors on "${RESOLVE[@]}" when empty)
 PROFILE="${BSR_PROFILE:-}"  # your own browser profile: sign in once, kept across restarts
+# Parallel passes with distinct profiles must not share one driver id (the engine scopes tabs,
+# tasks and journeys by it): with no BSR_DRIVER, a profile names the driver (#522).
+DRIVER="${BSR_DRIVER:-${PROFILE:+profile-$PROFILE}}"; DRIVER="${DRIVER:-$(whoami 2>/dev/null || echo default)}"
 cc() { curl -s -g ${RESOLVE[@]+"${RESOLVE[@]}"} -H "x-engine-token: $TOKEN" -H "x-driver-id: $DRIVER" ${PROFILE:+-H "x-profile: $PROFILE"} "$@"; }
 
 case "$CMD" in

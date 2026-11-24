@@ -939,8 +939,8 @@ export default function Dashboard() {
     // server stores its final result in `getLastUpdateResult(sandboxId)`, so
     // we ask for it directly instead of inferring from version probes alone.
     // Exit rules: `pollVerifyUpdate` in lib/verify-update.ts.
-    const verifyUpdate = (targetVersion: string | null) =>
-      pollVerifyUpdate(sandboxId, targetVersion, { fetchFn: fetch })
+    const verifyUpdate = (targetVersion: string | null, settleMs?: number) =>
+      pollVerifyUpdate(sandboxId, targetVersion, { fetchFn: fetch, settleMs })
 
     try {
       // Primary path: hold the POST open. If Safari survives the whole ~90s
@@ -983,7 +983,7 @@ export default function Dashboard() {
       // Verify before declaring failure.
       if (result.success === false) {
         setOperation((op) => op?.kind === 'update' ? { ...op, stage: 'verifying' } : op)
-        const verified = await verifyUpdate(target)
+        const verified = await verifyUpdate(target, 8000)
         setOperation(null)
         if (verified.success) {
           if (verified.version) setInstalledVersion(verified.version)
