@@ -42,8 +42,13 @@ const WORK_SURFACE_MAX = 2
 export const WORK_SURFACE_GAP_MS = 2 * 60 * 1000
 /** A result must be this old before it is surfaced: the turn that received it gets to report it first. */
 const WORK_SETTLE_MS = 10 * 1000
-/** OSBORN_WORK_LEDGER=off|0|false|no turns delegation tracking off; default on (foreground session only, see `recordWork`). */
-export const workLedgerEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => !/^(off|0|false|no)$/i.test(String(env.OSBORN_WORK_LEDGER ?? '').trim())
+/** A result is only surfaced while it is this fresh (the TTL above only drops rows). */
+export const WORK_SURFACE_WINDOW_MS = 20 * 60 * 1000
+/** At most one surfaced notice per this gap, and this many per hour. */
+export const WORK_NOTICE_GAP_MS = 5 * 60 * 1000
+export const WORK_NOTICE_PER_HOUR = 3
+/** OSBORN_WORK_LEDGER=on|1|true turns delegation tracking on; default off (foreground session only, see `recordWork`). */
+export const workLedgerEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => /^(on|1|true)$/i.test(String(env.OSBORN_WORK_LEDGER ?? '').trim())
 
 export type LoopOrigin = 'user_mic' | 'meeting' | 'phone' | 'tool' | 'system'
 export type LoopSource = 'explicit' | 'inferred'
@@ -91,7 +96,7 @@ export interface LoopRecord {
 }
 
 export type WorkVia = 'task' | 'dispatch'
-export type WorkDelivery = 'spoken' | 'shown' | 'phone'
+export type WorkDelivery = 'spoken' | 'shown' | 'phone' | 'seen'
 export type WorkState = 'opened' | 'result_ready' | 'delivered' | 'dropped'
 
 export type LoopRecordInput = Omit<LoopRecord, 'v' | 'at'> & { at?: string }
@@ -350,18 +355,26 @@ export function markQueuedStarted(cwd: string, project: string, instruction: str
 }
 
 /** Work rows whose result exists but was never delivered, oldest first, bounded: what to surface at the next idle moment. */
-export function pendingDeliveries(records: LoopRecord[], now: number, opts: { max?: number; ttlMs?: number } = {}): LoopItem[] {
+export function pendingDeliveries(records: LoopRecord[], now: number, opts: { max?: number; ttlMs?: number; sinceMs?: number } = {}): LoopItem[] {
   const ttl = opts.ttlMs ?? WORK_TTL_MS
   return [...foldLoops(records).values()]
     .filter((i) => i.fg && i.open && i.state === 'result_ready' && !!i.result && !!i.resultAt)
     .filter((i) => {
       const age = now - Date.parse(i.resultAt!)
-      if (!(age >= WORK_SETTLE_MS) || age > ttl) return false
+      if (!(age >= WORK_SETTLE_MS) || age > Math.min(ttl, WORK_SURFACE_WINDOW_MS)) return false
+      if (opts.sinceMs !== undefined && Date.parse(i.resultAt!) < opts.sinceMs) return false
       if ((i.surfaced ?? 0) >= WORK_SURFACE_MAX) return false
       return !i.lastSurfacedAt || now - Date.parse(i.lastSurfacedAt) >= WORK_SURFACE_GAP_MS
     })
     .sort((a, b) => a.resultAt!.localeCompare(b.resultAt!))
-    .slice(0, opts.max ?? 2)
+    .slice(0, opts.max ?? 1)
+}
+
+/** True while a new notice would break the global limit: one per 5 minutes, three per hour, counted from `work_surfaced` records. */
+export function noticeThrottled(records: LoopRecord[], now: number): boolean {
+  const at = records.filter((r) => r.kind === 'work_surfaced').map((r) => Date.parse(r.at)).filter((t) => t <= now)
+  if (at.some((t) => now - t < WORK_NOTICE_GAP_MS)) return true
+  return at.filter((t) => now - t < 3_600_000).length >= WORK_NOTICE_PER_HOUR
 }
 
 /** Ids of open work rows past the TTL (from the result, else from opening), to close with `work_dropped`. */

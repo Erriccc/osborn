@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 
 const home = mkdtempSync(join(tmpdir(), 'work-ledger-test-'))
 process.env.CLAUDE_CONFIG_DIR = join(home, '.claude')
+process.env.OSBORN_WORK_LEDGER = 'on'
 const cwd = join(home, 'proj')
 mkdirSync(cwd, { recursive: true })
 const L = await import('../src/loops-ledger.js')
@@ -71,7 +72,7 @@ t('pendingDeliveries: only result_ready, settled, oldest first, bounded', () => 
   const many: R[] = []
   for (let i = 0; i < 5; i++) many.push(rec(i, { kind: 'work_opened', id: L.loopIds.work('m' + i), text: 't' + i }), rec(1000 * (5 - i), { kind: 'work_result', id: L.loopIds.work('m' + i), result: 'r' + i }))
   const got = L.pendingDeliveries(many, T0 + 120_000)
-  assert.deepEqual(got.map((g) => g.id), [L.loopIds.work('m4'), L.loopIds.work('m3')])
+  assert.deepEqual(got.map((g) => g.id), [L.loopIds.work('m4')])
 })
 
 t('pendingDeliveries: each row at most twice, with a gap between', () => {
@@ -104,10 +105,10 @@ t('recap: the work:<id> line is dropped while its dispatch:<id> row is open; a s
   assert.deepEqual(lines.sort(), ['Sent to p: go', 'Unfinished reviewer run', 'Unfinished writer run: fix login'])
 })
 
-t('flag: default on, off values turn it off', () => {
-  assert.equal(L.workLedgerEnabled({}), true)
-  for (const v of ['off', '0', 'false', 'NO']) assert.equal(L.workLedgerEnabled({ OSBORN_WORK_LEDGER: v } as any), false)
-  assert.equal(L.workLedgerEnabled({ OSBORN_WORK_LEDGER: 'on' } as any), true)
+t('flag: default off, only on/1/true turn it on', () => {
+  assert.equal(L.workLedgerEnabled({}), false)
+  for (const v of ['off', '0', 'false', 'NO', '', 'yes']) assert.equal(L.workLedgerEnabled({ OSBORN_WORK_LEDGER: v } as any), false)
+  for (const v of ['on', '1', 'TRUE']) assert.equal(L.workLedgerEnabled({ OSBORN_WORK_LEDGER: v } as any), true)
 })
 
 t('ClaudeLLM: foreground records work, result once, a shown card delivers; background and flag-off record nothing', () => {
@@ -124,10 +125,65 @@ t('ClaudeLLM: foreground records work, result once, a shown card delivers; backg
   const bg: any = createClaudeLLM({ workingDirectory: cwd })
   bg.recordWork({ kind: 'work_opened', id, text: 'x' }, 's-bg2')
   assert.deepEqual(L.readLoopRecords('s-bg2', cwd), [])
-  process.env.OSBORN_WORK_LEDGER = 'off'
-  llm.recordWork({ kind: 'work_opened', id: 'work:z', text: 'x' }, 's-off')
   delete process.env.OSBORN_WORK_LEDGER
+  llm.recordWork({ kind: 'work_opened', id: 'work:z', text: 'x' }, 's-off')
+  process.env.OSBORN_WORK_LEDGER = 'on'
   assert.deepEqual(L.readLoopRecords('s-off', cwd), [])
+})
+
+t('window: a result older than 20 minutes or than the session start is not surfaced', () => {
+  const rs = [opened, result]
+  assert.equal(L.pendingDeliveries(rs, T0 + 60_000 + L.WORK_SURFACE_WINDOW_MS - 1).length, 1)
+  assert.deepEqual(L.pendingDeliveries(rs, T0 + 60_000 + L.WORK_SURFACE_WINDOW_MS + 1), [])
+  assert.deepEqual(L.pendingDeliveries(rs, T0 + 120_000, { sinceMs: T0 + 90_000 }), [])
+  assert.equal(L.pendingDeliveries(rs, T0 + 120_000, { sinceMs: T0 }).length, 1)
+})
+
+t('throttle: one notice per 5 minutes, three per hour; one row per notice', () => {
+  const s = (ms: number) => rec(ms, { kind: 'work_surfaced', id })
+  const M = 60_000
+  assert.equal(L.noticeThrottled([], T0), false)
+  assert.equal(L.noticeThrottled([s(0)], T0 + 4 * M), true)
+  assert.equal(L.noticeThrottled([s(0)], T0 + 5 * M), false)
+  assert.equal(L.noticeThrottled([s(0), s(10 * M), s(20 * M)], T0 + 30 * M), true)
+  assert.equal(L.noticeThrottled([s(0), s(10 * M), s(20 * M)], T0 + 61 * M), false)
+  const many: R[] = []
+  for (let i = 0; i < 4; i++) many.push(rec(i, { kind: 'work_opened', id: L.loopIds.work('q' + i), text: 't' }), rec(1000, { kind: 'work_result', id: L.loopIds.work('q' + i), result: 'r' }))
+  assert.equal(L.pendingDeliveries(many, T0 + 120_000).length, 1)
+})
+
+t('reply to a surfaced notice closes its row; no reply leaves it', () => {
+  const llm: any = createClaudeLLM({ workingDirectory: cwd, followThrough: true })
+  llm.noteUserTurn('a', 's-rep')
+  llm.recordWork({ kind: 'work_opened', id, text: 'w' }, 's-rep')
+  llm.noteWorkResult(id, 'done', 's-rep')
+  llm.deliverTurnResults('s-rep', [])
+  llm.noteUserTurn('b', 's-rep'); llm.deliverTurnResults('s-rep', [])  // next turn said nothing: stays
+  assert.equal(L.foldLoops(L.readLoopRecords('s-rep', cwd)).get(id)!.state, 'result_ready')
+  llm.recordWork({ kind: 'work_surfaced', id }, 's-rep')
+  llm.noteUserTurn('[NOTIFICATION] older', 's-rep')
+  llm.deliverTurnResults('s-rep', ['nothing new'])
+  assert.equal(L.foldLoops(L.readLoopRecords('s-rep', cwd)).get(id)!.state, 'delivered')
+})
+
+t('a result the agent used (tool call or text after it) is delivered as seen, not left to surface', () => {
+  const a = L.loopIds.work('u1'), b = L.loopIds.work('u2'), c = L.loopIds.work('u3')
+  const llm: any = createClaudeLLM({ workingDirectory: cwd, followThrough: true })
+  llm.noteUserTurn('go', 's-use')
+  for (const x of [a, b, c]) { llm.recordWork({ kind: 'work_opened', id: x, text: 'w' }, 's-use'); llm.noteWorkResult(x, 'r', 's-use') }
+  llm.noteWorkShown(c, 's-use')
+  llm.noteMainTool()
+  llm.deliverTurnResults('s-use', [])          // same turn, tool call after the results: seen
+  const st = (x: string) => L.foldLoops(L.readLoopRecords('s-use', cwd)).get(x)!.state
+  assert.equal(st(a), 'delivered'); assert.equal(st(b), 'delivered')
+  // next-turn rule
+  const d = L.loopIds.work('u4')
+  llm.resetTurnTools()
+  llm.recordWork({ kind: 'work_opened', id: d, text: 'w' }, 's-use'); llm.noteWorkResult(d, 'r', 's-use')
+  llm.deliverTurnResults('s-use', [])
+  assert.equal(st(d), 'result_ready')
+  llm.noteUserTurn('next', 's-use'); llm.deliverTurnResults('s-use', ['ok'])
+  assert.equal(st(d), 'delivered')
 })
 
 t('note: bounded, quoted, redacted, hidden characters stripped, at most two rows', () => {

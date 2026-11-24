@@ -59,7 +59,7 @@ import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { outboundText } from './follow-through-client.js'
-import { loopIds, appendLoopRecord, appendQueuedLoop, markQueuedStarted, pendingDeliveries, expiredWork, readLoopRecords, workLedgerEnabled } from './loops-ledger.js'
+import { loopIds, noticeThrottled, appendLoopRecord, appendQueuedLoop, markQueuedStarted, pendingDeliveries, expiredWork, readLoopRecords, workLedgerEnabled } from './loops-ledger.js'
 import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
@@ -3323,6 +3323,7 @@ async function main() {
   // Work ledger: a delegated result nobody told (the turn that got it said nothing) is surfaced once the
   // agent is idle and listening and the user is quiet, as one bounded [NOTIFICATION]. Never interrupts, never
   // gates anything (busyState does not read the ledger), expired rows are dropped.
+  const ledgerStartedAt = Date.now()
   function surfaceUndelivered(): void {
     try {
       if (!workLedgerEnabled() || !currentLLM || !activeRoom || peopleIn(activeRoom) === 0) return
@@ -3339,7 +3340,8 @@ async function main() {
       const records = readLoopRecords(sid, cwd)
       const now = Date.now()
       for (const id of expiredWork(records, now)) currentLLM.recordWork?.({ kind: 'work_dropped', id, reason: 'ttl' })
-      const rows = pendingDeliveries(records, now)
+      if (noticeThrottled(records, now)) return
+      const rows = pendingDeliveries(records, now, { sinceMs: ledgerStartedAt })
       if (!rows.length) return
       for (const r of rows) { currentLLM.recordWork?.({ kind: 'work_surfaced', id: r.id }); workSpoken.set(r.id, now) }
       const ctx = new llm.ChatContext()
