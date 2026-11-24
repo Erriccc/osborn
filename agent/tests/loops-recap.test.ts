@@ -163,9 +163,6 @@ t('forged kinds are ignored and do not break the recap', () => {
   assert.equal(r[0].text, 'good one')
 })
 
-rmSync(home, { recursive: true, force: true })
-console.log(`\n${pass} passed`)
-
 t('#532: the filed branch honours skipSession', () => {
   L.appendLoopRecord('u-own', cwd, { kind: 'ask', id: 'ask:own', text: 'own filed', source: 'explicit', origin: 'user_mic', fg: true })
   L.appendLoopRecord('u-own', cwd, { kind: 'filed', id: 'ask:own', url: 'https://github.com/o/r/issues/500', at: '2026-11-21T00:00:00.000Z' })
@@ -190,3 +187,6 @@ t('#532: a filed item whose url fails the shape check is not labelled unfiled', 
   const out = getFollowThroughRecap([{ text: 'x', filed: true, url: 'https://github.com/o/r/issues/1/' }])
   assert.match(out, /Filed while you were away: "x" \(link not shown\)/)
 })
+
+rmSync(home, { recursive: true, force: true })
+console.log(`\n${pass} passed`)
