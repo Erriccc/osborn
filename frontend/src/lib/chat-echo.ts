@@ -11,6 +11,7 @@
  */
 import { cleanSessionText, stripSessionWrappers } from './transcript-clean'
 import { isControlNotice } from './control-text'
+import { redactSecrets } from './redactSecrets'
 
 export const TYPED_ECHO_WINDOW_MS = 2 * 60 * 1000
 const MAX_PENDING = 20
@@ -45,11 +46,13 @@ export function echoMatchKey(text: string | null | undefined): string | null {
   return turnWords(text)?.replace(/\s+/g, ' ').toLowerCase() ?? null
 }
 
-/** A fast-brain answer belongs to the latest user turn (#547): false once the
- *  last "You" line is a different turn. Unknown on either side counts as a match. */
-export function answersLatestTurn(question: string | null | undefined, lastUser: string | null | undefined): boolean {
-  const q = echoMatchKey(question), u = echoMatchKey(lastUser)
-  return !q || !u || u.includes(q) || q.includes(u)
+/** The user's words, one plain line for the provisional fast-brain card (#547): secrets
+ *  masked, characters that would turn the card into markdown dropped, cut at 80 with an
+ *  ellipsis. Null = nothing to quote (an attachment-only turn). */
+export function fastBrainQuote(question: string | null | undefined): string | null {
+  const line = redactSecrets(turnWords(question)?.split('\n')[0]).replace(/[*#`\[\]|]/g, '').replace(/\s+/g, ' ').trim()
+  if (!line) return null
+  return line.length > 80 ? `${line.slice(0, 79).trimEnd()}\u2026` : line
 }
 
 function prune(pending: readonly PendingTyped[], now: number): PendingTyped[] {

@@ -8,7 +8,7 @@
 // User bubbles render through cleanSessionText (transcript-clean.ts).
 import {
   newClientMsgId, echoMatchKey, rememberTyped, takeTypedEcho, userBubbleText, TYPED_ECHO_WINDOW_MS,
-  isRapidDoubleSend, RAPID_DOUBLE_SEND_MS, answersLatestTurn, turnWords,
+  isRapidDoubleSend, RAPID_DOUBLE_SEND_MS, fastBrainQuote,
   type PendingTyped,
 } from '../src/lib/chat-echo'
 
@@ -158,17 +158,17 @@ t('rapid double-send: empty / notice-only text (attachment-only) never matches',
   ok(!isRapidDoubleSend(p, '', T0 + 100), 'empty key never deduped')
 })
 
-// #547: a provisional fast-brain answer is shown only under the turn it answers.
-t('fast-brain answer matches its own turn', () => {
-  ok(answersLatestTurn('Cloud.', 'cloud.'), 'same voice turn')
-  ok(answersLatestTurn('[time: 2026-11-24 10:32 local] what failed?', 'What failed?'), 'typed turn with its time tag')
-  const long = 'x'.repeat(3000)
-  ok(answersLatestTurn(`[time: t] read this\n\n[File: a.txt]\n${long}`, `read this\n\n[File: a.txt]\n${long.slice(0, 2000)}...(truncated)`), 'long text attachment, truncated bubble')
-  ok(answersLatestTurn('so I was saying the build failed', 'the build failed'), 'last bubble is part of the turn')
-  ok(answersLatestTurn('', 'anything') && answersLatestTurn('q', undefined), 'unknown side is a match')
-  ok(!answersLatestTurn('how did act1 get explained?', 'Okay, so guys, I read all those things'), 'an earlier question is not the latest turn')
-  eq(turnWords('[time: t] \n\n[Image: a.png](https://x.supabase.co/a.png)'), null, 'an attachment-only turn has no words to quote')
-  eq(turnWords('[time: t] look\n\n[Image: a.png](https://x.supabase.co/a.png)'), 'look', 'quote keeps the words, not the link')
+// #547: the provisional fast-brain card names the question it answers, as plain text.
+t('fast-brain quote', () => {
+  eq(fastBrainQuote('[time: t] what failed?'), 'what failed?', 'plain turn, wrapper removed')
+  const cut = fastBrainQuote('x'.repeat(200))!
+  ok(cut.length === 80 && cut.endsWith('\u2026'), 'long turn cut at 80 with an ellipsis')
+  ok(!fastBrainQuote('use sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 now')!.includes('abcdefghij'), 'secret masked')
+  eq(fastBrainQuote('[time: t] \n\n[Image: a.png](https://x.supabase.co/a.png)'), null, 'attachment-only has no quote')
+  eq(fastBrainQuote('look\n\n[Image: a.png](https://x.supabase.co/a.png)'), 'look', 'words, not the link')
+  eq(fastBrainQuote(''), null, 'empty')
+  ok(!/[*#`\[\]|]/.test(fastBrainQuote('run `ls | wc` in [dir] # *now*')!), 'no markdown triggers')
+  ok(!/[*#`\[\]|]/.test(`\u26A1 Fast brain (provisional \u2014 the full answer follows) \u00B7 \u201C${fastBrainQuote('a `b` [c]')}\u201D`), 'label line stays plain')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

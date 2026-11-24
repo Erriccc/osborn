@@ -36,7 +36,7 @@ import { backgroundSessionTitle } from '@/lib/rooms'
 import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
 import { isRedundantFinal } from '@/lib/claude-output'
 import { isAgentIdentity, isAuthGateTerminal } from '@/lib/connect-gate'
-import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, answersLatestTurn, turnWords, type PendingTyped } from '@/lib/chat-echo'
+import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, fastBrainQuote, type PendingTyped } from '@/lib/chat-echo'
 import { historyTurns, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micPlatform, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
@@ -2597,10 +2597,7 @@ function VoiceRoomInner({
         }
       } else if (data.type === 'fast_brain_response') {
         // Pipeline mode: Gemini fast brain parallel response — show in main chat for monitoring
-        // The answer belongs to the question it was asked for: drop it once the user has said something else.
-        const lastUser = [...messagesRef.current].reverse().find((m) => m.role === 'user')?.content
-        if (!answersLatestTurn(data.question, lastUser)) console.log('🧠⚡ Fast brain response dropped (question is not the latest)')
-        else if (data.text && data.text.trim()) {
+        if (data.text && data.text.trim()) {
           // User-facing label only \u2014 the millisecond timing, responseType and
           // toolsUsed were developer telemetry that read as a bug in the chat.
           // They still arrive on `data` for logging below; keep the human marker.
@@ -2610,8 +2607,9 @@ function VoiceRoomInner({
           // guesses a provider that isn't on the wire.
           const label = `${fastBrainLabel({ provider: data.provider, agentRole: data.agentRole })} (provisional \u2014 the full answer follows)`
           console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
-          const quote = turnWords(data.question)?.split('\n')[0].slice(0, 80)
-          addMessageRef.current?.('assistant', `${label}${quote ? `\n> ${quote}\n` : ''}\n${data.text}`, 'fast-brain', 'chat')
+          // The question the answer is for, as plain text on the label line (no markdown characters).
+          const quote = fastBrainQuote(data.question)
+          addMessageRef.current?.('assistant', `${label}${quote ? ` \u00B7 \u201C${quote}\u201D` : ''}\n${data.text}`, 'fast-brain', 'chat')
         }
       } else if (data.type === 'skills_status') {
         if (data.skills && Array.isArray(data.skills)) {
