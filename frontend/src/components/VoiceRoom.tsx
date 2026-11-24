@@ -29,7 +29,8 @@ import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useChatSession, type ChatHandle } from './ChatSessionProvider'
 import { useSearchParams } from 'next/navigation'
 import { usePanelExclusive, useViewportClamp, addTimeTag, formatElapsed, toolMetaFromEvent, toolTarget, completeToolRow, type ToolMeta, type ChatMessage, type CompactionMarker, type StewardVerdict, type StewardGateRecord, type SidecarRecord, agentResultRow, stewardGateLine, stewardGateRow, type SpeakingChunk, type SessionInfo, type SlotInfo, type GeneratedFile } from './voice/shared'
-import { StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
+import { MicLevelStrip, StatusIndicator, VoiceVisualizer } from './voice/OrbStatus'
+import { MIC_LEVEL_INTERVAL_MS, publishMicLevel, pulseGotIt } from '@/lib/mic-level'
 import { MicBanner } from './voice/MicBanner'
 import { RESUME_CHIP_TIMEOUT_MS, resumeChipLabel, resumeChipReducer } from '@/lib/resume-chip'
 import { backgroundSessionTitle } from '@/lib/rooms'
@@ -1224,6 +1225,7 @@ function VoiceRoomInner({
     let agentHeardAt = 0
     let duckOnsetAt = 0, duckedAt = 0, duckVol = 0 // the voice burst that engaged the duck, for the timing log
     let lastFrame = performance.now()
+    let lastLevelPub = 0
 
     // Log a missing agent track / setVolume once per state change, not per frame.
     let lastMissing: string | null = null
@@ -1292,11 +1294,13 @@ function VoiceRoomInner({
         // Nothing playing to duck — glide back to full for the next utterance.
         targetVol = 1
         aboveSince = 0; belowSince = 0
+        if (now - lastLevelPub >= MIC_LEVEL_INTERVAL_MS) { lastLevelPub = now; try { publishMicLevel(analyser!.calculateVolume()) } catch { /* analyser closed */ } }
       } else {
         const micCtx = analyser!.analyser.context as AudioContext
         if (micCtx.state === 'suspended') void micCtx.resume().catch(() => {})
         const vol = analyser!.calculateVolume() // instant 0..1 RMS of YOUR mic
         if (vol > peak) peak = vol
+        if (now - lastLevelPub >= MIC_LEVEL_INTERVAL_MS) { lastLevelPub = now; publishMicLevel(vol) }
         const onset = duckOnset(echoFloorRef.current)
         if (vol > onset) {
           belowSince = 0
@@ -2072,6 +2076,7 @@ function VoiceRoomInner({
         onVoiceActivity?.()
       } else if (data.type === 'user_transcript') {
         if (data.text && data.text.trim()) {
+          pulseGotIt()
           // Bug d9bb78b2: the echo of a message typed here is already on
           // screen. Drop it by clientMsgId, else by cleaned-text match.
           // The text fallback is only for agents that never return ids.
@@ -4167,6 +4172,7 @@ function VoiceRoomInner({
               {/* Visualizer — only visible when speaking */}
               {state === 'speaking' && <VoiceVisualizer state={state} audioTrack={audioTrack} />}
               <StatusIndicator state={agentState !== 'idle' ? agentState : state} isMuted={isMuted} micBlocked={micConfirmedOff} bargeIn={bargeIn} />
+              {!isMuted && !micConfirmedOff && <MicLevelStrip />}
             </div>
             <div className="order-2 basis-0 flex-1 sm:order-3 sm:basis-full pane-sm:order-2 pane-sm:basis-0 flex flex-wrap items-center gap-1 sm:gap-2 pane-md:gap-3 min-w-0">
 
