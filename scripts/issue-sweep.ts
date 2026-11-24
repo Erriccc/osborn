@@ -28,6 +28,7 @@ const jaccard = (a, b) => {
   return a.size + b.size - n ? n / (a.size + b.size - n) : 0
 }
 const labelNames = (i) => (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name))
+const claimed = (i) => labelNames(i).includes('q:claimed')
 
 /** issues: open issues (no PRs); prs: merged PRs {number,title,body}; comments: {[issue#]: [{body,created_at}]} */
 export function sweep({ issues, prs, openPrs = [] as any[], comments = {}, config = {} as { parked?: number[]; founderDecision?: number[] }, now = Date.now(), dupThreshold = 0.5 }) {
@@ -46,9 +47,8 @@ export function sweep({ issues, prs, openPrs = [] as any[], comments = {}, confi
   const anyPr = new Set(refd)
   for (const p of openPrs) for (const n of refs(`${p.title} ${p.body ?? ''}`)) if (n !== p.number) anyPr.add(n)
   const note = (i) => labelNames(i).includes('follow-through')
-  const claimed = (i) => labelNames(i).includes('q:claimed')
   const expiredClaims = []
-  for (const i of open.filter((x) => labelNames(x).includes('q:claimed'))) {
+  for (const i of open.filter(claimed)) {
     const last = [...(comments[i.number] ?? [])].reverse().map((c) => parseClaim(c.body)).find(Boolean)
     if (!last) expiredClaims.push({ number: i.number, reason: 'no claim comment' })
     else if (Number.isNaN(last.ms)) expiredClaims.push({ number: i.number, agent: last.agent, reason: 'bad expiry' })
@@ -99,7 +99,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const prs = gh(`repos/${repo}/pulls?state=closed&per_page=100`).filter((p) => p.merged_at)
   const openPrs = gh(`repos/${repo}/pulls?state=open&per_page=100`)
   const comments = {}
-  for (const i of issues.filter((x) => x.comments && (x.labels ?? []).some((l) => l.name === 'q:claimed')))
+  for (const i of issues.filter((x) => x.comments && claimed(x)))
     comments[i.number] = gh(`repos/${repo}/issues/${i.number}/comments?per_page=100`)
   const r = sweep({ issues, prs, openPrs, comments, config })
   console.log(process.argv.includes('--json') ? JSON.stringify(r, null, 2) : render(r))

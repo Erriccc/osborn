@@ -6,7 +6,7 @@ The issue is the ledger. State is a label; a claim is one comment.
 - Source: every filer adds one of `src:muse`, `src:loop`, `src:osborn`, `src:founder` (the author field is always the founder's login, so it cannot tell sources apart). The issue template asks for it; Osborn's own filers (`frontend/src/lib/github-issue-mirror.ts`) do not add it yet.
 - Claim comment: `claim: <agent> <session> <expiry-iso>`, with the `q:claimed` label. Refresh it every 4 hours while working; the latest claim comment counts.
 - Claim order: the main agent and local specialists claim first. Cloud agents (the hourly loop, Muse) claim only items `q:open` for over 24 hours, or `q:claimed` with an expired claim.
-- Parked and founder-decision issues are the JSON lists in `docs/issue-sweep-config.json` (`parked`, `founderDecision`); labels for them do not exist yet. They are left out of the sweep's action lists, as are issues labelled `follow-through` (notes, not work orders) in Unclaimed and Stale.
+- Parked and founder-decision issues are the JSON lists in `docs/issue-sweep-config.json` (`parked`, `founderDecision`); labels for them do not exist yet. They are left out of the sweep's action lists, as are issues labelled `follow-through` (notes, not work orders) in Unclaimed, Claimable and Stale.
 
 ## Sweep
 
