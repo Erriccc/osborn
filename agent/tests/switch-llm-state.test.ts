@@ -374,5 +374,20 @@ await t('#539 D: deadline path — the retired id is the interrupted turn\'s, ne
   assert.equal(llm.isRetiredTurnId(ids[0]), true)
 })
 
+await t('#539 phone "stop that": interruptAgent retires the id text buffered during the utterance carries', async () => {
+  const fq = makeFakeQueryFn()
+  const pd: any = newPipeline(fq)
+  const llm: any = pd.inner
+  const ids: string[] = []
+  const c = cb(llm); (c.eventEmitter as EventEmitter).on('tts_say', (d: any) => ids.push(d.messageId))
+  llm.pushMessage('hi', {} as any, c)
+  const q: any = fq.spawned[0]
+  q.interrupt = () => Promise.resolve()
+  q.emit(asst('Rest of the answer the caller stopped.')); await tick(); await tick()
+  assert.equal(pd.isRetiredTurnId(ids[0]), false, 'live before the stop')
+  await pd.interruptAgent()
+  assert.equal(pd.isRetiredTurnId(ids[0]), true, 'index.ts speakBuffered drops text whose suppressedTurnId is this id')
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

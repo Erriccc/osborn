@@ -123,3 +123,21 @@ export function settleAfterSay(li: (Pending & { spokenText: string; recentMessag
     ? { spokenText: '', recentMessages: '', suppressedText: li.suppressedText, suppressedTurnId: li.suppressedTurnId, timestamp: li.timestamp }
     : null
 }
+
+/**
+ * A replayed say was cut off before it was heard (#539 B): its text goes back in
+ * front of anything buffered since, with its original age and turn id, so the
+ * next chat() folds it into the prompt. Expired text is not put back.
+ */
+export function putBack<T extends Pending & { spokenText: string; recentMessages: string }>(
+  li: T | null, text: string, turnId: string | undefined, timestamp: number, now: number,
+): T | { spokenText: string; recentMessages: string; suppressedText: string; suppressedTurnId?: string; timestamp: number } | null {
+  if (!text || isExpired(timestamp, now)) return li
+  if (!li) return { spokenText: '', recentMessages: '', suppressedText: text, suppressedTurnId: turnId, timestamp }
+  return {
+    ...li,
+    suppressedText: li.suppressedText ? `${text}\n${li.suppressedText}` : text,
+    suppressedTurnId: li.suppressedText ? li.suppressedTurnId : turnId,
+    timestamp: Math.min(li.timestamp, timestamp),
+  }
+}

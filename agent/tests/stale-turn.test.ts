@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { staleIdOnConsume, isStaleBlock, currentIdOnPush, isStaleOrRetired, replayStep, ReplayScheduler, takePending, settleAfterSay, isExpired, MAX_REPLAY_REARMS } from '../src/stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, currentIdOnPush, isStaleOrRetired, replayStep, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired, MAX_REPLAY_REARMS } from '../src/stale-turn.js'
 
 let stale: string | null = null
 // barge-in recorded but never consumed: later blocks of that turn still play
@@ -110,5 +110,27 @@ assert.equal(staleIdOnConsume({ spokenText: 'y', messageId: 'B' }, 'A'), 'B')
     { spokenText: '', recentMessages: '', suppressedText: 'later', suppressedTurnId: 'T', timestamp: 5 },
     'the kept text keeps its turn id, so a replay still sees when that turn was cut off',
   )
+}
+// #539 B put-back: a replay cut off before it was heard returns to the buffer (the user's own turn committed)
+{
+  const base = { spokenText: '', recentMessages: '' }
+  // flow: B2 buffered, replayed (buffer emptied), B3 buffered meanwhile, the user turn interrupts the replay
+  let li: any = { ...base, suppressedText: 'B2', suppressedTurnId: 'T1', timestamp: 100 }
+  const { text, rest } = takePending(li); li = rest
+  assert.equal(li.suppressedText, '')
+  li = { ...li, suppressedText: 'B3', suppressedTurnId: 'T1', timestamp: 500 }
+  li = putBack(li, text, 'T1', 100, 1000)
+  assert.equal(li.suppressedText, 'B2\nB3', 'older text first, newer kept')
+  assert.equal(li.timestamp, 100, 'keeps the original age')
+  // handleSpeechDone's carry merges (reads the buffer, replaces the object) in either order
+  const carried = li.suppressedText
+  const replaced = { spokenText: 'heard', recentMessages: '', suppressedText: carried, suppressedTurnId: li.suppressedTurnId, timestamp: 1100 }
+  assert.ok(replaced.suppressedText.includes('B2'), 'the folded prompt context contains B2')
+  // put-back landing after a handleSpeechDone that carried ''
+  const after = putBack({ ...base, spokenText: 'heard', suppressedText: '', timestamp: 900 } as any, 'B2', 'T1', 100, 1000) as any
+  assert.equal(after.suppressedText, 'B2'); assert.equal(after.spokenText, 'heard'); assert.equal(after.suppressedTurnId, 'T1')
+  // no context at all, and expired text
+  assert.equal((putBack(null, 'B2', 'T1', 100, 1000) as any).suppressedText, 'B2')
+  assert.equal(putBack(null, 'B2', 'T1', 0, 61_000), null, 'expired text is not put back')
 }
 console.log('stale-turn: ok')

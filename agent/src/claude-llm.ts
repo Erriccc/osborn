@@ -2305,6 +2305,7 @@ export class ClaudeLLM extends llm.LLM {
         Promise.race([pending, deadline]).then((late) => {
           // The turn may still run and fold this message in: its reply must not
           // carry the interrupted turn's id, which index.ts drops as stale (#456).
+          // Limit (#539, unconfirmed): a late block of the interrupted turn arriving after this null takes the fresh id and is not dropped.
           if (late) this.#currentTurnMessageId = null
           this.#currentTurnMessageId = currentIdOnPush(this.#retiredTurnIds, this.#currentTurnMessageId)
           if (this.#messageChannel && !this.#messageChannel.closed) {
