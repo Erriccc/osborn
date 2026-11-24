@@ -330,7 +330,7 @@ const INSTALLED_MARKER = join(homedir(), '.osborn', 'installed-core-skills.json'
 export function installMissingCoreSkills(skillsDir: string, pkgSkillsDir: string, markerPath = INSTALLED_MARKER): string[] {
   let done: string[] = []
   try { const v = JSON.parse(readFileSync(markerPath, 'utf-8')); if (Array.isArray(v)) done = v.map(String) } catch { /* none yet */ }
-  const added: string[] = []
+  const added: string[] = [], known = done.length
   for (const name of BOOT_INSTALLED_SKILLS) {
     const src = join(pkgSkillsDir, name), dst = join(skillsDir, name)
     if (done.includes(name) || !existsSync(src)) continue
@@ -339,7 +339,7 @@ export function installMissingCoreSkills(skillsDir: string, pkgSkillsDir: string
     }
     done.push(name)
   }
-  if (added.length) try { mkdirSync(dirname(markerPath), { recursive: true }); writeFileSync(markerPath, JSON.stringify(done), 'utf-8') } catch { /* best effort */ }
+  if (done.length > known) try { mkdirSync(dirname(markerPath), { recursive: true }); writeFileSync(markerPath, JSON.stringify(done), 'utf-8') } catch { /* best effort */ }
   return added
 }
 
