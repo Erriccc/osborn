@@ -5137,19 +5137,18 @@ async function main() {
         return
       }
 
+      // A late block from a turn the user already cut off (#456): dropped, never
+      // buffered, or the 1.2s replay below could still speak it.
+      if (isStaleBlock(staleTurnId, data.messageId)) {
+        console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
+        return
+      }
       // Suppress while the user is mid-utterance. Without this, agent text generated
       // in parallel by the Claude SDK plays right over the user — same problem as
       // pre-interrupt overlap, but at the *output* side. The suppressed text gets
       // folded into lastInterruption so the next chat() to Claude carries it as
       // "you wrote this but the user did not hear it — re-articulate if relevant."
       if (userState === 'speaking') {
-        appendSuppressedText(data.text)
-        return
-      }
-      // A late block from a turn the user already cut off: never speak it over
-      // the new answer; the next turn carries it as unheard text instead.
-      if (isStaleBlock(staleTurnId, data.messageId)) {
-        console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         appendSuppressedText(data.text)
         return
       }
