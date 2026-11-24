@@ -40,7 +40,7 @@ export type LoopOrigin = 'user_mic' | 'meeting' | 'phone' | 'tool' | 'system'
 export type LoopSource = 'explicit' | 'inferred'
 
 export type LoopKind =
-  | 'session' | 'prompt' | 'ask'
+  | 'session' | 'prompt' | 'ask' | 'point' | 'point_addressed'
   | 'todo' | 'todo_status' | 'task' | 'task_status'
   | 'dispatch_started' | 'dispatch_stopped' | 'dispatch_severed'
   | 'steward_block' | 'steward_clear'
@@ -140,6 +140,9 @@ export function diffTodos(
 
 const OPENS: Partial<Record<LoopKind, (r: LoopRecord) => boolean>> = {
   ask: () => true,
+  // A point of a long turn (#455), its own kind so a build without it skips it; closed when the reply covered it.
+  point: () => true,
+  point_addressed: () => false,
   todo: (r) => r.status !== 'completed',
   todo_status: (r) => r.status === 'pending' || r.status === 'in_progress',
   task: (r) => r.status !== 'completed' && r.status !== 'deleted',
@@ -211,7 +214,8 @@ export function publicRepos(records: LoopRecord[]): Set<string> {
 
 /** Open items this machine may file: written by the foreground voice session only. */
 export function fileableLoops(records: LoopRecord[]): LoopItem[] {
-  return openLoops(records).filter((i) => i.fg)
+  // A point inferred from a long turn stays local until a read-back exists (#461).
+  return openLoops(records).filter((i) => i.fg && i.kind !== 'point')
 }
 
 function isLoopRecord(o: any): o is LoopRecord {
@@ -233,6 +237,7 @@ export function serializeLoopRecord(rec: LoopRecord): string {
 /** Ids for the item records (so status changes fold onto the same item). */
 export const loopIds = {
   ask: (text: string) => `ask:${loopKey('ask', text)}`,
+  point: (text: string) => `point:${loopKey('point', text)}`,
   todo: (content: string) => `todo:${loopKey('todo', content)}`,
   task: (taskId: string) => `task:${taskId}`,
   dispatch: (agentId: string) => `dispatch:${agentId}`,
@@ -344,8 +349,8 @@ export function listLedgers(): Array<{ sessionId: string; path: string; cwd?: st
 
 // ── Recap (tier b): at most RECAP_MAX lines, each item once ─────────────────
 
-/** Unfiled open items come back in this order: refused-at-capacity work, unanswered questions, the rest. */
-const UNFILED_RANK: Partial<Record<LoopKind, number>> = { queued: 0, question: 1 }
+/** Unfiled open items come back in this order: refused-at-capacity work, unanswered questions, the rest, then inferred points. */
+const UNFILED_RANK: Partial<Record<LoopKind, number>> = { queued: 0, question: 1, point: 3 }
 
 export interface RecapItem { text: string; url?: string }
 

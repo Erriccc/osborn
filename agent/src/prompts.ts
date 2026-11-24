@@ -1789,6 +1789,24 @@ export function getFollowThroughRecap(items: RecapItem[]): string {
   ].join('\n')
 }
 
+/** Most bytes the points checklist may add to a turn. */
+const POINTS_BLOCK_MAX_BYTES = 1400
+
+/** The short checklist for a long turn (#455): quoted points, never more than the byte cap, '' when none. */
+export function getPointsChecklist(points: string[], total = points.length): string {
+  let template: string
+  try { template = readFileSync(join(PROMPTS_FILE_DIR, 'points-checklist.md'), 'utf-8').trim() } catch { return '' }
+  const kept: string[] = []
+  let block = ''
+  for (const p of points) {
+    kept.push(`${kept.length + 1}) ${recapText(p)}`)
+    const b = template.replace('{{count}}', total > kept.length ? `the first ${kept.length} of ${total} points` : `${kept.length} points`).replace('{{points}}', () => kept.join(' '))
+    if (Buffer.byteLength(b) > POINTS_BLOCK_MAX_BYTES) break
+    block = b
+  }
+  return block
+}
+
 // Legacy exports — kept for backward compatibility during transition
 export function getResearchCompleteInjection(task: string, fullResult: string): string {
   return getScriptInjection(fullResult)
