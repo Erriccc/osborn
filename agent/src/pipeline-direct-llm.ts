@@ -22,6 +22,10 @@ import { EventEmitter } from 'events'
 // chat() with the SAME chatCtx after a forward verdict; the marker makes the
 // second pass skip the gate and run the normal (enrichment + Claude) path.
 const gateApproved = new WeakSet<llm.ChatContext>()
+// Utterances the noise gate is triaging right now (#539): read by index.ts so the
+// suppressed-text replay never runs while a barge-in's turn is about to consume it.
+let gateTriageInFlight = 0
+export function isGateTriaging(): boolean { return gateTriageInFlight > 0 }
 
 // ============================================================
 // SESSION TAIL — compact recent-conversation block prepended to the first real
@@ -363,7 +367,9 @@ export class PipelineDirectLLM extends llm.LLM {
     if (noiseGate.shouldGate(userText) && !gateApproved.has(chatCtx)) {
       console.log(`🚪 [gate] holding utterance for triage: "${userText.slice(0, 60)}"`)
       return new NoiseGateStream(this, { chatCtx, toolCtx, connOptions }, async () => {
-        const verdict = await noiseGate.classify(userText, this.#buildGateContext())
+        gateTriageInFlight++
+        let verdict: Awaited<ReturnType<typeof noiseGate.classify>>
+        try { verdict = await noiseGate.classify(userText, this.#buildGateContext()) } finally { gateTriageInFlight-- }
         if (verdict === 'side_talk') {
           noiseGate.recordDrop(userText, verdict)
           console.log(`🚪 [gate] dropped side_talk: "${userText.slice(0, 60)}"`)

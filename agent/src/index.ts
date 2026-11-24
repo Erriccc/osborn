@@ -7,7 +7,8 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { staleIdOnConsume, isStaleBlock } from './stale-turn.js'
+import { staleIdOnConsume, isStaleOrRetired, replayDecision, settleAfterSay } from './stale-turn.js'
+import { isGateTriaging } from './pipeline-direct-llm.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
@@ -4071,6 +4072,7 @@ async function main() {
       timestamp: Date.now(),
     }
     console.log(`📋 Interruption context stored (text: ${fullText.length} chars, JSONL: ${recentMessages.length} chars, block: ${fullBlockText?.length ?? 0} chars, suppressed carried: ${carriedSuppressed.length} chars)`)
+    if (carriedSuppressed) armSuppressedReplay('interruption context replaced')
   }
 
   /**
@@ -4091,6 +4093,56 @@ async function main() {
       lastInterruption = { spokenText: '', recentMessages: '', suppressedText: t, timestamp: Date.now() }
     }
     console.log(`🤐 [suppressed] BUFFERED +${t.length} chars, total ${lastInterruption.suppressedText.length} (agent: ${agentState}, user: ${userState})`)
+  }
+
+  /**
+   * Speak suppressed text through the session (#539 A/B): tracked in
+   * activeSpeechHandles so 'agent speaking' sees it and a barge-in flushes it.
+   * Clears the buffer first; counts only in the log.
+   */
+  function speakBuffered(why: string) {
+    const text = lastInterruption?.suppressedText
+    if (!text || !currentSession) return
+    lastInterruption!.suppressedText = ''
+    console.log(`🔁 [suppressed] REPLAY ${text.length} chars (${why})`)
+    try {
+      const h = (currentSession as any).say(text)
+      if (h && typeof h.addDoneCallback === 'function') {
+        activeSpeechHandles.add(h)
+        h.addDoneCallback((sh: any) => {
+          activeSpeechHandles.delete(sh)
+          console.log(`🔁 [suppressed] REPLAY ${sh?.interrupted ? 'INTERRUPTED' : 'DONE'} ${text.length} chars`)
+          armSuppressedReplay('replay finished')
+        })
+      }
+    } catch (err) {
+      console.warn('⚠️ Suppressed text replay failed:', err instanceof Error ? err.message : err)
+    }
+  }
+
+  // The user must stay 'listening' this long (a flap back to 'speaking' resets it)
+  // before buffered reply text is spoken (#539 A).
+  let suppressedReplayTimer: NodeJS.Timeout | null = null
+  function cancelSuppressedReplay() {
+    if (suppressedReplayTimer) { clearTimeout(suppressedReplayTimer); suppressedReplayTimer = null }
+  }
+  function armSuppressedReplay(why: string) {
+    cancelSuppressedReplay()
+    const captured = lastInterruption
+    if (!captured?.suppressedText || userState !== 'listening') return
+    suppressedReplayTimer = setTimeout(() => {
+      suppressedReplayTimer = null
+      const d = replayDecision({
+        hasSession: !!currentSession,
+        userListening: userState === 'listening',
+        sameInterruption: lastInterruption === captured,
+        hasText: !!lastInterruption?.suppressedText,
+        agentSpeaking: activeSpeechHandles.size > 0 || agentState === 'speaking',
+        gateTriaging: isGateTriaging(),
+      })
+      if (d.replay) { speakBuffered(why); return }
+      console.warn(`🤐 [suppressed] REPLAY SKIPPED ${captured.suppressedText.length} chars (${d.reason}; agent: ${agentState}, user: ${userState})`)
+    }, 1200)
   }
 
   /** Clear lastInterruption, logging any suppressed reply text that was never spoken (#539 diagnostics). */
@@ -5146,7 +5198,7 @@ async function main() {
 
       // A late block from a turn the user already cut off (#456): dropped, never
       // buffered, or the 1.2s replay below could still speak it.
-      if (isStaleBlock(staleTurnId, data.messageId)) {
+      if (isStaleOrRetired(staleTurnId, { has: (id) => !!(directLLM as any)?.isRetiredTurnId?.(id) }, data.messageId)) {
         console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         return
       }
@@ -5167,6 +5219,13 @@ async function main() {
         connectTiming.answered = true
         ctMark('FIRST REAL ANSWER spoken')
         ctSummary()
+      }
+
+      // Older suppressed text still pending: speak it first so a later block never
+      // plays before an earlier one, and the earlier one is never lost (#539 B).
+      if (lastInterruption?.suppressedText) {
+        cancelSuppressedReplay()
+        speakBuffered('ahead of a newer block')
       }
 
       const sayId = Date.now() // simple ID to correlate start/end logs
@@ -5263,7 +5322,15 @@ async function main() {
               handleSpeechDone(sh, spokenText, data.text, data.messageId)
             } else {
               console.log(`✅ [${sayId}] session.say DONE`)
-              if (currentSpeechHandle === sh) clearInterruption('uninterrupted say finished')
+              if (currentSpeechHandle === sh) {
+                // Text buffered after this say started was never covered by it (#539 C).
+                const kept = settleAfterSay(lastInterruption)
+                if (kept) {
+                  lastInterruption = kept
+                  console.log(`🤐 [suppressed] KEPT ${kept.suppressedText.length} chars pending after an uninterrupted say`)
+                  armSuppressedReplay('after say finished')
+                } else clearInterruption('uninterrupted say finished')
+              }
             }
           })
           console.log(`🗣️ [${sayId}] session.say queued (SpeechHandle tracked)`)
@@ -6185,40 +6252,10 @@ async function main() {
           setTimeout(() => processVoiceQueue(), 500)
         }
 
-        // Suppressed-text replay: if TTS was suppressed while user was speaking
-        // and no new user turn arrives within 1.2s, replay the suppressed text directly.
-        // Without this, both sides go silent: agent has no transcript to react to,
-        // user has no audio — deadlock.
-        if (ev.newState === 'listening' && lastInterruption?.suppressedText) {
-          const capturedInterruption = lastInterruption
-          const capturedText = lastInterruption.suppressedText
-          setTimeout(() => {
-            if (
-              lastInterruption === capturedInterruption &&
-              lastInterruption.suppressedText === capturedText &&
-              agentState === 'listening' &&
-              userState === 'listening' &&
-              currentSession
-            ) {
-              console.log(`🔁 [suppressed] REPLAY ${capturedText.length} chars — user returned to listening, no new turn arrived`)
-              lastInterruption.suppressedText = ''
-              try {
-                const replayHandle = (currentSession as any).say(capturedText)
-                try {
-                  replayHandle?.addDoneCallback?.((h: any) => {
-                    console.log(`🔁 [suppressed] REPLAY ${h?.interrupted ? 'INTERRUPTED' : 'DONE'} ${capturedText.length} chars`)
-                  })
-                } catch {}
-              } catch (err) {
-                console.warn('⚠️ Suppressed text replay failed:', err instanceof Error ? err.message : err)
-              }
-            } else {
-              const consumed = !lastInterruption?.suppressedText
-              const replaced = !!lastInterruption && lastInterruption !== capturedInterruption
-              console.warn(`🤐 [suppressed] REPLAY SKIPPED ${capturedText.length} chars (agent: ${agentState}, user: ${userState}, session: ${!!currentSession}, consumed: ${consumed}, replaced: ${replaced})`)
-            }
-          }, 1200)
-        }
+        // Suppressed-text replay (#539 A): quiet for 1.2s, no new turn took the
+        // text, agent not speaking. A flap back to 'speaking' resets the timer.
+        if (ev.newState === 'listening') armSuppressedReplay('user quiet, no new turn')
+        else cancelSuppressedReplay()
       })
 
       // ============================================================
