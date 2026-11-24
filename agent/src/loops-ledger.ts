@@ -364,9 +364,9 @@ const REDUNDANT_MIN_TERMS = 3
 const MOVED_ON_AFTER_MS = 5 * 60 * 1000
 
 /**
- * Why a result should not be told, or null. `already told`: the assistant's speech after the result covers it
+ * Why a result should not be told, or null. `already told`: one reply that began after the result covers it
  * (result of at least 3 key terms, 2+ shared and 40%, and the reply shares a term with the row's role or task text).
- * `moved on`: only for a row the user was already offered once, the user spoke again since, nothing after shares a
+ * `moved on`: only for a row the user was already offered once, the user spoke again after the offer, nothing after shares a
  * key term, and the result is over 5 minutes old; a result that never reached the user stays pending (it ages out by
  * the 20-minute window and the TTL). No text-based supersession: Task labels such as "Run tests" repeat across
  * unrelated work, so a newer result must never close an older one. The overlap test stays local rather than reusing
@@ -380,14 +380,17 @@ function isStaleOrRedundant(row: LoopItem, ctx: { records: LoopRecord[]; now: nu
   const rt = terms(row.result)
   if (!rt.size) return null
   const after = (ctx.spoken ?? []).filter((s) => s.at >= rAt)
-  const said = terms(after.map((s) => s.text).join(' '))
-  let hit = 0
-  for (const t of rt) if (said.has(t)) hit++
-  if (rt.size >= REDUNDANT_MIN_TERMS && hit >= 2 && hit / rt.size >= REDUNDANT_OVERLAP) {
-    const task = terms(`${row.role ?? ''} ${row.text}`)
-    if ([...task].some((t) => said.has(t))) return 'redundant'
+  const task = terms(`${row.role ?? ''} ${row.text}`)
+  // One reply must cover it: terms pooled over several replies on the same topic would close a result nobody told.
+  for (const s of rt.size >= REDUNDANT_MIN_TERMS ? after : []) {
+    const said = terms(s.text)
+    let hit = 0
+    for (const t of rt) if (said.has(t)) hit++
+    if (hit >= 2 && hit / rt.size >= REDUNDANT_OVERLAP && [...task].some((t) => said.has(t))) return 'redundant'
   }
-  const prompts = ctx.records.filter((r) => r.kind === 'prompt' && r.origin === 'user_mic' && Date.parse(r.at) > rAt)
+  // Moved on: the user's own turn after the offer (a turn while the row waited for the throttle is not one).
+  const offeredAt = Date.parse(row.lastSurfacedAt ?? '')
+  const prompts = ctx.records.filter((r) => r.kind === 'prompt' && r.origin === 'user_mic' && Date.parse(r.at) > offeredAt)
   if ((row.surfaced ?? 0) >= 1 && prompts.length && ctx.now - rAt > MOVED_ON_AFTER_MS) {
     const later = terms([...prompts.map((r) => r.text ?? ''), ...after.map((s) => s.text)].join(' '))
     if (![...rt].some((t) => later.has(t))) return 'stale'

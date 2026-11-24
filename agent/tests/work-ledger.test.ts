@@ -276,6 +276,17 @@ t('a result that only waited for the notice throttle survives an unrelated user 
   assert.deepEqual(L.staleWork(rs, NOW), [])  // never surfaced: stays pending
   assert.equal(pend(rs).length, 1)
 })
+t('stale: a user turn before the offer (while the row waited for the throttle) is not moving on', () => {
+  const rs = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), rec(80_000, { kind: 'prompt', text: 'what is the weather forecast tomorrow', origin: 'user_mic' } as any), surf(1)]
+  assert.deepEqual(L.staleWork(rs, NOW), [])
+  assert.equal(pend(rs).length, 1)
+})
+t('redundant: terms pooled over several replies never count as telling a result', () => {
+  const rs = work(1, 0, 60_000, 'writer: fix build', 'Build failed: missing module dotenv')
+  const said = [{ at: T0 + 90_000, text: 'The build is running again.' }, { at: T0 + 120_000, text: 'That module was renamed.' }, { at: T0 + 150_000, text: 'Nothing is missing from the page.' }]
+  assert.deepEqual(L.staleWork(rs, NOW, { spoken: said }), [])
+  assert.equal(pend(rs, said).length, 1)
+})
 t('too old: the 20-minute window stays', () => {
   assert.deepEqual(pend(work(1, 0, 60_000, 'writer: x', 'Done something'), [], T0 + 25 * 60_000), [])
 })
@@ -284,7 +295,7 @@ t('stale/redundant rows produce zero notices; unsurfaced moved-on rows stay pend
   for (let n = 10; n < 20; n++) rs.push(...work(n, n, 60_000 + n, `tester: area${n}`, `Alpha${n} beta${n} gamma${n} passed`, 'tester'))  // told aloud
   for (let n = 20; n < 30; n++) rs.push(...work(n, n, 60_000 + n, `reviewer: pr${n}`, `Reviewed zebra${n} quartz${n}`, 'reviewer'), surf(n))  // moved on, offered
   for (let n = 30; n < 33; n++) rs.push(...work(n, n, 60_000 + n, `reviewer: pr${n}`, `Reviewed zebra${n} quartz${n}`, 'reviewer'))  // moved on, never offered
-  rs.push(rec(100_000, { kind: 'prompt', text: 'unrelated sandwich question', origin: 'user_mic' } as any))
+  rs.push(rec(110_000, { kind: 'prompt', text: 'unrelated sandwich question', origin: 'user_mic' } as any))
   const spoken = [{ at: T0 + 80_000, text: Array.from({ length: 10 }, (_, k) => `tester area${k + 10} alpha${k + 10} beta${k + 10} gamma${k + 10} passed`).join(' ') }]
   const dead = L.staleWork(rs, NOW, { spoken })
   assert.equal(dead.length, 20)
