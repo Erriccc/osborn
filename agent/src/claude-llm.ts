@@ -2311,6 +2311,7 @@ export class ClaudeLLM extends llm.LLM {
     if (this.#backgroundConsumerRunning) return
     this.#backgroundConsumerRunning = true
     const pq = this.#persistentQuery!
+    this.#currentTurnMessageId = null  // a killed turn emits no result: never reuse its (maybe cut-off) id
 
     try {
       for await (const message of pq) {
