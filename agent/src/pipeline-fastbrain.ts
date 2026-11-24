@@ -447,8 +447,7 @@ function finish(question: string, raw: string | undefined, toolsUsed: string[]):
   const text = sanitizeFastBrainAnswer((raw || '').trim())
   persistentMessages.push({ role: 'user', content: question })
   console.log(`🧠⚡ [pipeline-fb] ${toolsUsed.length} searches, answer: "${text.substring(0, 80)}"`)
-  if (isHandOff(text)) return { script: '', type: 'research_needed', toolsUsed }
-  if (!text) return { script: "I didn't find that in the session history.", type: 'answer', toolsUsed }
+  if (!text || isHandOff(text)) return { script: '', type: 'research_needed', toolsUsed }
   persistentMessages.push({ role: 'assistant', content: text })
   return { script: text, type: 'answer', toolsUsed }
 }

@@ -621,7 +621,7 @@ export class PipelineDirectLLM extends llm.LLM {
         }),
       })
 
-      if (signal.aborted) return
+      if (signal.aborted) { console.log('🧠⚡ [pipeline] fast brain answer dropped (newer turn)'); return }
 
       const elapsedMs = Date.now() - startMs
       console.log(`🧠⚡ [pipeline] ${result.type} in ${elapsedMs}ms [${result.toolsUsed.join(',')}]: "${result.script.substring(0, 80)}"`)

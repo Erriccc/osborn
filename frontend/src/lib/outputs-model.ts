@@ -233,7 +233,7 @@ export function searchOutputs<T extends OutputFile>(files: readonly T[], query: 
   return { byName, byContent }
 }
 
-function clip(s: string, max = 100): string {
+export function clip(s: string, max = 100): string {
   return s.length <= max ? s : `${s.slice(0, max - 1).trimEnd()}…`
 }
 

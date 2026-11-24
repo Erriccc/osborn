@@ -11,6 +11,8 @@
  */
 import { cleanSessionText, stripSessionWrappers } from './transcript-clean'
 import { isControlNotice } from './control-text'
+import { redactSecrets } from './redactSecrets'
+import { clip } from './outputs-model'
 
 export const TYPED_ECHO_WINDOW_MS = 2 * 60 * 1000
 const MAX_PENDING = 20
@@ -34,14 +36,26 @@ export function newClientMsgId(): string {
 
 const ATTACHMENT_LINE_RE = /\n*\[(?:Image|File)(?: attached)?:[^\]]*\](?:\([^)]*\))?[\s\S]*$/
 
-/** Comparable form of a user turn: cleaned of pipeline wrappers and
- *  attachment markers, lower-cased, whitespace collapsed. Null = notice-only. */
+/** The user's words in a turn: pipeline wrappers and attachment markers removed. Null = none. */
+function turnWords(text: string | null | undefined): string | null {
+  return stripSessionWrappers(text)?.replace(ATTACHMENT_LINE_RE, '').trim() || null
+}
+
+/** Comparable form of a user turn: turnWords, lower-cased, whitespace
+ *  collapsed. Null = notice-only. */
 export function echoMatchKey(text: string | null | undefined): string | null {
-  const cleaned = stripSessionWrappers(text)
-  if (cleaned === null) return null
-  const body = cleaned.replace(ATTACHMENT_LINE_RE, '')
-  const key = body.replace(/\s+/g, ' ').trim().toLowerCase()
-  return key || null
+  return turnWords(text)?.replace(/\s+/g, ' ').toLowerCase() ?? null
+}
+
+/** A character that makes MessageBubble render a part as markdown. */
+export const MARKDOWN_CHAR_RE = /[*#`\[\]|]/
+
+/** The user's words, one plain line for the provisional fast-brain card (#547): secrets
+ *  masked, characters that would turn the card into markdown dropped, cut at 80 with an
+ *  ellipsis. Null = nothing to quote (an attachment-only turn). */
+export function fastBrainQuote(question: string | null | undefined): string | null {
+  const line = redactSecrets(turnWords(question)?.split('\n')[0]).replace(new RegExp(MARKDOWN_CHAR_RE.source, 'g'), '').replace(/\s+/g, ' ').trim()
+  return line ? clip(line, 80) : null
 }
 
 function prune(pending: readonly PendingTyped[], now: number): PendingTyped[] {

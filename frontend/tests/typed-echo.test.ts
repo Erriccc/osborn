@@ -8,7 +8,7 @@
 // User bubbles render through cleanSessionText (transcript-clean.ts).
 import {
   newClientMsgId, echoMatchKey, rememberTyped, takeTypedEcho, userBubbleText, TYPED_ECHO_WINDOW_MS,
-  isRapidDoubleSend, RAPID_DOUBLE_SEND_MS,
+  isRapidDoubleSend, RAPID_DOUBLE_SEND_MS, fastBrainQuote,
   type PendingTyped,
 } from '../src/lib/chat-echo'
 
@@ -156,6 +156,19 @@ t('rapid double-send: different text is never a duplicate', () => {
 t('rapid double-send: empty / notice-only text (attachment-only) never matches', () => {
   const p = rememberTyped([], { clientMsgId: 'a', text: '', now: T0 })
   ok(!isRapidDoubleSend(p, '', T0 + 100), 'empty key never deduped')
+})
+
+// #547: the provisional fast-brain card names the question it answers, as plain text.
+t('fast-brain quote', () => {
+  eq(fastBrainQuote('[time: t] what failed?'), 'what failed?', 'plain turn, wrapper removed')
+  const cut = fastBrainQuote('x'.repeat(200))!
+  ok(cut.length === 80 && cut.endsWith('\u2026'), 'long turn cut at 80 with an ellipsis')
+  ok(!fastBrainQuote('use sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 now')!.includes('abcdefghij'), 'secret masked')
+  eq(fastBrainQuote('[time: t] \n\n[Image: a.png](https://x.supabase.co/a.png)'), null, 'attachment-only has no quote')
+  eq(fastBrainQuote('look\n\n[Image: a.png](https://x.supabase.co/a.png)'), 'look', 'words, not the link')
+  eq(fastBrainQuote(''), null, 'empty')
+  ok(!/[*#`\[\]|]/.test(fastBrainQuote('run `ls | wc` in [dir] # *now*')!), 'no markdown triggers')
+  ok(!/[*#`\[\]|]/.test(`\u26A1 Fast brain (provisional \u2014 the full answer follows) \u00B7 \u201C${fastBrainQuote('a `b` [c]')}\u201D`), 'label line stays plain')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

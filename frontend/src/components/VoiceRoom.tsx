@@ -36,7 +36,7 @@ import { backgroundSessionTitle } from '@/lib/rooms'
 import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
 import { isRedundantFinal } from '@/lib/claude-output'
 import { isAgentIdentity, isAuthGateTerminal } from '@/lib/connect-gate'
-import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
+import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, fastBrainQuote, type PendingTyped } from '@/lib/chat-echo'
 import { historyTurns, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micPlatform, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
@@ -2607,7 +2607,9 @@ function VoiceRoomInner({
           // guesses a provider that isn't on the wire.
           const label = `${fastBrainLabel({ provider: data.provider, agentRole: data.agentRole })} (provisional \u2014 the full answer follows)`
           console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
-          addMessageRef.current?.('assistant', `${label}\n${data.text}`, 'fast-brain', 'chat')
+          // The question the answer is for, as plain text on the label line (no markdown characters).
+          const quote = fastBrainQuote(data.question)
+          addMessageRef.current?.('assistant', `${label}${quote ? ` \u00B7 \u201C${quote}\u201D` : ''}\n${data.text}`, 'fast-brain', 'chat')
         }
       } else if (data.type === 'skills_status') {
         if (data.skills && Array.isArray(data.skills)) {
