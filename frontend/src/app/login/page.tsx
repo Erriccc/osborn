@@ -271,6 +271,7 @@ export default function Home() {
                     Connection settings
                   </span>
                   <button onClick={() => setShowSettings(s => !s)}
+                    aria-label="Connection settings" aria-expanded={showSettings} aria-controls="login-settings-panel"
                     className="text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors text-sm p-1">
                     {showSettings ? '×' : '⚙'}
                   </button>
@@ -303,8 +304,13 @@ export default function Home() {
             )}
 
             {/* ── Settings (collapsible) ───────────────── */}
-            <div className="overflow-hidden transition-all duration-200"
-              style={{ maxHeight: showSettings ? 320 : 0, opacity: showSettings ? 1 : 0 }}>
+            {/* #533: signed-in branch only (the gear lives there; guests cannot open it).
+                Collapsed = visibility:hidden + aria-hidden, so it leaves the tab order
+                and a11y tree while the maxHeight animation stays. */}
+            {user && (
+            <div id="login-settings-panel" className="overflow-hidden transition-all duration-200"
+              aria-hidden={!showSettings}
+              style={{ maxHeight: showSettings ? 320 : 0, opacity: showSettings ? 1 : 0, visibility: showSettings ? 'visible' : 'hidden' }}>
               <div className="flex flex-col gap-3 pt-3 border-t border-[var(--border)]">
 
                 <label className="flex flex-col gap-1">
@@ -330,6 +336,7 @@ export default function Home() {
                 </button>
               </div>
             </div>
+            )}
           </div>
 
           {/* ── Footer ──────────────────────────────────── */}
