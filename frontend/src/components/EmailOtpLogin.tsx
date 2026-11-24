@@ -2,6 +2,7 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { useState } from 'react'
+import { SIGN_IN_BUTTON_STYLE } from '@/components/SignInCard'
 
 /**
  * Email OTP (6-digit code) login — app-wide auth that needs no OAuth provider,
@@ -54,7 +55,7 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
           type="submit"
           disabled={busy}
           className="w-full h-11 rounded-lg font-semibold text-[15px] transition-all active:scale-[0.98] disabled:opacity-50"
-          style={{ background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)', color: 'var(--background)' }}
+          style={SIGN_IN_BUTTON_STYLE}
         >
           {busy ? 'Sending…' : 'Email me a code'}
         </button>
@@ -87,7 +88,7 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
         type="submit"
         disabled={busy || code.length < 6}
         className="w-full h-11 rounded-lg font-semibold text-[15px] transition-all active:scale-[0.98] disabled:opacity-50"
-        style={{ background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)', color: 'var(--background)' }}
+        style={SIGN_IN_BUTTON_STYLE}
       >
         {busy ? 'Verifying…' : 'Verify'}
       </button>
