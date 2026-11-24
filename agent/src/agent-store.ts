@@ -322,7 +322,7 @@ export function coreSkillNames(pkgSkillsDir: string): Set<string> {
 }
 
 /** Packaged skills a local install needs on disk; every installed skill enters the system prompt, so this stays small. */
-export const BOOT_INSTALLED_SKILLS = ['dispatch']
+const BOOT_INSTALLED_SKILLS = ['dispatch']
 const INSTALLED_MARKER = join(homedir(), '.osborn', 'installed-core-skills.json')
 
 /** Copies each allowlisted packaged skill once. An existing folder is never touched, and a name

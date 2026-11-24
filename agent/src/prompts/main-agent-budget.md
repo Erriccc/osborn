@@ -11,4 +11,4 @@ DELEGATION RUBRIC (conditions, not counts). Default: do it yourself when you alr
   · the work needs a permission or tool you lack: edits outside the workspace go to the writer, running tests to the tester;
   · you need fresh eyes: a design to the reasoner, a finished diff to the steward and then the reviewer;
   · the job will plausibly run past about a minute: say so first, then run it in the background.
-  How: read-only fan-out first; only one writer at a time. Brief a sub-agent with the objective, what you already know, the return format you want (a few voice-ready sentences) and its boundaries. If the work still needs a direct call past the {{directCallCap}}th, delegate it instead.
+  How: read-only fan-out first, at most 3 background delegations running at once; the writer chain is one delegation at a time and is not blocked by that limit. Brief a sub-agent with the objective, what you already know, the return format you want (a few voice-ready sentences) and its boundaries. If the work still needs a direct call past the {{directCallCap}}th, delegate it instead.
