@@ -36,7 +36,8 @@ import { backgroundSessionTitle } from '@/lib/rooms'
 import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
 import { isRedundantFinal } from '@/lib/claude-output'
 import { isAgentIdentity, isAuthGateTerminal } from '@/lib/connect-gate'
-import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, type PendingTyped } from '@/lib/chat-echo'
+import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, answersLatestTurn, type PendingTyped } from '@/lib/chat-echo'
+import { stripSessionWrappers } from '@/lib/transcript-clean'
 import { historyTurns, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micPlatform, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
@@ -2598,11 +2599,9 @@ function VoiceRoomInner({
       } else if (data.type === 'fast_brain_response') {
         // Pipeline mode: Gemini fast brain parallel response — show in main chat for monitoring
         // The answer belongs to the question it was asked for: drop it once the user has said something else.
-        const fbQ = String(data.question || '').trim().toLowerCase()
-        const lastUser = [...messagesRef.current].reverse().find((m) => m.role === 'user')?.content.trim().toLowerCase()
-        const stale = !!fbQ && !!lastUser && !lastUser.includes(fbQ) && !fbQ.includes(lastUser)
-        if (stale) console.log('🧠⚡ Fast brain response dropped (question is not the latest)')
-        if (!stale && data.text && data.text.trim()) {
+        const lastUser = [...messagesRef.current].reverse().find((m) => m.role === 'user')?.content
+        if (!answersLatestTurn(data.question, lastUser)) console.log('🧠⚡ Fast brain response dropped (question is not the latest)')
+        else if (data.text && data.text.trim()) {
           // User-facing label only \u2014 the millisecond timing, responseType and
           // toolsUsed were developer telemetry that read as a bug in the chat.
           // They still arrive on `data` for logging below; keep the human marker.
@@ -2612,7 +2611,8 @@ function VoiceRoomInner({
           // guesses a provider that isn't on the wire.
           const label = `${fastBrainLabel({ provider: data.provider, agentRole: data.agentRole })} (provisional \u2014 the full answer follows)`
           console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
-          addMessageRef.current?.('assistant', `${label}${data.question ? `\n> ${String(data.question).trim().slice(0, 80)}` : ''}\n${data.text}`, 'fast-brain', 'chat')
+          const quote = stripSessionWrappers(data.question)?.split('\n')[0].slice(0, 80)
+          addMessageRef.current?.('assistant', `${label}${quote ? `\n> ${quote}\n` : ''}\n${data.text}`, 'fast-brain', 'chat')
         }
       } else if (data.type === 'skills_status') {
         if (data.skills && Array.isArray(data.skills)) {

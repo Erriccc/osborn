@@ -44,6 +44,13 @@ export function echoMatchKey(text: string | null | undefined): string | null {
   return key || null
 }
 
+/** A fast-brain answer belongs to the latest user turn (#547): false once the
+ *  last "You" line is a different turn. Unknown on either side counts as a match. */
+export function answersLatestTurn(question: string | null | undefined, lastUser: string | null | undefined): boolean {
+  const q = echoMatchKey(question), u = echoMatchKey(lastUser)
+  return !q || !u || u.includes(q) || q.includes(u)
+}
+
 function prune(pending: readonly PendingTyped[], now: number): PendingTyped[] {
   return pending.filter((p) => now - p.at <= TYPED_ECHO_WINDOW_MS)
 }

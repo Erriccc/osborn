@@ -31,8 +31,6 @@ export interface PipelineFastBrainOptions {
   researchContext?: string
   sessionBaseDir?: string
   agentControl?: AgentControlCallbacks
-  /** The turn's abort signal: a superseded turn stops its request early. */
-  signal?: AbortSignal
 }
 
 export interface AgentControlCallbacks {
@@ -390,7 +388,7 @@ export const fastBrainModelStatus = () => ({ model: modelInUse, fallbackFrom })
 export function resetFastBrainFallback() { deadUntil.clear(); fallbackFrom = null; modelInUse = null; probed = false }
 
 /** One request; on a model-not-found answer with another model available, mark that one dead and retry once on it. */
-export async function requestWithFallback(body: Record<string, unknown>, turnSignal?: AbortSignal): Promise<any> {
+export async function requestWithFallback(body: Record<string, unknown>): Promise<any> {
   const all = fastBrainCandidates()
   let c = firstLive(all)
   for (let attempt = 0; c; attempt++) {
@@ -398,7 +396,7 @@ export async function requestWithFallback(body: Record<string, unknown>, turnSig
       method: 'POST',
       headers: { 'Authorization': `Bearer ${c.key}`, 'Content-Type': 'application/json', 'X-OpenRouter-Title': 'Osborn Fast Brain' },
       body: JSON.stringify({ model: c.model, ...body }),
-      signal: turnSignal ? AbortSignal.any([turnSignal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     if (resp.ok) { modelInUse = c.model; if (c === all[0]) fallbackFrom = null; return resp.json() }
     const text = await resp.text().catch(() => '')
@@ -414,8 +412,8 @@ export async function requestWithFallback(body: Record<string, unknown>, turnSig
   throw new Error('no fast-brain model available')
 }
 
-async function callOpenRouter(messages: any[], tools: any[], signal?: AbortSignal): Promise<any> {
-  return requestWithFallback({ messages, tools, tool_choice: 'auto' }, signal)
+async function callOpenRouter(messages: any[], tools: any[]): Promise<any> {
+  return requestWithFallback({ messages, tools, tool_choice: 'auto' })
 }
 
 /** One tiny request, once per process, so a retired model is replaced before the first turn. */
@@ -445,13 +443,11 @@ export const isHandOff = (text: string): boolean =>
 /** Every exit that carries model text: sanitise, then answer or hand off. A hand-off
  *  carries no text (nothing for a consumer to post) and is not kept in the fast
  *  brain's own history, so a suppressed denial cannot prime the next turn. */
-export function finish(question: string, raw: string | undefined, toolsUsed: string[]): PipelineFastBrainResult {
+function finish(question: string, raw: string | undefined, toolsUsed: string[]): PipelineFastBrainResult {
   const text = sanitizeFastBrainAnswer((raw || '').trim())
   persistentMessages.push({ role: 'user', content: question })
   console.log(`🧠⚡ [pipeline-fb] ${toolsUsed.length} searches, answer: "${text.substring(0, 80)}"`)
-  if (isHandOff(text)) return { script: '', type: 'research_needed', toolsUsed }
-  // Empty text is no finding (an empty index on a short turn): hand off, no card.
-  if (!text) return { script: '', type: 'research_needed', toolsUsed }
+  if (!text || isHandOff(text)) return { script: '', type: 'research_needed', toolsUsed }
   persistentMessages.push({ role: 'assistant', content: text })
   return { script: text, type: 'answer', toolsUsed }
 }
@@ -537,7 +533,7 @@ export async function askPipelineFastBrain(
         break
       }
       rounds++
-      const data = await callOpenRouter(messages, tools, opts?.signal)
+      const data = await callOpenRouter(messages, tools)
       // Cache observability: OpenAI-compatible providers report cached prefix
       // tokens on usage.prompt_tokens_details.cached_tokens (Fireworks/z.ai both
       // populate it when the prefix cache hits).

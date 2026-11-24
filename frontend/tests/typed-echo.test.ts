@@ -8,7 +8,7 @@
 // User bubbles render through cleanSessionText (transcript-clean.ts).
 import {
   newClientMsgId, echoMatchKey, rememberTyped, takeTypedEcho, userBubbleText, TYPED_ECHO_WINDOW_MS,
-  isRapidDoubleSend, RAPID_DOUBLE_SEND_MS,
+  isRapidDoubleSend, RAPID_DOUBLE_SEND_MS, answersLatestTurn,
   type PendingTyped,
 } from '../src/lib/chat-echo'
 
@@ -156,6 +156,17 @@ t('rapid double-send: different text is never a duplicate', () => {
 t('rapid double-send: empty / notice-only text (attachment-only) never matches', () => {
   const p = rememberTyped([], { clientMsgId: 'a', text: '', now: T0 })
   ok(!isRapidDoubleSend(p, '', T0 + 100), 'empty key never deduped')
+})
+
+// #547: a provisional fast-brain answer is shown only under the turn it answers.
+t('fast-brain answer matches its own turn', () => {
+  ok(answersLatestTurn('Cloud.', 'cloud.'), 'same voice turn')
+  ok(answersLatestTurn('[time: 2026-11-24 10:32 local] what failed?', 'What failed?'), 'typed turn with its time tag')
+  const long = 'x'.repeat(3000)
+  ok(answersLatestTurn(`[time: t] read this\n\n[File: a.txt]\n${long}`, `read this\n\n[File: a.txt]\n${long.slice(0, 2000)}...(truncated)`), 'long text attachment, truncated bubble')
+  ok(answersLatestTurn('so I was saying the build failed', 'the build failed'), 'last bubble is part of the turn')
+  ok(answersLatestTurn('', 'anything') && answersLatestTurn('q', undefined), 'unknown side is a match')
+  ok(!answersLatestTurn('how did act1 get explained?', 'Okay, so guys, I read all those things'), 'an earlier question is not the latest turn')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
