@@ -2076,7 +2076,6 @@ function VoiceRoomInner({
         onVoiceActivity?.()
       } else if (data.type === 'user_transcript') {
         if (data.text && data.text.trim()) {
-          pulseGotIt()
           // Bug d9bb78b2: the echo of a message typed here is already on
           // screen. Drop it by clientMsgId, else by cleaned-text match.
           // The text fallback is only for agents that never return ids.
@@ -2087,6 +2086,7 @@ function VoiceRoomInner({
             clientMsgId: echoId,
           }, Date.now(), { agentSendsIds: agentSendsClientIdsRef.current })
           pendingTypedRef.current = echo.pending
+          if (!echo.duplicate && !echoId) pulseGotIt()
           if (echo.duplicate) {
             console.log('⏭️ Typed-message echo deduped:', data.clientMsgId ?? '(text match)')
           } else {

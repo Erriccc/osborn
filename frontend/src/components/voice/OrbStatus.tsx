@@ -142,7 +142,7 @@ export function MicLevelStrip() {
     return () => { offLevel(); offGot(); clearTimeout(timer) }
   }, [])
   return (
-    <div className="flex items-center gap-1.5 shrink-0 select-none" aria-hidden="true" title="Your mic level">
+    <div className="relative flex items-center shrink-0 select-none" aria-hidden="true" title="Your mic level">
       <div className="flex items-center gap-[2px] h-4 sm:h-5">
         {Array.from({ length: STRIP_BARS }, (_, i) => (
           <span
@@ -155,7 +155,7 @@ export function MicLevelStrip() {
       </div>
       <span
         ref={tick}
-        className="text-[11px] leading-none text-[var(--accent)] border border-[var(--border-subtle)] rounded-full px-1.5 py-0.5 motion-safe:transition-opacity motion-safe:duration-300"
+        className="absolute left-full ml-1.5 whitespace-nowrap pointer-events-none text-[11px] leading-none text-[var(--accent)] border border-[var(--border-subtle)] rounded-full px-1.5 py-0.5 motion-safe:transition-opacity motion-safe:duration-300"
         style={{ opacity: 0 }}
       >
         got it

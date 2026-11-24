@@ -181,6 +181,8 @@ export interface ClaudeLLMOptions {
   mcpServers?: Record<string, McpServerConfig>
   /** The hub's own in-process tools (the dispatch tool), built fresh for each query. Never passed for a background slot. */
   hubTools?: () => Record<string, McpServerConfig>
+  /** Only the focused hub records turn timing; the marks are process-wide, so a background slot must not touch them. */
+  turnTiming?: boolean
   model?: string  // Claude model ID (default: claude-opus-5-5)
   voiceMode?: 'direct' | 'realtime'  // Which voice pipeline — controls system prompt selection
   skipTTSQueue?: boolean  // When true, emit 'tts_say' events instead of queue.put() — for session.say() bypass
@@ -1363,6 +1365,7 @@ export class ClaudeLLM extends llm.LLM {
       continueSession: this.#continueSession,
       mcpServers: this.#mcpServers,
       hubTools: opts.hubTools,
+      turnTiming: opts.turnTiming,
       voiceMode: opts.voiceMode || 'realtime',
       skipTTSQueue: opts.skipTTSQueue || false,
       // CRITICAL: the PreCompact / PostCompact hooks call
@@ -2378,7 +2381,7 @@ export class ClaudeLLM extends llm.LLM {
           this.#currentTurnMessageId = currentIdOnPush(this.#retiredTurnIds, this.#currentTurnMessageId)
           if (this.#messageChannel && !this.#messageChannel.closed) {
             console.log(`⚡ Persistent session: pushing deferred message (post-interrupt, waited ${Date.now() - deferStart}ms${late ? ', deadline hit' : ''})`)
-            markPush(Date.now() - deferStart)
+            if (this.#opts.turnTiming) markPush(Date.now() - deferStart)
             this.#messageChannel.push(userMessage)
           } else {
             // Never drop a user message silently — make the loss loud in logs.
@@ -2388,7 +2391,7 @@ export class ClaudeLLM extends llm.LLM {
       } else {
         console.log('⚡ Persistent session: pushing message (no JSONL replay)')
         this.#currentTurnMessageId = currentIdOnPush(this.#retiredTurnIds, this.#currentTurnMessageId)
-        markPush(0)
+        if (this.#opts.turnTiming) markPush(0)
         this.#messageChannel.push(userMessage)
       }
       return
@@ -2398,6 +2401,7 @@ export class ClaudeLLM extends llm.LLM {
     console.log('🔄 Persistent session: cold start (first message, JSONL replay)')
     this.#spawnAuthGen = authEnvGeneration
     this.#messageChannel = new MessageChannel()
+    if (this.#opts.turnTiming) markPush(0)
     this.#messageChannel.push(userMessage)
 
     this.#spawnedResumeId = (sdkOptions as any)?.resume ?? null
@@ -3171,7 +3175,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // prefix, but ordering volatile content last keeps any future
                 // cache_control breakpoint inside this block useful too.
                 const additionalContext = [reminder, recalled, loopRecap, machineNudge].filter(Boolean).join('\n\n')
-                if (!fromSubagent) markHookDone(Date.now() - hookT0)
+                if (!fromSubagent && this.#opts.turnTiming) markHookDone(Date.now() - hookT0)
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [counters reset; speak-cadence ${SPEAK_CADENCE_N}]`)
                 return {
                   hookSpecificOutput: {

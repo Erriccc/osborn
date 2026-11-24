@@ -32,3 +32,14 @@ assert.strictEqual(seq.chatToPush, 100)
 assert.strictEqual(seq.deferredWait, 40)
 assert.strictEqual(seq.hook, 15)
 console.log('turn-timing ok')
+
+// A non-hub ClaudeLLM (background slot) must never touch the process-wide marks.
+{
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/claude-llm.ts', import.meta.url), 'utf8')
+  const calls = src.split('\n').filter((l) => /\b(markPush|markHookDone)\(/.test(l) && !l.includes('import'))
+  assert.ok(calls.length >= 4)
+  for (const l of calls) assert.ok(l.includes('turnTiming'), `ungated mark call: ${l.trim()}`)
+  const wrap = readFileSync(new URL('../src/pipeline-direct-llm.ts', import.meta.url), 'utf8')
+  assert.ok(wrap.includes('turnTiming: true'))
+}
