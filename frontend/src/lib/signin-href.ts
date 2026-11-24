@@ -13,3 +13,9 @@ export function sameSitePath(next: string | null | undefined, origin: string, fa
 export function signInHref(path: string): string {
   return '/login?next=' + encodeURIComponent(path)
 }
+
+/** Sign-in link that returns to the current page. Client-only (reads `window`): call it in an event
+ *  handler or effect, never during render. */
+export function signInHere(): string {
+  return signInHref(window.location.pathname + window.location.search)
+}

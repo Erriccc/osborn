@@ -14,7 +14,7 @@
 import VoiceRoom from '@/components/VoiceRoom'
 import { useChatSession } from '@/components/ChatSessionProvider'
 import SignInCard from '@/components/SignInCard'
-import { signInHref } from '@/lib/signin-href'
+import { signInHere } from '@/lib/signin-href'
 import { useDocumentTitle } from '@/lib/use-document-title'
 
 export default function ChatPage() {
@@ -77,7 +77,7 @@ export default function ChatPage() {
       <main className="min-h-screen bg-[var(--background)] flex items-center justify-center p-6">
         <SignInCard className="w-full max-w-md" title="Sign in to talk to your agent"
           body="Your agent is private to your account."
-          href={signInHref(window.location.pathname + window.location.search)} label="Sign in"
+          href={signInHere()} label="Sign in"
           secondary={{ label: 'Back', onClick: disconnect }} />
       </main>
     )

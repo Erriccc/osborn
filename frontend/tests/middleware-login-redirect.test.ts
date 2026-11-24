@@ -14,7 +14,6 @@ const orig = M._load
 M._load = function (req: string, ...rest: unknown[]) { return req in mocks ? mocks[req] : orig.call(this, req, ...rest) }
 
 async function main() {
-  mocks['@/lib/signin-href'] = await import('../src/lib/signin-href')
   const { middleware } = await import('../src/middleware')
   const o = 'https://voice-native.com'
   const go = async (qs: string) => {
