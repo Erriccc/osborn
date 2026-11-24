@@ -10,7 +10,7 @@ The issue is the ledger. State is a label; a claim is one comment.
 
 ## Sweep
 
-`npx tsx scripts/issue-sweep.ts [--json]` (needs the `gh` CLI, logged in or with `GH_TOKEN`; `OSBORN_REPO` overrides `Erriccc/osborn`) prints a report: age buckets, unlabelled, unclaimed, stale 7d+, open issues a merged PR mentions anywhere in its title or body (close candidates: any `#N` counts, not only closing keywords, so check each before closing), likely duplicates (similar titles), expired claims. It is report-only: it never labels, comments or closes. A daily schedule and the labels themselves are follow-ups.
+`npx tsx scripts/issue-sweep.ts [--json]` (needs the `gh` CLI, logged in or with `GH_TOKEN`; `GITHUB_REPO` overrides `Erriccc/osborn`, as for the report mirror) prints a report: age buckets, unlabelled, unclaimed, stale 7d+, open issues a merged PR mentions anywhere in its title or body (close candidates: any `#N` counts, not only closing keywords, so check each before closing), likely duplicates (similar titles), expired claims. It is report-only: it never labels, comments or closes. A daily schedule and the labels themselves are follow-ups.
 
 ## Not enforced yet
 

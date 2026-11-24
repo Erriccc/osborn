@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { terms } from '../agent/src/stopwords.js'
+import { FOLLOW_THROUGH_LABEL } from '../frontend/src/lib/github-issue-mirror.js'
 
 const DAY = 864e5
 const CLAIM = /^claim:\s+(\S+)\s+(\S+)\s+(\S+?)[.,;]*[ \t]*$/m
@@ -46,7 +47,7 @@ export function sweep({ issues, prs, openPrs = [] as any[], comments = {}, confi
   const refd = new Set(mentioned.keys())
   const anyPr = new Set(refd)
   for (const p of openPrs) for (const n of refs(`${p.title} ${p.body ?? ''}`)) if (n !== p.number) anyPr.add(n)
-  const note = (i) => labelNames(i).includes('follow-through')
+  const note = (i) => labelNames(i).includes(FOLLOW_THROUGH_LABEL)
   const expiredClaims = []
   for (const i of open.filter(claimed)) {
     const last = [...(comments[i.number] ?? [])].reverse().map((c) => parseClaim(c.body)).find(Boolean)
@@ -93,7 +94,7 @@ const gh = (path) => {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const repo = process.env.OSBORN_REPO || 'Erriccc/osborn'
+  const repo = (process.env.GITHUB_REPO || 'Erriccc/osborn').trim()
   const config = JSON.parse(readFileSync(new URL('../docs/issue-sweep-config.json', import.meta.url), 'utf8'))
   const issues = gh(`repos/${repo}/issues?state=open&per_page=100`).filter((i) => !i.pull_request)
   const prs = gh(`repos/${repo}/pulls?state=closed&per_page=100`).filter((p) => p.merged_at)
