@@ -85,6 +85,8 @@ export async function GET() {
       sandbox_status: instance?.sandbox_status ?? null,
       instance_status: instance?.status ?? null,
       machine_state: machine?.status ?? null,
+      // The configured image version (read off the machine object Fly already returned — no extra probe).
+      osborn_version: machine?.version ?? null,
       last_active: activeAt ? new Date(activeAt).toISOString() : null,
     }
   })

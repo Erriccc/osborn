@@ -384,11 +384,20 @@ async function getFirstMachine(appName: string, throwOnError = false): Promise<F
  * maps it) and the time of its latest start or exit. Null when Fly cannot be read, so the caller
  * keeps the stored value.
  */
-export async function readMachineActivity(appName: string): Promise<{ status: SandboxInfo['status']; lastEventAt: number } | null> {
+export async function readMachineActivity(appName: string): Promise<{ status: SandboxInfo['status']; lastEventAt: number; version: string | null } | null> {
   const machine = await getFirstMachine(appName)
   if (!machine) return null
   const lastEventAt = Math.max(0, ...(machine.events ?? []).filter((e) => e.type === 'start' || e.type === 'exit').map((e) => e.timestamp))
-  return { status: mapMachineState(machine.state), lastEventAt }
+  // The configured image tag (`…/repo:0.9.302`) is the version the machine boots. Read from the
+  // SAME machine object — no extra Fly call and no /health probe, so a stopped machine is NOT woken.
+  return { status: mapMachineState(machine.state), lastEventAt, version: imageVersionFromRef((machine.config as { image?: string } | undefined)?.image) }
+}
+
+/** The `x.y.z` version from an image ref (`…/repo:0.9.302[@sha256:…]`), or null for `latest`/no tag. Pure — exported for tests. */
+export function imageVersionFromRef(image: string | null | undefined): string | null {
+  if (!image) return null
+  const tag = image.split('@', 1)[0].split(':').pop() ?? ''
+  return /^\d+\.\d+\.\d+$/.test(tag) ? tag : null
 }
 
 /**
