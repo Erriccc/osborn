@@ -4,7 +4,8 @@ import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { getSessionWorkspace } from './config.js'
 import { SIGNOFF_COMMAND } from './steward-gate.js'
-import { CONTROL_OR_BIDI, DISPATCH_TOOL } from './dispatch.js'
+import { HIDDEN_CHARS, DISPATCH_TOOL } from './dispatch.js'
+import { POINT_MAX_CHARS } from './points.js'
 import { redactSecrets } from './content/secret-rules.js'
 import type { RecapItem } from './loops-ledger.js'
 
@@ -1766,7 +1767,6 @@ export function getSpokeReport(r: { project: string; sessionId: string; status: 
     `\`\`\`\n${summary.replace(/```/g, "'''")}\n\`\`\`\nTell the user this result aloud in a sentence or two.${offer}`)
 }
 
-const HIDDEN_CHARS = new RegExp(`${CONTROL_OR_BIDI.source}|[\\u200b-\\u200d\\u2060\\ufeff\\u{E0000}-\\u{E007F}]`, 'gu')
 /** Ledger text is agent-writable: no control, bidi, zero-width or tag characters, one line, secrets redacted, short, quoted. */
 const recapText = (t: unknown, max = 120): string =>
   JSON.stringify(redactSecrets(String(t || '').replace(HIDDEN_CHARS, '').replace(/\s+/g, ' ').trim()).slice(0, max))
@@ -1790,21 +1790,18 @@ export function getFollowThroughRecap(items: RecapItem[]): string {
 }
 
 /** Most bytes the points checklist may add to a turn. */
-export const POINTS_BLOCK_MAX_BYTES = 1400
+const POINTS_BLOCK_MAX_BYTES = 1400
 
 /** The short checklist for a long turn (#455): quoted points, never more than the byte cap, '' when none. */
 export function getPointsChecklist(points: string[]): string {
-  let kept: string[] = []
+  let template: string
+  try { template = readFileSync(join(PROMPTS_FILE_DIR, 'points-checklist.md'), 'utf-8').trim() } catch { return '' }
+  const kept: string[] = []
   let block = ''
   for (const p of points) {
-    const next = [...kept, `${kept.length + 1}) ${recapText(p, 160)}`]
-    let b: string
-    try {
-      b = readFileSync(join(PROMPTS_FILE_DIR, 'points-checklist.md'), 'utf-8').trim()
-        .replace('{{n}}', String(next.length)).replace('{{points}}', next.join(' '))
-    } catch { return '' }
+    kept.push(`${kept.length + 1}) ${recapText(p, POINT_MAX_CHARS)}`)
+    const b = template.replace('{{n}}', String(kept.length)).replace('{{points}}', () => kept.join(' '))
     if (Buffer.byteLength(b) > POINTS_BLOCK_MAX_BYTES) break
-    kept = next
     block = b
   }
   return block

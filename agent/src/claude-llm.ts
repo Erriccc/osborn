@@ -26,7 +26,7 @@ import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { stewardGate } from './steward-gate.js'
-import { closeAddressedPoints, splitPoints, POINTS_FILE_CAP } from './points.js'
+import { addressedPoints, splitPoints, POINTS_FILE_CAP } from './points.js'
 import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, type LoopRecordInput } from './loops-ledger.js'
 import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
@@ -1336,9 +1336,9 @@ export class ClaudeLLM extends llm.LLM {
   #loopTurn = 0
   #todoSnapshots = new Map<string, Map<string, string>>()
   #loopRecapDone = false
-  /** Points of the live long turn (#455) and what the reply and its tool calls said, to close them at turn end. */
+  /** Points of the live long turn (#455) and what its tool calls dispatched, to close them at turn end. */
   #turnPoints: string[] = []
-  #turnReply = ''
+  #turnDispatched = ''
 
   constructor(opts: ClaudeLLMOptions = {}) {
     super()
@@ -1608,6 +1608,7 @@ export class ClaudeLLM extends llm.LLM {
       this.recordLoop({ kind: 'prompt', text, origin, ...(truncated ? { truncated: true } : {}) }, sessionId)
       let points: string[] = []
       this.#turnPoints = []
+      this.#turnDispatched = ''
       if (origin === 'user_mic') {
         const asks = extractAsks(prompt)
         for (const ask of asks) this.recordLoop({ kind: 'ask', id: loopIds.ask(ask), text: ask, source: 'explicit', origin }, sessionId)
@@ -1617,7 +1618,6 @@ export class ClaudeLLM extends llm.LLM {
         this.#turnPoints = points.slice(0, POINTS_FILE_CAP)
           .filter((p) => !lowAsks.some((a) => a.includes(p.toLowerCase()) || p.toLowerCase().includes(a)))
         for (const p of this.#turnPoints) this.recordLoop({ kind: 'ask', id: loopIds.ask(p), text: p, source: 'inferred', origin }, sessionId)
-        this.#turnReply = ''
       }
       const checklist = points.length ? getPointsChecklist(points) : ''
       const sid = sessionId || this.#sessionId
@@ -1633,12 +1633,10 @@ export class ClaudeLLM extends llm.LLM {
   }
 
   /** Turn end (#455): close the points of this turn that the reply or its tool calls covered; the rest stay open. */
-  #closeTurnPoints(sessionId: string | null | undefined, result: unknown): void {
+  #closeTurnPoints(sessionId: string | null | undefined, reply: string): void {
     const pts = this.#turnPoints
     this.#turnPoints = []
-    if (!pts.length) return
-    const { addressed } = closeAddressedPoints(pts, `${this.#turnReply}\n${typeof result === 'string' ? result : ''}`)
-    for (const p of addressed) this.recordLoop({ kind: 'ask_addressed', id: loopIds.ask(p), origin: 'user_mic' }, sessionId)
+    for (const p of addressedPoints(pts, `${reply}\n${this.#turnDispatched}`)) this.recordLoop({ kind: 'ask_addressed', id: loopIds.ask(p), origin: 'user_mic' }, sessionId)
   }
 
   /** TodoWrite: diff the agent's list by content and record new items and status changes. */
@@ -2413,14 +2411,6 @@ export class ClaudeLLM extends llm.LLM {
           }
         }
 
-        // What this turn said and dispatched, to close its points at turn end (#455).
-        if (this.#turnPoints.length && msg.type === 'assistant' && Array.isArray(msg.message?.content)) {
-          for (const b of msg.message.content as any[]) {
-            if (b?.type === 'text' && typeof b.text === 'string') this.#turnReply += b.text + '\n'
-            else if (b?.type === 'tool_use') this.#turnReply += [b.input?.description, b.input?.prompt, b.input?.instruction].filter((x) => typeof x === 'string').join(' ') + '\n'
-          }
-        }
-
         // Checkpoint capture
         if (msg.type === 'user' && msg.uuid) {
           callbacks.onCheckpoint(msg.uuid)
@@ -2461,6 +2451,9 @@ export class ClaudeLLM extends llm.LLM {
                 console.log(`🔊 TTS say (${ttsChunk.length} chars): "${ttsChunk}"`)
                 callbacks.eventEmitter.emit('tts_say', { text: ttsChunk, messageId: turnMessageId, chunkIndex, speed: this.#currentTurnSpeed })
               }
+            } else if (block.type === 'tool_use' && this.#turnPoints.length) {
+              // What this turn dispatched, to close its points at turn end (#455).
+              this.#turnDispatched += [block.input?.description, block.input?.prompt, block.input?.instruction].filter((x) => typeof x === 'string').join(' ') + '\n'
             }
           }
         }
@@ -2468,10 +2461,10 @@ export class ClaudeLLM extends llm.LLM {
         // Result — marks end of a turn (but we keep consuming for next turn)
         if (msg.type === 'result') {
           logCacheUsage((msg as any).usage)  // per-turn cache reads/writes (main loop only)
-          this.#closeTurnPoints((msg as any).session_id, (msg as any).result)
           if (this.#turnsInFlight > 0) this.#turnsInFlight--
           const turnMessageId = this.#currentTurnMessageId
           const turnChunks = [...this.#currentTurnChunks]
+          this.#closeTurnPoints((msg as any).session_id, [...turnChunks, typeof msg.result === 'string' ? msg.result : ''].join('\n'))
           if (msg.result) {
             callbacks.eventEmitter.emit('assistant_result', { text: msg.result, messageId: turnMessageId })
           }

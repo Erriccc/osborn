@@ -11,7 +11,7 @@ const cwd = join(home, 'proj')
 mkdirSync(cwd, { recursive: true })
 const P = await import('../src/points.js')
 const L = await import('../src/loops-ledger.js')
-const { getPointsChecklist, POINTS_BLOCK_MAX_BYTES } = await import('../src/prompts.js')
+const { getPointsChecklist } = await import('../src/prompts.js')
 const { createClaudeLLM } = await import('../src/claude-llm.js')
 
 let pass = 0
@@ -63,17 +63,23 @@ t('caps: checklist 6, filing 4', () => {
     'The search box keeps stale text after submitting a query.',
     'Mobile footer overlaps the menu on narrow phones.',
   ].join(' ')
-  assert.equal(P.splitPoints(many).length, P.POINTS_CHECKLIST_CAP)
-  assert.equal(P.splitPoints(many, P.POINTS_FILE_CAP).length, 4)
+  assert.equal(P.splitPoints(many).length, 6)
+  assert.equal(P.POINTS_FILE_CAP, 4)
 })
 
-t('closeAddressedPoints: a reply covering two of four leaves exactly two open', () => {
+t('injected blocks are not the user\'s points: a session tail before a short reply yields nothing', () => {
+  const tail = ['<session_tail>', ...RAMBLE.split('. ').map((l, i) => `2026-11-01T00:00:0${i % 10}  Assistant: ${l}.`), '</session_tail>'].join('\n')
+  assert.deepEqual(P.splitPoints(`${tail}\n\nyes go ahead with that`), [])
+  assert.deepEqual(P.splitPoints(`<system-reminder>${RAMBLE}</system-reminder>\n\nok`), [])
+  assert.equal(P.splitPoints(`${tail}\n\n${RAMBLE}`).length, 5)
+})
+
+t('addressedPoints: a reply covering two of four leaves exactly two open', () => {
   const pts = P.splitPoints(RAMBLE).slice(0, 4)
   const reply = 'I will look at the blank login page and the session cookie after the redirect, and I am filing the nightly export job failure alerts for you.'
-  const r = P.closeAddressedPoints(pts, reply)
-  assert.equal(r.addressed.length, 2, JSON.stringify(r))
-  assert.equal(r.open.length, 2)
-  assert.deepEqual(P.closeAddressedPoints(pts, 'Sure, on it.').open.length, 4)
+  const r = P.addressedPoints(pts, reply)
+  assert.equal(r.length, 2, JSON.stringify(r))
+  assert.equal(P.addressedPoints(pts, 'Sure, on it.').length, 0)
 })
 
 t('foldLoops: ask_addressed closes, an unaddressed one is open and recapped; inferred is never fileable', () => {
@@ -117,7 +123,7 @@ t('the block stays under the byte cap and forged control/bidi text is neutralise
   const big = Array.from({ length: 6 }, (_, i) => `${i} ` + 'word '.repeat(60))
   for (const pts of [forged, big]) {
     const b = getPointsChecklist(pts)
-    assert.ok(Buffer.byteLength(b) <= POINTS_BLOCK_MAX_BYTES)
+    assert.ok(Buffer.byteLength(b) <= 1400)
     assert.ok(!/[\u0000-\u0008\u000b-\u001f\u007f-\u009f​-‏‪-‮⁦-⁩]/.test(b.replace(/\n/g, ' ')))
   }
   assert.ok(!/sk-ant-api03-a{20}/.test(getPointsChecklist(forged)))
