@@ -189,17 +189,4 @@ assert.equal(isExpired(0, 60_000), false); assert.equal(isExpired(0, 60_001), tr
   assert.equal(expireDecision(null, 60_100), 'keep', 'no context: no-op')
   assert.equal(expireDecision(heard(59_500, 30_000), 60_100), 'keep', 'a live block: nothing expired')
 }
-// #581: a first-chunk block held at the gate is buffered, replays only when no new turn took it
-{
-  const held = appendBlock(null, 'reply to chunk one', 'T1', 1_000) as any
-  assert.deepEqual(joinBlocks(held.suppressedBlocks), 'reply to chunk one')
-  // the second chunk's turn consumes the context: the block is no longer replayed by the scheduler
-  const sch = { li: held as any }
-  assert.equal(sch.li === held, true)
-  sch.li = null
-  assert.equal(sch.li === held, false, 'sameInterruption is false once consumed: replay skips')
-  // the first chunk was all there was: the block is still live and speaks
-  const p = partitionForReplay(held.suppressedBlocks, 4_000, () => false)
-  assert.deepEqual(p.speak.map((b) => b.text), ['reply to chunk one'])
-}
 console.log('stale-turn: ok')

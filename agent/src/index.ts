@@ -4208,7 +4208,7 @@ async function main() {
       sameInterruption: lastInterruption === captured,
       hasText: !!lastInterruption?.suppressedBlocks.length,
       agentSpeaking: activeSpeechHandles.size > 0 || agentState === 'speaking',
-      gateTriaging: noiseGate.triaging || speechTimeline.awaitingContinuation(),
+      gateTriaging: noiseGate.triaging || speechTimeline.shouldHold(),  // or the user's next chunk will take the text (#581)
     }),
     speak: () => speakBuffered('user quiet, no new turn'),
     expire: () => {
@@ -5289,9 +5289,8 @@ async function main() {
       // pre-interrupt overlap, but at the *output* side. The suppressed text gets
       // folded into lastInterruption so the next chat() to Claude carries it as
       // "you wrote this but the user did not hear it — re-articulate if relevant."
-      // Also held: the user spoke again after this turn was committed (a mid-thought pause, #581); the next chunk's turn carries it, else the replay speaks it.
-      speechTimeline.onAgentBlock()
-      if (userState === 'speaking' || speechTimeline.shouldHoldBlock()) {
+      // With OSBORN_SPEECH_TIMELINE_HOLD, also held when the user spoke again after this turn was committed (#581): the next chunk's turn carries it, else the replay speaks it.
+      if (userState === 'speaking' || speechTimeline.shouldHold()) {
         appendSuppressedText(data.text, data.messageId)
         if (userState !== 'speaking') replayTimer.arm()
         return
@@ -6266,7 +6265,6 @@ async function main() {
       sess.on('user_state_changed' as any, (ev: any) => {
         const prev = userState
         userState = ev.newState
-        speechTimeline.onUserState(ev.newState === 'speaking')
         console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})`)
 
         // Native duck: drop agent TTS to DUCK_LEVEL while the user talks over it;
@@ -6359,7 +6357,7 @@ async function main() {
         const words = t.trim().split(/\s+/).filter(Boolean).length
         const tag = isFinal ? '📝 FINAL' : '✏️  interim'
         markTranscript(isFinal)
-        speechTimeline.onTranscript(t, isFinal)
+        speechTimeline.onTranscript(words)
         console.log(`${tag} transcript (${words}w, ${t.length}c) [${new Date().toISOString()}]: "${t.slice(0, 120)}${t.length > 120 ? '…' : ''}"`)
       })
 
@@ -8062,21 +8060,19 @@ async function main() {
     return replies
   }
 
+  /** Spoken commands handled before the model turn: the phone actions, then "shh" (#587, any room; the gate's 'state' event tells the frontend). */
+  function takeVoiceCommand(text: string): boolean {
+    if (takePhoneVoiceAction(text)) return true
+    if (!isShhCue(text)) return false
+    console.log('🤫 [shh] side-conversation filter on, no reply')
+    noiseGate.setEnabled(true, 'ui')
+    return true
+  }
+
   // Phone voice actions (#367): on a call, a short command ("stop that", "what
   // are you doing?", "switch to my billing project", a yes/no to a pending
   // approval) runs the app's own action instead of a model turn, and the result
   // is spoken. The model never answers an approval.
-  /** Spoken commands handled before the model turn: "shh" (#587, any room), then the phone actions. */
-  function takeVoiceCommand(text: string): boolean {
-    if (isShhCue(text)) {
-      console.log('🤫 [shh] side-conversation filter on, no reply')
-      noiseGate.setEnabled(true, 'ui')
-      void sendToFrontend({ type: 'noise_cancel_state', enabled: noiseGate.enabled, reason: noiseGate.reason })
-      return true
-    }
-    return takePhoneVoiceAction(text)
-  }
-
   function takePhoneVoiceAction(text: string): boolean {
     if (!inPhoneRoom()) return false
     // A yes/no counts only for the request the caller heard read out.

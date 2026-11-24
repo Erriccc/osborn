@@ -1760,6 +1760,12 @@ export function getNotificationInjection(text: string): string {
   return `[NOTIFICATION] ${text}`
 }
 
+/** Prepended to a turn the user started after a pause mid-thought (#581, OSBORN_SPEECH_TIMELINE_HOLD). */
+export function getContinuationNote(continuedAfterMs: number): string {
+  const s = Math.max(1, Math.round(continuedAfterMs / 1000))
+  return `[The user kept talking about ${s}s after your previous turn started: this message continues that thought. Answer the whole thing; anything you said in reply to the earlier part may not have been heard.]`
+}
+
 /** What the hub hears when a dispatched spoke goes idle (summary bounded; the spoke's session holds the rest). */
 export function getSpokeReport(r: { project: string; sessionId: string; status: 'done' | 'failed' | 'stopped' | 'timed_out'; summary: string; offer?: { project: string; instruction: string } }): string {
   const summary = r.summary.trim().slice(0, 1500) || '(the spoke gave no final message)'

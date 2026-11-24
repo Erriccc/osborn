@@ -1,98 +1,52 @@
 /**
- * Speaking timeline (#581). Pure state fed from the existing session events:
- * who is talking, what the user said last, when the last turn was committed,
- * and whether the user started talking again after that commit (a mid-thought
- * pause: the first chunk became a turn, the rest is still coming).
- *
- * Reads are synchronous and cheap; nothing here waits, so a single-chunk turn
- * costs nothing extra.
+ * Speaking timeline (#581). Pure state fed from the session events: when the
+ * newest user turn was committed and whether the user started talking again
+ * after it (a mid-thought pause: the first chunk became a turn, the rest is
+ * still coming). It only records; holding reply blocks and the prompt note act
+ * on it only with OSBORN_SPEECH_TIMELINE_HOLD on (default off). Nothing here
+ * waits, and no endpointing value changes.
  */
+import { envFlagOn } from './env-keys.js'
 
 /** Post-commit speech younger than this still counts as "the thought continues". */
 export const CONTINUATION_WINDOW_MS = 6_000
-/** A fragment must have at least this many words to count as speech (echo and coughs do not). */
-const MIN_WORDS = 2
-/** The ramble hold applies only past this much continuous talking. */
-export const RAMBLE_MIN_MS = 20_000
-const RAMBLE_MAX_HOLD_MS = 3_000
+/** A transcript needs this many words to count as speech: echo and noise show up as 1-2 word fragments (index.ts user_input_transcribed). */
+const MIN_WORDS = 3
 
-const wordCount = (t: string): number => t.trim().split(/\s+/).filter(Boolean).length
+/** OSBORN_SPEECH_TIMELINE_HOLD=on|1|true: hold reply blocks while the user continues, and note it in the next turn. */
+export const speechTimelineHold = (env: NodeJS.ProcessEnv = process.env): boolean => envFlagOn(env.OSBORN_SPEECH_TIMELINE_HOLD)
 
 export class SpeechTimeline {
-  userSpeaking = false
-  userSpeakingSince: number | null = null
-  userLastSpokeAt: number | null = null
-  userLastWords = ''
-  /** Length of the user's most recent stretch of speech. */
-  lastTalkedMs = 0
-  agentSpeaking = false
-  lastAgentBlockAt: number | null = null
-  lastTurnCommitAt: number | null = null
-  /** The user said 2+ words after the newest commit. */
-  #spokeAfterCommit = false
+  #agentSpeaking = false
+  #lastTurnCommitAt: number | null = null
   #spokeAfterAt: number | null = null
 
-  onUserState(speaking: boolean, now = Date.now()): void {
-    if (speaking && !this.userSpeaking) this.userSpeakingSince = now
-    if (!speaking && this.userSpeaking) { this.userLastSpokeAt = now; this.lastTalkedMs = this.userSpeakingSince !== null ? now - this.userSpeakingSince : 0 }
-    this.userSpeaking = speaking
+  onAgentState(speaking: boolean): void { this.#agentSpeaking = speaking }
+
+  /** A user transcript (interim or final) of `words` words. Not counted under 3 words or while the agent speaks (its own echo). */
+  onTranscript(words: number, now = Date.now()): void {
+    if (this.#agentSpeaking || words < MIN_WORDS) return
+    if (this.#lastTurnCommitAt !== null && now > this.#lastTurnCommitAt) this.#spokeAfterAt = now
   }
 
-  onTranscript(text: string, isFinal: boolean, now = Date.now()): void {
-    if (wordCount(text) < MIN_WORDS) return
-    this.userLastSpokeAt = now
-    if (isFinal) this.userLastWords = text.trim()
-    if (this.lastTurnCommitAt !== null && now > this.lastTurnCommitAt) { this.#spokeAfterCommit = true; this.#spokeAfterAt = now }
-  }
-
-  onAgentState(speaking: boolean): void { this.agentSpeaking = speaking }
-  onAgentBlock(now = Date.now()): void { this.lastAgentBlockAt = now }
-
-  /**
-   * A user turn reached the model. Returns how long ago the user kept talking
-   * after the PREVIOUS commit (ms), or null; the next prompt carries it as a note.
-   */
+  /** A user turn reached the agent. Returns how long after the PREVIOUS commit the user kept talking, or null. */
   onTurnCommit(now = Date.now()): { continuedAfterMs: number } | null {
-    const prev = this.lastTurnCommitAt !== null && this.#spokeAfterCommit
-      ? { continuedAfterMs: Math.max(0, (this.#spokeAfterAt ?? now) - this.lastTurnCommitAt) } : null
-    this.lastTurnCommitAt = now
-    this.#spokeAfterCommit = false
+    const prev = this.#lastTurnCommitAt !== null && this.#spokeAfterAt !== null
+      ? { continuedAfterMs: this.#spokeAfterAt - this.#lastTurnCommitAt } : null
+    this.#lastTurnCommitAt = now
     this.#spokeAfterAt = null
     return prev
   }
 
-  /** The user spoke after the newest commit and has not been silent for long: that commit is a fragment. */
+  /** The user spoke after the newest commit, within the window: that turn was a fragment. */
   awaitingContinuation(now = Date.now()): boolean {
-    return this.#spokeAfterCommit && this.#spokeAfterAt !== null && now - this.#spokeAfterAt < CONTINUATION_WINDOW_MS
+    return this.#spokeAfterAt !== null && now - this.#spokeAfterAt < CONTINUATION_WINDOW_MS
   }
 
-  /** Hold a reply block instead of speaking it: the user is talking, or kept talking after this turn was committed. */
-  shouldHoldBlock(now = Date.now()): boolean {
-    return this.userSpeaking || this.awaitingContinuation(now)
+  /** Hold a reply block (and its replay) for the continuation: only with the flag on. */
+  shouldHold(now = Date.now(), on = speechTimelineHold()): boolean {
+    return on && this.awaitingContinuation(now)
   }
-
-  /** How long the user has been talking without a break (0 when quiet). */
-  talkedForMs(now = Date.now()): number {
-    return this.userSpeaking && this.userSpeakingSince !== null ? now - this.userSpeakingSince : 0
-  }
-
-  reset(): void { Object.assign(this, new SpeechTimeline()) }
 }
 
 export const speechTimeline = new SpeechTimeline()
-
-/** The prompt note for a turn the user kept talking after; empty when they did not. */
-export function continuationNote(c: { continuedAfterMs: number } | null): string {
-  if (!c) return ''
-  const s = Math.max(1, Math.round(c.continuedAfterMs / 1000))
-  return `[The user kept talking about ${s}s after your previous turn started: this message continues that thought. Answer the whole thing; anything you said in reply to the earlier part may not have been heard.]`
-}
-
-/** Ramble hold (#581): default off; never changes an endpointing value. */
-export const rambleHoldEnabled = (): boolean => process.env.OSBORN_RAMBLE_HOLD === 'on'
-
-/** Wait for a follow-on after a long monologue: 0 for anything under 20 s, else talkedFor/10 capped at 3 s. */
-export function rambleHoldMs(talkedForMs: number, enabled = rambleHoldEnabled()): number {
-  if (!enabled || talkedForMs < RAMBLE_MIN_MS) return 0
-  return Math.min(Math.round(talkedForMs / 10), RAMBLE_MAX_HOLD_MS)
-}

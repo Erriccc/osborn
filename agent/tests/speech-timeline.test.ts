@@ -1,45 +1,114 @@
+// Run: npx tsx agent/tests/speech-timeline.test.ts
 import assert from 'node:assert/strict'
-import { SpeechTimeline, continuationNote, rambleHoldMs, CONTINUATION_WINDOW_MS } from '../src/speech-timeline.js'
-import { isShhCue } from '../src/noise-gate.js'
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+const home = mkdtempSync(join(tmpdir(), 'osb-speech-timeline-'))
+process.env.HOME = home
+process.env.CLAUDE_CONFIG_DIR = join(home, '.claude')
+delete process.env.OSBORN_SPEECH_TIMELINE_HOLD
+
+const { SpeechTimeline, speechTimeline, speechTimelineHold, CONTINUATION_WINDOW_MS } = await import('../src/speech-timeline.js')
+const { isShhCue } = await import('../src/noise-gate.js')
+const { getContinuationNote } = await import('../src/prompts.js')
+const { ReplayScheduler, takePending } = await import('../src/stale-turn.js')
+const { PipelineDirectLLM } = await import('../src/pipeline-direct-llm.js')
+const { llm } = await import('@livekit/agents')
 
 // #587: whole utterance or first word only
-for (const t of ['shh', 'Shh.', 'shhh', 'Shhhh!', 'shush', 'Shush.', 'shh, hold on', 'shush the dog']) assert.equal(isShhCue(t), true, t)
-for (const t of ['', 'sh', 'should we ship', 'she said shh', 'can you shh', 'show me', 'shell', 'hush', 'ssh into the box', 'ok shh']) assert.equal(isShhCue(t), false, t)
+for (const t of ['shh', 'Shh.', 'shhh', 'Shhhh!', 'shush', 'Shush.', 'shh, hold on', 'shush the dog', 'shhh I think']) assert.equal(isShhCue(t), true, t)
+for (const t of ['', 'sh', 'she', 'she said shh', 'shell', 'show me', 'should we ship', 'hush', 'ssh into the box', 'ok shh', 'can you shh', 'shoo', 's h h']) assert.equal(isShhCue(t), false, t)
 
-// #581 scripted two-chunk scenario: chunk 1, 2 s pause, chunk 2
+// The flag: off unless on/1/true
+assert.equal(speechTimelineHold({}), false)
+for (const v of ['off', '0', 'false', 'yes', '']) assert.equal(speechTimelineHold({ OSBORN_SPEECH_TIMELINE_HOLD: v } as any), false, v)
+for (const v of ['on', '1', 'TRUE']) assert.equal(speechTimelineHold({ OSBORN_SPEECH_TIMELINE_HOLD: v } as any), true, v)
+
+// #581 two chunks: chunk 1 committed, a pause, then chunk 2
 {
   const tl = new SpeechTimeline()
-  tl.onUserState(true, 0); tl.onTranscript('I want to refactor the', false, 500); tl.onTranscript('I want to refactor the auth module', true, 2000)
-  tl.onUserState(false, 2100)
   assert.equal(tl.onTurnCommit(3000), null, 'first commit: nothing continued')
-  assert.equal(tl.shouldHoldBlock(3500), false, 'single chunk: the reply plays, no added hold')
-  // pause, then the user resumes
-  tl.onUserState(true, 5000); tl.onTranscript('and also the session', false, 5300)
-  assert.equal(tl.shouldHoldBlock(5400), true, 'reply to chunk 1 held while chunk 2 is spoken')
-  tl.onUserState(false, 6500)
-  assert.equal(tl.shouldHoldBlock(6600), true, 'still held between chunk 2 speech and its commit')
-  assert.equal(tl.awaitingContinuation(6600), true)
-  assert.equal(tl.shouldHoldBlock(5300 + CONTINUATION_WINDOW_MS + 1), false, 'abandoned fragment: hold expires')
+  assert.equal(tl.shouldHold(3500, true), false, 'single chunk: the reply plays')
+  tl.onTranscript(4, 5300)
+  assert.equal(tl.awaitingContinuation(5400), true, 'recorded passively')
+  assert.equal(tl.shouldHold(5400), false, 'flag off (default): never held')
+  assert.equal(tl.shouldHold(5400, true), true, 'flag on: reply to chunk 1 held')
+  assert.equal(tl.shouldHold(5300 + CONTINUATION_WINDOW_MS, true), false, 'abandoned fragment: the hold expires')
   const c = tl.onTurnCommit(7000)
   assert.deepEqual(c, { continuedAfterMs: 2300 })
-  assert.match(continuationNote(c), /kept talking about 2s after/)
-  assert.equal(tl.shouldHoldBlock(7100), false, 'the new turn is committed: its reply plays')
+  assert.match(getContinuationNote(c!.continuedAfterMs), /kept talking about 2s after/)
+  assert.equal(tl.shouldHold(7100, true), false, 'the new turn is committed: its reply plays')
   assert.equal(tl.onTurnCommit(9000), null, 'no speech between commits: no note')
 }
-// echo / one-word noise does not count
+// echo and noise do not count: 1-2 words, or anything while the agent speaks
 {
   const tl = new SpeechTimeline()
-  tl.onTurnCommit(0); tl.onTranscript('uh', false, 100)
-  assert.equal(tl.shouldHoldBlock(200), false)
-  assert.equal(continuationNote(null), '')
+  tl.onTurnCommit(0); tl.onTranscript(2, 100)
+  assert.equal(tl.awaitingContinuation(200), false, 'two words')
+  tl.onAgentState(true); tl.onTranscript(6, 300)
+  assert.equal(tl.awaitingContinuation(400), false, 'while the agent speaks')
+  tl.onAgentState(false); tl.onTranscript(6, 500)
+  assert.equal(tl.awaitingContinuation(600), true)
 }
-// ramble hold: off by default, under 20 s zero, capped at 3 s, never touches anything else
-assert.equal(rambleHoldMs(30_000), 0, 'flag off by default')
-assert.equal(rambleHoldMs(5_000, true), 0)
-assert.equal(rambleHoldMs(25_000, true), 2500)
-assert.equal(rambleHoldMs(90_000, true), 3000)
+
+// A held block is never lost when the user never speaks again: the replay waits out the window, then speaks
 {
-  const tl = new SpeechTimeline(); tl.onUserState(true, 0); tl.onUserState(false, 30_000)
-  assert.equal(tl.lastTalkedMs, 30_000)
+  const realST = globalThis.setTimeout, realCT = globalThis.clearTimeout
+  let now = 0, seq = 0
+  const timers = new Map<number, { at: number; f: () => void }>()
+  ;(globalThis as any).setTimeout = (f: () => void, ms: number) => { timers.set(++seq, { at: now + ms, f }); return seq }
+  ;(globalThis as any).clearTimeout = (id: number) => { timers.delete(id) }
+  const advance = (ms: number) => {
+    const end = now + ms
+    for (;;) {
+      const next = [...timers.entries()].filter(([, t]) => t.at <= end).sort((a, b) => a[1].at - b[1].at)[0]
+      if (!next) break
+      timers.delete(next[0]); now = next[1].at; next[1].f()
+    }
+    now = end
+  }
+  try {
+    for (const on of [false, true]) {
+      const tl = new SpeechTimeline()
+      tl.onTurnCommit(now); tl.onTranscript(4, now + 500)
+      const st = { li: { suppressedBlocks: [{ text: 'reply to chunk one', at: now + 1000 }], timestamp: now + 1000 } as any }
+      const log: string[] = []
+      const start = now
+      const sch = new ReplayScheduler({
+        current: () => st.li, userListening: () => true,
+        inputs: (c) => ({ hasSession: true, sameInterruption: st.li === c, hasText: !!st.li?.suppressedBlocks.length, agentSpeaking: false, gateTriaging: tl.shouldHold(now, on) }),
+        speak: () => { log.push(`speak@${now - start}`); st.li = takePending(st.li).rest }, expire: () => log.push('expire'),
+        log: (m) => log.push(m), now: () => now,
+      })
+      advance(1000); sch.arm(); advance(20_000)
+      const spoke = log.find((m) => m.startsWith('speak@'))
+      assert.ok(spoke, `${on}: ${JSON.stringify(log)}`)
+      if (!on) assert.equal(spoke, 'speak@2200', 'flag off: replay timing as on main')
+      else assert.ok(Number(spoke.slice(6)) >= 500 + CONTINUATION_WINDOW_MS, `flag on: waits out the window (${spoke})`)
+    }
+  } finally { globalThis.setTimeout = realST; globalThis.clearTimeout = realCT }
+}
+
+// Through PipelineDirectLLM.chat: the note reaches the model only with the flag on; off, the text is exactly the user's
+{
+  const seen: string[] = []
+  const inner: any = new Proxy({}, { get: (_t, k) => k === 'chat' ? ({ chatCtx }: any) => { const m = chatCtx.items.at(-1); seen.push(m.content.join('\n')); return {} } : k === 'sessionId' ? 'aaaaaaaa-0000-4000-8000-000000000000' : () => undefined })
+  const pd: any = new PipelineDirectLLM({ workingDirectory: home, voiceMode: 'direct', skipTTSQueue: true })
+  pd.swapInner(inner)
+  const say = (text: string) => { const c = new llm.ChatContext(); c.addMessage({ role: 'user', content: text }); pd.chat({ chatCtx: c }) }
+  for (const on of [false, true]) {
+    if (on) process.env.OSBORN_SPEECH_TIMELINE_HOLD = 'on'; else delete process.env.OSBORN_SPEECH_TIMELINE_HOLD
+    seen.length = 0
+    say('I want to refactor the auth module')
+    speechTimeline.onTranscript(4, Date.now() + 1)
+    await new Promise((r) => setTimeout(r, 5))
+    say('and also the session store')
+    assert.equal(seen[0], 'I want to refactor the auth module')
+    if (on) assert.match(seen[1], /^\[The user kept talking about 1s after your previous turn started[^\n]*\n\nand also the session store$/)
+    else assert.equal(seen[1], 'and also the session store', 'flag off: nothing added')
+  }
+  delete process.env.OSBORN_SPEECH_TIMELINE_HOLD
 }
 console.log('speech-timeline: ok')
+process.exit(0)

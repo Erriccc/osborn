@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getSidecarPath } from './session-store.js'
+import { envFlagOn } from './env-keys.js'
 import { appendJsonlLine, readJsonlLines } from './jsonl-sidecar.js'
 import { claudeDir } from './content/lens-paths.js'
 import { clip } from './content/lens-ingest.js'
@@ -48,7 +49,7 @@ export const WORK_SURFACE_WINDOW_MS = 20 * 60 * 1000
 const WORK_NOTICE_GAP_MS = 5 * 60 * 1000
 const WORK_NOTICE_PER_HOUR = 3
 /** OSBORN_WORK_LEDGER=on|1|true turns delegation tracking on; default off (foreground session only, see `recordWork`). */
-export const workLedgerEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => /^(on|1|true)$/i.test(String(env.OSBORN_WORK_LEDGER ?? '').trim())
+export const workLedgerEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => envFlagOn(env.OSBORN_WORK_LEDGER)
 
 export type LoopOrigin = 'user_mic' | 'meeting' | 'phone' | 'tool' | 'system'
 export type LoopSource = 'explicit' | 'inferred'

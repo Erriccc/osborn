@@ -113,6 +113,9 @@ export const USER_SECRET_KEYS: string[] = [
   'RECALL_REGION',
 ]
 
+/** An off-by-default feature flag: on only for on, 1 or true (any case). */
+export const envFlagOn = (value: string | undefined): boolean => /^(on|1|true)$/i.test(String(value ?? '').trim())
+
 /** True if `key` is a user-manageable secret (allowlisted for /secrets writes). */
 export function isUserSecretKey(key: string): boolean {
   return USER_SECRET_KEYS.includes(key)
