@@ -116,6 +116,9 @@ export const USER_SECRET_KEYS: string[] = [
 /** An off-by-default feature flag: on only for on, 1 or true (any case). */
 export const envFlagOn = (value: string | undefined): boolean => /^(on|1|true)$/i.test(String(value ?? '').trim())
 
+/** An on-by-default feature flag: off only for off, 0 or false (any case). */
+export const envFlagUnlessOff = (value: string | undefined): boolean => !/^(off|0|false)$/i.test(String(value ?? '').trim())
+
 /** True if `key` is a user-manageable secret (allowlisted for /secrets writes). */
 export function isUserSecretKey(key: string): boolean {
   return USER_SECRET_KEYS.includes(key)

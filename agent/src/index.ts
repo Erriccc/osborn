@@ -5289,7 +5289,7 @@ async function main() {
       // pre-interrupt overlap, but at the *output* side. The suppressed text gets
       // folded into lastInterruption so the next chat() to Claude carries it as
       // "you wrote this but the user did not hear it — re-articulate if relevant."
-      // With OSBORN_SPEECH_TIMELINE_HOLD, also held when the user spoke again after this turn was committed (#581): the next chunk's turn carries it, else the replay speaks it.
+      // Unless OSBORN_SPEECH_TIMELINE_HOLD is off, also held when the user spoke again after this turn was committed (#581): the next chunk's turn carries it, else the replay speaks it.
       if (userState === 'speaking' || speechTimeline.shouldHold()) {
         appendSuppressedText(data.text, data.messageId)
         if (userState !== 'speaking') replayTimer.arm()

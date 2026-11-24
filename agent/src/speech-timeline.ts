@@ -3,18 +3,18 @@
  * newest user turn was committed and whether the user started talking again
  * after it (a mid-thought pause: the first chunk became a turn, the rest is
  * still coming). It only records; holding reply blocks and the prompt note act
- * on it only with OSBORN_SPEECH_TIMELINE_HOLD on (default off). Nothing here
+ * on it only unless OSBORN_SPEECH_TIMELINE_HOLD is off (default on). Nothing here
  * waits, and no endpointing value changes.
  */
-import { envFlagOn } from './env-keys.js'
+import { envFlagUnlessOff } from './env-keys.js'
 
 /** Post-commit speech younger than this still counts as "the thought continues". */
 export const CONTINUATION_WINDOW_MS = 6_000
 /** A transcript needs this many words to count as speech: echo and noise show up as 1-2 word fragments (index.ts user_input_transcribed). */
 const MIN_WORDS = 3
 
-/** OSBORN_SPEECH_TIMELINE_HOLD=on|1|true: hold reply blocks while the user continues, and note it in the next turn. */
-export const speechTimelineHold = (env: NodeJS.ProcessEnv = process.env): boolean => envFlagOn(env.OSBORN_SPEECH_TIMELINE_HOLD)
+/** On unless OSBORN_SPEECH_TIMELINE_HOLD=off|0|false (kill switch): hold reply blocks while the user continues, and note it in the next turn. */
+export const speechTimelineHold = (env: NodeJS.ProcessEnv = process.env): boolean => envFlagUnlessOff(env.OSBORN_SPEECH_TIMELINE_HOLD)
 
 export class SpeechTimeline {
   #agentSpeaking = false

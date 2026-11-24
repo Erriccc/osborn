@@ -20,10 +20,10 @@ const { llm } = await import('@livekit/agents')
 for (const t of ['shh', 'Shh.', 'shhh', 'Shhhh!', 'shush', 'Shush.', 'shh, hold on', 'shush the dog', 'shhh I think']) assert.equal(isShhCue(t), true, t)
 for (const t of ['', 'sh', 'she', 'she said shh', 'shell', 'show me', 'should we ship', 'hush', 'ssh into the box', 'ok shh', 'can you shh', 'shoo', 's h h']) assert.equal(isShhCue(t), false, t)
 
-// The flag: off unless on/1/true
-assert.equal(speechTimelineHold({}), false)
-for (const v of ['off', '0', 'false', 'yes', '']) assert.equal(speechTimelineHold({ OSBORN_SPEECH_TIMELINE_HOLD: v } as any), false, v)
-for (const v of ['on', '1', 'TRUE']) assert.equal(speechTimelineHold({ OSBORN_SPEECH_TIMELINE_HOLD: v } as any), true, v)
+// The flag: on by default, off only for off/0/false
+assert.equal(speechTimelineHold({}), true)
+for (const v of ['off', '0', 'FALSE']) assert.equal(speechTimelineHold({ OSBORN_SPEECH_TIMELINE_HOLD: v } as any), false, v)
+for (const v of ['on', '1', 'TRUE', 'yes', '']) assert.equal(speechTimelineHold({ OSBORN_SPEECH_TIMELINE_HOLD: v } as any), true, v)
 
 // #581 two chunks: chunk 1 committed, a pause, then chunk 2
 {
@@ -32,7 +32,8 @@ for (const v of ['on', '1', 'TRUE']) assert.equal(speechTimelineHold({ OSBORN_SP
   assert.equal(tl.shouldHold(3500, true), false, 'single chunk: the reply plays')
   tl.onTranscript(4, 5300)
   assert.equal(tl.awaitingContinuation(5400), true, 'recorded passively')
-  assert.equal(tl.shouldHold(5400), false, 'flag off (default): never held')
+  assert.equal(tl.shouldHold(5400), true, 'default: held')
+  assert.equal(tl.shouldHold(5400, false), false, 'flag explicitly off: never held')
   assert.equal(tl.shouldHold(5400, true), true, 'flag on: reply to chunk 1 held')
   assert.equal(tl.shouldHold(5300 + CONTINUATION_WINDOW_MS, true), false, 'abandoned fragment: the hold expires')
   const c = tl.onTurnCommit(7000)
@@ -109,7 +110,7 @@ for (const v of ['on', '1', 'TRUE']) assert.equal(speechTimelineHold({ OSBORN_SP
   pd.swapInner(inner)
   const say = (text: string) => { const c = new llm.ChatContext(); c.addMessage({ role: 'user', content: text }); pd.chat({ chatCtx: c }) }
   for (const on of [false, true]) {
-    if (on) process.env.OSBORN_SPEECH_TIMELINE_HOLD = 'on'; else delete process.env.OSBORN_SPEECH_TIMELINE_HOLD
+    if (on) delete process.env.OSBORN_SPEECH_TIMELINE_HOLD; else process.env.OSBORN_SPEECH_TIMELINE_HOLD = 'off'
     seen.length = 0
     say('I want to refactor the auth module')
     speechTimeline.onTranscript(4, Date.now() + 1)
@@ -119,6 +120,8 @@ for (const v of ['on', '1', 'TRUE']) assert.equal(speechTimelineHold({ OSBORN_SP
     if (on) assert.match(seen[1], /^\[The user kept talking about 1s after your previous turn started[^\n]*\n\nand also the session store$/)
     else assert.equal(seen[1], 'and also the session store', 'flag off: nothing added')
   }
+  process.env.OSBORN_SPEECH_TIMELINE_HOLD = 'on'
+  say('x y z'); assert.equal(seen.at(-1), 'x y z', 'explicit on behaves as on (no pending speech here)')
   delete process.env.OSBORN_SPEECH_TIMELINE_HOLD
 }
 console.log('speech-timeline: ok')
