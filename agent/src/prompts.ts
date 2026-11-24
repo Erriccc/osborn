@@ -1760,10 +1760,10 @@ export function getNotificationInjection(text: string): string {
   return `[NOTIFICATION] ${text}`
 }
 
-/** Prepended to a turn the user started after a pause mid-thought (#581, OSBORN_SPEECH_TIMELINE_HOLD). */
+/** Prepended to a turn the user started after a pause mid-thought (#581, OSBORN_SPEECH_TIMELINE_HOLD); a <system-reminder> so history, titles and echoes strip it (lens-strip). */
 export function getContinuationNote(continuedAfterMs: number): string {
   const s = Math.max(1, Math.round(continuedAfterMs / 1000))
-  return `[The user kept talking about ${s}s after your previous turn started: this message continues that thought. Answer the whole thing; anything you said in reply to the earlier part may not have been heard.]`
+  return `<system-reminder>\nThe user kept talking about ${s}s after your previous turn started: this message continues that thought. Answer the whole thing; anything you said in reply to the earlier part may not have been heard.\n</system-reminder>`
 }
 
 /** What the hub hears when a dispatched spoke goes idle (summary bounded; the spoke's session holds the rest). */

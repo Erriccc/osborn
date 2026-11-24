@@ -12,6 +12,7 @@ delete process.env.OSBORN_SPEECH_TIMELINE_HOLD
 const { SpeechTimeline, speechTimeline, speechTimelineHold, CONTINUATION_WINDOW_MS } = await import('../src/speech-timeline.js')
 const { isShhCue } = await import('../src/noise-gate.js')
 const { getContinuationNote } = await import('../src/prompts.js')
+const { cleanTurnText } = await import('../src/content/transcript-sanitizer.js')
 const { ReplayScheduler, takePending } = await import('../src/stale-turn.js')
 const { PipelineDirectLLM } = await import('../src/pipeline-direct-llm.js')
 const { llm } = await import('@livekit/agents')
@@ -62,6 +63,11 @@ for (const v of ['on', '1', 'TRUE', 'yes', '']) assert.equal(speechTimelineHold(
   assert.equal(tl.onTurnCommit(CONTINUATION_WINDOW_MS + 2000), null, 'speech after the window: no note')
   tl.onAgentState(true); tl.onAgentState(false); tl.onTranscript(5, CONTINUATION_WINDOW_MS + 3000)
   assert.equal(tl.onTurnCommit(CONTINUATION_WINDOW_MS + 4000), null, 'speech after the agent replied: no note')
+  // speech that never became a turn (the noise gate dropped it), then the held reply played: the next turn is no continuation
+  tl.onTranscript(5, CONTINUATION_WINDOW_MS + 5000)
+  assert.equal(tl.awaitingContinuation(CONTINUATION_WINDOW_MS + 5100), true)
+  tl.onAgentState(true); tl.onAgentState(false)
+  assert.equal(tl.onTurnCommit(CONTINUATION_WINDOW_MS + 90_000), null, 'the agent spoke after it: no note')
 }
 
 // A held block is never lost when the user never speaks again: the replay waits out the window, then speaks
@@ -117,7 +123,11 @@ for (const v of ['on', '1', 'TRUE', 'yes', '']) assert.equal(speechTimelineHold(
     await new Promise((r) => setTimeout(r, 5))
     say('and also the session store')
     assert.equal(seen[0], 'I want to refactor the auth module')
-    if (on) assert.match(seen[1], /^\[The user kept talking about 1s after your previous turn started[^\n]*\n\nand also the session store$/)
+    if (on) {
+      assert.match(seen[1], /^<system-reminder>\nThe user kept talking about 1s after your previous turn started[^\n]*\n<\/system-reminder>\n\nand also the session store$/)
+      assert.equal(cleanTurnText(seen[1]), 'and also the session store', 'history, titles and echoes strip the note')
+      assert.equal(cleanTurnText(`${getContinuationNote(2000)}\n\n[CONTEXT] x\n\nWhat the user is saying now:\n"and more"\n\nText you produced that the user did NOT hear:\n"y"`), 'and more', 'the [CONTEXT] wrapper under it still unwraps')
+    }
     else assert.equal(seen[1], 'and also the session store', 'flag off: nothing added')
   }
   process.env.OSBORN_SPEECH_TIMELINE_HOLD = 'on'

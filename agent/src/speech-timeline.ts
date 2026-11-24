@@ -24,7 +24,9 @@ export class SpeechTimeline {
 
   onAgentState(speaking: boolean): void {
     this.#agentSpeaking = speaking
-    if (speaking) this.#answered = true
+    if (!speaking) return
+    this.#answered = true
+    this.#spokeAfterAt = null  // the agent spoke after that speech (a dropped side remark, an abandoned fragment): the next turn is not its continuation
   }
 
   /**
