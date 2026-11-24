@@ -370,10 +370,10 @@ export function pendingDeliveries(records: LoopRecord[], now: number, opts: { ma
     .slice(0, opts.max ?? 2)
 }
 
-/** Ids of open work rows older than the TTL, to close with `work_dropped`. A row that never reports cannot gate anything. */
+/** Ids of open work rows past the TTL (from the result, else from opening), to close with `work_dropped`. */
 export function expiredWork(records: LoopRecord[], now: number, ttlMs = WORK_TTL_MS): string[] {
   return [...foldLoops(records).values()]
-    .filter((i) => i.open && !!i.state && now - Date.parse(i.at) > ttlMs)
+    .filter((i) => i.open && !!i.state && now - Date.parse(i.resultAt ?? i.at) > ttlMs)
     .map((i) => i.id)
 }
 
@@ -456,8 +456,8 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
     for (const { sessionId, path } of ledgersIn(projectOsbDir(workingDir))) {
       const folded = foldLoops(readLoopRecordsAt(path))
       for (const item of folded.values()) {
-        // A tracked delegation (work:<id>) already says it: no second line from its dispatch:<id> row.
-        if (item.id.startsWith('dispatch:') && folded.get(loopIds.work(item.id.slice(9)))?.open) continue
+        // One line per delegation: an open dispatch:<id> row ("Unfinished … run", "cut off") already says its work:<id>.
+        if (item.id.startsWith('work:') && folded.get(loopIds.dispatch(item.id.slice(5)))?.open) continue
         // Foreground items only, as for filing: a background slot keeps its ledger local.
         if (item.recapped || !item.fg) continue
         if (!item.text) continue

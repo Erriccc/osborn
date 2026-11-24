@@ -82,19 +82,22 @@ t('pendingDeliveries: each row at most twice, with a gap between', () => {
 t('TTL: expiredWork lists old open rows; pendingDeliveries skips them', () => {
   const rs = [opened, claimed, result]
   assert.deepEqual(L.expiredWork(rs, T0 + 1000), [])
-  assert.deepEqual(L.expiredWork(rs, T0 + L.WORK_TTL_MS + 1), [id])
+  assert.deepEqual(L.expiredWork(rs, T0 + L.WORK_TTL_MS + 1), [])                 // counted from the result
+  assert.deepEqual(L.expiredWork(rs, T0 + 60_000 + L.WORK_TTL_MS + 1), [id])
+  assert.deepEqual(L.expiredWork([opened, claimed], T0 + L.WORK_TTL_MS + 1), [id])  // no result: from opening
   assert.deepEqual(L.pendingDeliveries(rs, T0 + L.WORK_TTL_MS + 1e6), [])
   assert.deepEqual(L.expiredWork([...rs, delivered], T0 + L.WORK_TTL_MS + 1), [])
 })
 
-t('recap: the dispatch:<id> line is dropped when its work:<id> row is open', () => {
+t('recap: the work:<id> line is dropped while its dispatch:<id> row is open; a spoke row has no twin', () => {
   const sid = 's-prev'
   L.appendLoopRecord(sid, cwd, { kind: 'session', cwd, fg: true })
   L.appendLoopRecord(sid, cwd, { kind: 'dispatch_started', id: L.loopIds.dispatch('a1'), text: 'Unfinished writer run: fix login', fg: true })
   L.appendLoopRecord(sid, cwd, { kind: 'work_opened', id, text: 'writer: fix login', fg: true })
   L.appendLoopRecord(sid, cwd, { kind: 'dispatch_started', id: L.loopIds.dispatch('b2'), text: 'Unfinished reviewer run', fg: true })
+  L.appendLoopRecord(sid, cwd, { kind: 'work_opened', id: L.loopIds.work('dispatch:p:1'), text: 'Sent to p: go', fg: true })
   const lines = L.takeLoopsRecap(cwd, 5, 's-live').map((r) => r.text)
-  assert.deepEqual(lines.sort(), ['Unfinished reviewer run', 'writer: fix login'])
+  assert.deepEqual(lines.sort(), ['Sent to p: go', 'Unfinished reviewer run', 'Unfinished writer run: fix login'])
 })
 
 t('flag: default on, off values turn it off', () => {

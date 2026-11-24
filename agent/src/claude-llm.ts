@@ -29,6 +29,7 @@ import { stewardGate } from './steward-gate.js'
 import { addressedPoints, turnPoints } from './points.js'
 import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_ITEM_CHARS, MAX_PROMPT_BYTES, takeLoopsRecap, workLedgerEnabled, type LoopRecordInput } from './loops-ledger.js'
 import { redactSecrets } from './content/secret-rules.js'
+import { clip } from './content/lens-ingest.js'
 import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
@@ -1598,8 +1599,8 @@ export class ClaudeLLM extends llm.LLM {
     appendLoopRecord(sid, cwd, { turn: this.#loopTurn, ...rec, fg })
   }
 
-  /** Delegated work ids that got a result in a turn (id -> turn), so that turn's reply can close them as delivered. */
-  #workResultTurn = new Map<string, number>()
+  /** Delegated work ids that got a result: the turn and how many reply chunks it had spoken by then. */
+  #workResultTurn = new Map<string, { turn: number; chunks: number }>()
   #workSeen = new Set<string>()
 
   /**
@@ -1608,7 +1609,7 @@ export class ClaudeLLM extends llm.LLM {
    */
   recordWork(rec: LoopRecordInput, sessionId?: string | null): void {
     if (!this.#opts.followThrough || !workLedgerEnabled()) return
-    const cut = (t?: string) => t === undefined ? undefined : redactSecrets(t).replace(/\s+/g, ' ').trim().slice(0, MAX_ITEM_CHARS)
+    const cut = (t?: string) => t === undefined ? undefined : clip(redactSecrets(t).replace(/\s+/g, ' ').trim(), MAX_ITEM_CHARS)
     this.recordLoop({ ...rec, ...(rec.text !== undefined ? { text: cut(rec.text) } : {}), ...(rec.result !== undefined ? { result: cut(rec.result) } : {}), source: 'inferred', origin: 'tool' }, sessionId)
   }
 
@@ -1616,7 +1617,7 @@ export class ClaudeLLM extends llm.LLM {
   noteWorkResult(id: string, result: string, sessionId?: string | null): void {
     if (this.#workSeen.has(id)) return
     this.#workSeen.add(id)
-    this.#workResultTurn.set(id, this.#loopTurn)
+    this.#workResultTurn.set(id, { turn: this.#loopTurn, chunks: this.#currentTurnChunks.length })
     this.recordWork({ kind: 'work_result', id, result: result || '(no final message)' }, sessionId)
   }
 
@@ -1626,13 +1627,15 @@ export class ClaudeLLM extends llm.LLM {
     this.recordWork({ kind: 'work_delivered', id, by: 'shown' }, sessionId)
   }
 
-  /** Turn end: a non-empty reply to the turn that received a result is that result being told. */
-  #deliverTurnResults(sessionId: string | null | undefined, reply: string): void {
-    if (!this.#workResultTurn.size || !reply.trim()) return
-    for (const [id, turn] of this.#workResultTurn) {
-      if (turn !== this.#loopTurn) continue
+  /**
+   * Turn end: reply text spoken after a result arrived in this turn is that result being told (text before it,
+   * such as "sending the reviewer", is not). Otherwise the row stays result_ready for `surfaceUndelivered`.
+   */
+  #deliverTurnResults(sessionId: string | null | undefined, chunks: string[]): void {
+    for (const [id, r] of this.#workResultTurn) {
+      if (r.turn > this.#loopTurn) continue
       this.#workResultTurn.delete(id)
-      this.recordWork({ kind: 'work_delivered', id, by: 'spoken' }, sessionId)
+      if (r.turn === this.#loopTurn && chunks.slice(r.chunks).join('').trim()) this.recordWork({ kind: 'work_delivered', id, by: 'spoken' }, sessionId)
     }
   }
 
@@ -2525,9 +2528,8 @@ export class ClaudeLLM extends llm.LLM {
           if (this.#turnsInFlight > 0) this.#turnsInFlight--
           const turnMessageId = this.#currentTurnMessageId
           const turnChunks = [...this.#currentTurnChunks]
-          const turnReply = [...turnChunks, typeof msg.result === 'string' ? msg.result : ''].join('\n')
-          this.#closeTurnPoints((msg as any).session_id, turnReply)
-          this.#deliverTurnResults((msg as any).session_id, turnReply)
+          this.#closeTurnPoints((msg as any).session_id, [...turnChunks, typeof msg.result === 'string' ? msg.result : ''].join('\n'))
+          this.#deliverTurnResults((msg as any).session_id, turnChunks)
           if (msg.result) {
             callbacks.eventEmitter.emit('assistant_result', { text: msg.result, messageId: turnMessageId })
           }
@@ -3493,7 +3495,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const wr = at0 ? roleOf(String(at0), this.#opts.agentRoles, NAMED_AGENTS) : undefined
                 const wid = loopIds.work(String(input.agent_id))
                 const w = { id: wid, ...(wr ? { role: wr } : {}), owner: wr ? `local:${wr}` : 'main', via: 'task' as const }
-                this.#llmRef.recordWork({ kind: 'work_opened', ...w, text: `${at0 || 'agent'}${rawTask ? `: ${String(rawTask).replace(/\s+/g, ' ').trim()}` : ''}` }, input?.session_id)
+                this.#llmRef.recordWork({ kind: 'work_opened', ...w, text: `${at0 || 'agent'}${rawTask ? `: ${rawTask}` : ''}` }, input?.session_id)
                 this.#llmRef.recordWork({ kind: 'work_claimed', ...w }, input?.session_id)
               }
               if (input?.agent_id) this.#llmRef.recordLoop({ kind: 'dispatch_started', id: loopIds.dispatch(String(input.agent_id)), text: `Unfinished ${at0 || 'agent'} run${task ? `: ${task}` : ''}`, source: 'inferred', origin: 'tool' }, input?.session_id)

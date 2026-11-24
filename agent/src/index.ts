@@ -3302,11 +3302,16 @@ async function main() {
     }, 5_000)
   }
 
-  // Work ledger: ids handed to the hub in a notification; delivered once it has finished speaking.
+  // Work ledger: ids handed to the hub in a notification; delivered once a reply that started after the
+  // hand-off has finished speaking (a reply already playing when a spoke report arrived does not count).
   const workSpoken = new Map<string, number>()
+  let speakingSince = 0
   const markSpokenWork = () => {
-    for (const id of workSpoken.keys()) currentLLM?.recordWork?.({ kind: 'work_delivered', id, by: 'spoken' })
-    workSpoken.clear()
+    for (const [id, at] of workSpoken) {
+      if (at > speakingSince) continue
+      currentLLM?.recordWork?.({ kind: 'work_delivered', id, by: 'spoken' })
+      workSpoken.delete(id)
+    }
   }
 
   // Work ledger: a delegated result nobody told (the turn that got it said nothing) is surfaced once the
@@ -6221,6 +6226,7 @@ async function main() {
         console.log(`🤖 State: ${ev.newState}`)
         sendToFrontend({ type: 'agent_state', state: ev.newState })
         // A reply finished: work it carried is told (see workSpoken).
+        if (ev.newState === 'speaking' && ev.oldState !== 'speaking') speakingSince = Date.now()
         if (ev.oldState === 'speaking' && ev.newState === 'listening') markSpokenWork()
 
         // When the model becomes available (listening), process any queued voice injections
