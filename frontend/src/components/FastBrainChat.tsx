@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import SignInCard from '@/components/SignInCard'
+import { signInHref } from '@/lib/signin-href'
 
 /**
  * FastBrainChat — a lightweight "talk to this page" chat. Just a text bar and
@@ -106,7 +107,7 @@ export default function FastBrainChat({
 
   if (authState === 'out') {
     return (
-      <SignInCard title="Talk to this page" href="/login" label="Sign in to chat →"
+      <SignInCard title="Talk to this page" href={signInHref(window.location.pathname + window.location.search)} label="Sign in to chat →"
         body="Sign in to ask questions about this piece and explore it in a quick chat." />
     )
   }

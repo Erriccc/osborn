@@ -29,6 +29,7 @@ import { useHeaderPanel } from '@/lib/use-header-panel'
 import { useIsAdmin } from '@/lib/use-is-admin'
 import type { User } from '@supabase/supabase-js'
 import { useRouter } from 'next/navigation'
+import { signInHref } from '@/lib/signin-href'
 import Link from 'next/link'
 import { clearSignOutLocalState } from '@/lib/transcript-cache'
 import { pollVerifyUpdate } from '@/lib/verify-update'
@@ -377,7 +378,7 @@ export default function Dashboard() {
     const resolve = (u: User | null) => {
       setUser(u)
       setLoading(false)
-      if (!u && isSupabaseConfigured()) router.replace('/login')
+      if (!u && isSupabaseConfigured()) router.replace(signInHref(window.location.pathname + window.location.search))
     }
     const timeout = setTimeout(() => resolve(null), 3000)
     getBrowserUser(supabase)
@@ -1315,7 +1316,7 @@ export default function Dashboard() {
     return (
       <main className="min-h-screen bg-[var(--background)] flex flex-col items-center justify-center gap-5">
         <div className="w-5 h-5 border-2 border-[var(--border)] border-t-[var(--accent)] rounded-full animate-spin" />
-        <Link href="/login" className="px-4 py-2 rounded-lg bg-[var(--accent)] text-[var(--background)] text-sm font-medium hover:opacity-90 transition-opacity">
+        <Link href={signInHref('/dashboard')} className="px-4 py-2 rounded-lg bg-[var(--accent)] text-[var(--background)] text-sm font-medium hover:opacity-90 transition-opacity">
           Sign in
         </Link>
       </main>
@@ -1573,7 +1574,7 @@ export default function Dashboard() {
               {/* #140: signed-out visitors saw "Cloud workspace is offline" with
                   no way to sign in. */}
               {isCloud && !user && !loading && (
-                <a href="/login" className="inline-block mt-4 px-4 py-2 rounded-lg bg-[var(--accent)] text-[var(--background)] text-sm font-medium hover:opacity-90 transition-opacity">
+                <a href={signInHref('/dashboard')} className="inline-block mt-4 px-4 py-2 rounded-lg bg-[var(--accent)] text-[var(--background)] text-sm font-medium hover:opacity-90 transition-opacity">
                   Sign in
                 </a>
               )}
