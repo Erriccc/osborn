@@ -37,11 +37,11 @@ export function isStaleOrRetired(
 }
 
 /** Buffered reply text and the interruption context both expire after this (#539 A). */
-export const SUPPRESSED_MAX_AGE_MS = 60_000
+const SUPPRESSED_MAX_AGE_MS = 60_000
 export const isExpired = (timestamp: number, now: number): boolean => now - timestamp > SUPPRESSED_MAX_AGE_MS
 export const MAX_REPLAY_REARMS = 5
 
-export type ReplayInput = {
+type ReplayInput = {
   hasSession: boolean
   userListening: boolean
   sameInterruption: boolean   // lastInterruption is still the object captured when the timer armed
@@ -67,8 +67,8 @@ export function replayStep(i: ReplayInput & { expired: boolean; attempts: number
   return { act: 'speak' }
 }
 
-type Pending = { suppressedText: string; timestamp: number }
-export type ReplayDeps<C extends Pending> = {
+type Pending = { suppressedText: string; timestamp: number; suppressedTurnId?: string }
+type ReplayDeps<C extends Pending> = {
   current(): C | null
   userListening(): boolean
   inputs(captured: C): Omit<ReplayInput, 'userListening'>
@@ -120,6 +120,6 @@ export function takePending<T extends Pending>(li: T | null): { text: string; re
  */
 export function settleAfterSay(li: (Pending & { spokenText: string; recentMessages: string }) | null) {
   return li?.suppressedText
-    ? { spokenText: '', recentMessages: '', suppressedText: li.suppressedText, timestamp: li.timestamp }
+    ? { spokenText: '', recentMessages: '', suppressedText: li.suppressedText, suppressedTurnId: li.suppressedTurnId, timestamp: li.timestamp }
     : null
 }

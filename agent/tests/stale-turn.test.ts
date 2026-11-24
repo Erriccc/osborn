@@ -106,8 +106,9 @@ assert.equal(staleIdOnConsume({ spokenText: 'y', messageId: 'B' }, 'A'), 'B')
   assert.equal(settleAfterSay(null), null)
   assert.equal(settleAfterSay({ spokenText: 'x', recentMessages: 'y', suppressedText: '', timestamp: 1 }), null)
   assert.deepEqual(
-    settleAfterSay({ spokenText: 'x', recentMessages: 'y', suppressedText: 'later', timestamp: 5 }),
-    { spokenText: '', recentMessages: '', suppressedText: 'later', timestamp: 5 },
+    settleAfterSay({ spokenText: 'x', recentMessages: 'y', suppressedText: 'later', suppressedTurnId: 'T', timestamp: 5 }),
+    { spokenText: '', recentMessages: '', suppressedText: 'later', suppressedTurnId: 'T', timestamp: 5 },
+    'the kept text keeps its turn id, so a replay still sees when that turn was cut off',
   )
 }
 console.log('stale-turn: ok')
