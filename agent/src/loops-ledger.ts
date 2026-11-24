@@ -358,29 +358,37 @@ export function markQueuedStarted(cwd: string, project: string, instruction: str
 
 /** What the assistant said aloud, with when (a short ring kept in memory by ClaudeLLM). */
 export interface SpokenLine { at: number; text: string }
-/** A result the reply already covers when this share (and at least 2) of its key terms was said (borderline counts: no notice). */
+/** A result the reply already covers when this share (and at least 3 terms, 2 shared) of its key terms was said (borderline counts: no notice). */
 const REDUNDANT_OVERLAP = 0.4
+const REDUNDANT_MIN_TERMS = 3
 const MOVED_ON_AFTER_MS = 5 * 60 * 1000
 
 /**
- * Why a result should not be told, or null. `superseded`: a newer result for the same role and task text exists.
- * `already told`: the assistant's speech after the result covers it. `moved on`: the user spoke again since, nothing
- * after shares a key term, and the result is over 5 minutes old. Unsure means skip: an unneeded notice costs more.
+ * Why a result should not be told, or null. `already told`: the assistant's speech after the result covers it
+ * (result of at least 3 key terms, 2+ shared and 40%, and the reply shares a term with the row's role or task text).
+ * `moved on`: only for a row the user was already offered once, the user spoke again since, nothing after shares a
+ * key term, and the result is over 5 minutes old; a result that never reached the user stays pending (it ages out by
+ * the 20-minute window and the TTL). No text-based supersession: Task labels such as "Run tests" repeat across
+ * unrelated work, so a newer result must never close an older one. The overlap test stays local rather than reusing
+ * `addressedPoints` (points.ts): its "two long words" path would close short results on an unrelated reply.
+ * The speech ring also holds replies the user may not have heard (a suppressed meeting reply, a barge-in); a
+ * known limit, the call site cannot tell. Unsure means skip: an unneeded notice costs more.
  */
-function isStaleOrRedundant(row: LoopItem, ctx: { items: LoopItem[]; records: LoopRecord[]; now: number; spoken?: SpokenLine[] }): 'stale' | 'redundant' | null {
+function isStaleOrRedundant(row: LoopItem, ctx: { records: LoopRecord[]; now: number; spoken?: SpokenLine[] }): 'stale' | 'redundant' | null {
   const rAt = Date.parse(row.resultAt ?? '')
   if (!row.result || !Number.isFinite(rAt)) return null
-  const key = loopKey('work', row.text)
-  if (ctx.items.some((o) => o.id !== row.id && o.role === row.role && o.resultAt && Date.parse(o.resultAt) > rAt && loopKey('work', o.text) === key)) return 'redundant'
   const rt = terms(row.result)
   if (!rt.size) return null
   const after = (ctx.spoken ?? []).filter((s) => s.at >= rAt)
   const said = terms(after.map((s) => s.text).join(' '))
   let hit = 0
   for (const t of rt) if (said.has(t)) hit++
-  if (hit >= 2 && hit / rt.size >= REDUNDANT_OVERLAP) return 'redundant'
+  if (rt.size >= REDUNDANT_MIN_TERMS && hit >= 2 && hit / rt.size >= REDUNDANT_OVERLAP) {
+    const task = terms(`${row.role ?? ''} ${row.text}`)
+    if ([...task].some((t) => said.has(t))) return 'redundant'
+  }
   const prompts = ctx.records.filter((r) => r.kind === 'prompt' && r.origin === 'user_mic' && Date.parse(r.at) > rAt)
-  if (prompts.length && ctx.now - rAt > MOVED_ON_AFTER_MS) {
+  if ((row.surfaced ?? 0) >= 1 && prompts.length && ctx.now - rAt > MOVED_ON_AFTER_MS) {
     const later = terms([...prompts.map((r) => r.text ?? ''), ...after.map((s) => s.text)].join(' '))
     if (![...rt].some((t) => later.has(t))) return 'stale'
   }
@@ -396,7 +404,7 @@ export function staleWork(records: LoopRecord[], now: number, opts: { sinceMs?: 
     const at = Date.parse(i.resultAt)
     if (opts.sinceMs !== undefined && at < opts.sinceMs) continue
     if (now - at > WORK_SURFACE_WINDOW_MS) continue
-    const reason = isStaleOrRedundant(i, { items, records, now, spoken: opts.spoken })
+    const reason = isStaleOrRedundant(i, { records, now, spoken: opts.spoken })
     if (reason) out.push({ id: i.id, reason })
   }
   return out
