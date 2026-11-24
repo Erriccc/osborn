@@ -46,3 +46,12 @@ for (const p of [prompt, research, reminder]) {
 const meetings = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '.claude', 'skills', 'meetings', 'SKILL.md'), 'utf8')
 assert.doesNotMatch(meetings, /3-call|3 direct tool calls/)
 console.log('step-budget tests passed')
+
+// No result/status narration: returned results speak only when they change what the user needs.
+{
+  const fs = await import('node:fs'), path = await import('node:path'), url = await import('node:url')
+  const d = path.join(path.dirname(url.fileURLToPath(import.meta.url)), '../src/prompts')
+  assert.match(fs.readFileSync(path.join(d, 'chain-after-researcher.md'), 'utf8'), /Run the gate silently/)
+  assert.match(fs.readFileSync(path.join(d, 'main-agent-budget.md'), 'utf8'), /Never speak status/)
+  assert.match(fs.readFileSync(path.join(d, 'turn-shape-reminder.md'), 'utf8'), /never announce that it came back/)
+}
