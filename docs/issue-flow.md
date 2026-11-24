@@ -6,8 +6,18 @@ The issue is the ledger. State is a label; a claim is one comment.
 - Source: every filer adds one of `src:muse`, `src:loop`, `src:osborn`, `src:founder` (the author field is always the founder's login, so it cannot tell sources apart). The issue template asks for it; Osborn's own filers (`frontend/src/lib/github-issue-mirror.ts`) do not add it yet.
 - Claim comment: `claim: <agent> <session> <expiry-iso>`, with the `q:claimed` label. Refresh it every 4 hours while working; the latest claim comment counts.
 - Claim order: the main agent and local specialists claim first. Cloud agents (the hourly loop, Muse) claim only items `q:open` for over 24 hours, or `q:claimed` with an expired claim.
-- Parked and founder-decision issues are listed in `docs/issue-sweep-config.json` and left out of the sweep's action lists.
+- Parked and founder-decision issues are the JSON lists in `docs/issue-sweep-config.json` (`parked`, `founderDecision`); labels for them do not exist yet. They are left out of the sweep's action lists, as are issues labelled `follow-through` (notes, not work orders) in Unclaimed and Stale.
 
 ## Sweep
 
 `npx tsx scripts/issue-sweep.ts [--json]` (needs the `gh` CLI, logged in or with `GH_TOKEN`; `OSBORN_REPO` overrides `Erriccc/osborn`) prints a report: age buckets, unlabelled, unclaimed, stale 7d+, open issues a merged PR mentions anywhere in its title or body (close candidates: any `#N` counts, not only closing keywords, so check each before closing), likely duplicates (similar titles), expired claims. It is report-only: it never labels, comments or closes. A daily schedule and the labels themselves are follow-ups.
+
+## Not enforced yet
+
+- The `q:*` and `src:*` labels are not created in the repo, so nothing carries them yet; the sweep reads `q:claimed` only.
+- The 24-hour cloud-claim window is a process rule. The sweep only lists "claimable by cloud agents": open issues with no `q:claimed` label created over 24 hours ago.
+- Unclaimed means no `q:claimed` label and no merged or open PR mentioning the issue. Comment counts are not a claim signal.
+- A claim with an expiry that is not a full ISO time with `Z` or an offset counts as expired ("bad expiry").
+- Duplicates are pairs sharing at least 2 title terms with Jaccard similarity of 0.5 or more.
+- No scheduled workflow runs the sweep: workflow files cannot be pushed from the cloud session that built it.
+- `--slurp` needs `gh` 2.48 or newer.
