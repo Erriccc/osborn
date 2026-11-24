@@ -1778,6 +1778,7 @@ export class ClaudeLLM extends llm.LLM {
     this.closeSession()
     this.#workResultTurn.clear()
     this.#workSurfaced.clear()
+    this.#spoken = []
 
     // Clear any pending permission request from previous session
     if (this.#pendingPermission) {

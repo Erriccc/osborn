@@ -3343,7 +3343,7 @@ async function main() {
       const records = readLoopRecords(sid, cwd)
       const now = Date.now()
       for (const id of expiredWork(records, now)) currentLLM.recordWork?.({ kind: 'work_dropped', id, reason: 'ttl' })
-      const spoken = (currentLLM as any).recentSpoken?.() ?? []
+      const spoken = currentLLM.recentSpoken?.() ?? []
       for (const d of staleWork(records, now, { sinceMs: ledgerStartedAt, spoken })) currentLLM.recordWork?.({ kind: 'work_dropped', id: d.id, reason: d.reason })
       if (noticeThrottled(records, now, noticeTimes)) return
       const rows = pendingDeliveries(records, now, { sinceMs: ledgerStartedAt, spoken })

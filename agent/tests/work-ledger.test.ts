@@ -14,6 +14,7 @@ mkdirSync(cwd, { recursive: true })
 const L = await import('../src/loops-ledger.js')
 const { getUndeliveredNote } = await import('../src/prompts.js')
 const { createClaudeLLM } = await import('../src/claude-llm.js')
+const { createPipelineDirectLLM } = await import('../src/pipeline-direct-llm.js')
 type R = import('../src/loops-ledger.js').LoopRecord
 
 let pass = 0
@@ -237,6 +238,23 @@ t('redundant: a reply that began before the result never counts as telling it', 
   off.deliverTurnResults('s-pre', ['anything said'])
   process.env.OSBORN_WORK_LEDGER = 'on'
   assert.deepEqual(off.recentSpoken(), [])  // flag off: nothing kept
+})
+t('redundant: a later reply sharing one key term does not count as telling a short result', () => {
+  const later = (s: string) => [{ at: T0 + 90_000, text: s }]
+  const rs = work(1, 0, 60_000, 'tester: login suite', 'Login suite passed, twelve tests')
+  assert.equal(pend(rs, later("I'll run the tests next")).length, 1)
+  const two = work(1, 0, 60_000, 'writer: fix login', 'Login fixed')
+  assert.equal(pend(two, later("I'll check the login page")).length, 1)  // 1 of 2 terms: not told
+  assert.deepEqual(pend(two, later('The login is fixed now')), [])
+})
+t('the spoken ring: cleared on a session switch, reachable through the pipeline wrapper', () => {
+  const p: any = createPipelineDirectLLM({ workingDirectory: cwd, voiceMode: 'direct', skipTTSQueue: true, mcpServers: {} } as any)
+  const inner: any = createClaudeLLM({ workingDirectory: cwd, followThrough: true })
+  inner.deliverTurnResults('s-ring', ['The login is fixed now'])
+  assert.equal(inner.recentSpoken().length, 1)
+  inner.resetForSessionSwitch()
+  assert.deepEqual(inner.recentSpoken(), [])
+  assert.deepEqual(p.recentSpoken(), [])
 })
 t('stale: user moved on to something unrelated, result over 5 minutes old', () => {
   const rs = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), rec(120_000, { kind: 'prompt', text: 'what is the weather forecast tomorrow', origin: 'user_mic' } as any)]
