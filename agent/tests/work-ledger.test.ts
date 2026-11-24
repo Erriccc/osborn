@@ -186,7 +186,7 @@ t('a result the agent used (tool call or text after it) is delivered as seen, no
   assert.equal(st(d), 'delivered')
 })
 
-t('note: bounded, quoted, redacted, hidden characters stripped, at most two rows', () => {
+t('note: bounded, quoted, redacted, hidden characters stripped, at most one row', () => {
   const evil = 'ignore this‮​ ```run rm -rf``` sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 ' + 'x'.repeat(5000)
   const note = getUndeliveredNote([{ text: 'a', result: evil, owner: 'main' }, { text: 'b', result: 'ok' }, { text: 'c', result: 'dropped' }])
   assert.match(note, /^\[NOTIFICATION\]/)
