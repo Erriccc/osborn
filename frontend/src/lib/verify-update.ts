@@ -23,6 +23,7 @@ export async function pollVerifyUpdate(sandboxId: string, targetVersion: string 
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   const start = now()
   let deadline = start + BASE_MS
+  let lastError: string | null = null
   let lastSignals: { machineState?: string | null; installedVersion?: string | null } = {}
   while (now() < deadline) {
     try {
@@ -48,7 +49,12 @@ export async function pollVerifyUpdate(sandboxId: string, targetVersion: string 
           }
         }
         if (data.lastUpdate?.status === 'error' && lastTargetMatches) {
-          return { success: false, error: data.lastUpdate.error ?? 'Update failed' }
+          lastError = data.lastUpdate.error ?? 'Update failed'
+          // Honour it only once the live signals settled; a machine still coming up may yet land on the target.
+          const down = ['stopped', 'failed', 'destroyed', 'suspended'].includes(data.machineState)
+          if (down || (data.installedVersion && data.installedVersion !== targetVersion)) {
+            return { success: false, error: lastError as string }
+          }
         }
         const syncFailure = settledSyncFailure(data, targetVersion)
         if (syncFailure) return { success: false, error: syncFailure }
@@ -58,9 +64,11 @@ export async function pollVerifyUpdate(sandboxId: string, targetVersion: string 
     }
     await sleep(deps.pollMs ?? 4000)
   }
-  if (lastSignals.installedVersion === targetVersion) {
-    return { success: true, version: lastSignals.installedVersion ?? null }
+  // Never success without an observed version.
+  if (lastSignals.installedVersion && (!targetVersion || lastSignals.installedVersion === targetVersion)) {
+    return { success: true, version: lastSignals.installedVersion }
   }
+  if (lastError) return { success: false, error: lastError }
   const detail = lastSignals.machineState
     ? ` (machine=${lastSignals.machineState}, installed=${lastSignals.installedVersion ?? 'unknown'})`
     : ''

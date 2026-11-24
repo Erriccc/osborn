@@ -25,6 +25,21 @@ async function main() {
   o = await run([{ machineState: 'stopped', installedVersion: '1.2.3', lastUpdate: { status: 'error', targetVersion: '1.2.3', error: 'boom' } }], '1.2.3')
   assert.equal(o.r.success, false)
 
+  // timeout with no version observed is never success, even with a null target
+  o = await run([{ machineState: 'started', installedVersion: null, lastUpdate: null }], null)
+  assert.equal(o.r.success, false)
+
+  // stored error while the machine is still coming up does not win; later poll converges
+  o = await run([
+    { machineState: 'starting', installedVersion: null, lastUpdate: { status: 'error', targetVersion: '1.2.3', error: 'boom' } },
+    { machineState: 'running', installedVersion: '1.2.3', lastUpdate: { status: 'error', targetVersion: '1.2.3', error: 'boom' } },
+  ], '1.2.3')
+  assert.deepEqual(o.r, { success: true, version: '1.2.3' })
+
+  // never converges: the stored error is reported at the deadline
+  o = await run([{ machineState: 'starting', installedVersion: null, lastUpdate: { status: 'error', targetVersion: '1.2.3', error: 'boom' } }], '1.2.3')
+  assert.deepEqual(o.r, { success: false, error: 'boom' })
+
   // no in-progress: gives up at 3 min
   o = await run([{ machineState: 'started', installedVersion: null, lastUpdate: null }], '1.2.3')
   assert.equal(o.r.success, false)
