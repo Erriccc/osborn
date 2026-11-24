@@ -63,7 +63,7 @@ import { loopIds, noticeThrottled, appendLoopRecord, appendQueuedLoop, markQueue
 import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
-import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote } from './prompts.js'
+import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote, getNoiseCancelNote } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled, launchLoopsFlush, flushLastSessionThenExit } from './content/lens-launch.js'
 import { hasContentModelKey } from './content/content-llm.js'
@@ -8070,11 +8070,7 @@ async function main() {
     const wasOn = noiseGate.enabled
     noiseGate.setEnabled(on, 'ui')
     if (o.quiet || noiseGate.enabled === wasOn) return
-    try {
-      (currentLLM as any)?.sendPrompt?.(on
-              ? '[SYSTEM note — the user enabled noise-cancellation mode: they are in a noisy, multi-speaker environment (other conversations around them). Enter your meeting-mode behavior now even though no Recall meeting is connected: listen more than you speak, keep spoken replies short and only when clearly addressed, and expect filtered/sparse transcripts. Do not read this note aloud.]'
-              : '[SYSTEM note — the user disabled noise-cancellation mode: the room is back to a normal one-on-one voice conversation. Exit meeting-mode behavior and resume normal conversational responses. Do not read this note aloud.]')
-    } catch {}
+    try { (currentLLM as any)?.sendPrompt?.(getNoiseCancelNote(on)) } catch {}
   }
 
   // Phone voice actions (#367): on a call, a short command ("stop that", "what

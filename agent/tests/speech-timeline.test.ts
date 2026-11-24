@@ -11,11 +11,12 @@ delete process.env.OSBORN_SPEECH_TIMELINE_HOLD
 
 const { SpeechTimeline, speechTimeline, speechTimelineHold, CONTINUATION_WINDOW_MS } = await import('../src/speech-timeline.js')
 const { isShhCue } = await import('../src/noise-gate.js')
-const { getContinuationNote } = await import('../src/prompts.js')
-const { cleanTurnText } = await import('../src/content/transcript-sanitizer.js')
+const { getContinuationNote, getNoiseCancelNote } = await import('../src/prompts.js')
+const { cleanTurnText, steersTurn } = await import('../src/content/transcript-sanitizer.js')
 const { ReplayScheduler, takePending } = await import('../src/stale-turn.js')
 const { PipelineDirectLLM } = await import('../src/pipeline-direct-llm.js')
-const { llm } = await import('@livekit/agents')
+const { llm, initializeLogger } = await import('@livekit/agents')
+initializeLogger({ pretty: false, level: 'warn' })
 
 // #587: whole utterance or first word only
 for (const t of ['shh', 'Shh.', 'shhh', 'Shhhh!', 'shush', 'Shush.', 'shh please', 'ok shh', 'shush now']) assert.equal(isShhCue(t), true, t)
@@ -134,11 +135,8 @@ for (const v of ['on', '1', 'TRUE', 'yes', '']) assert.equal(speechTimelineHold(
   say('x y z'); assert.equal(seen.at(-1), 'x y z', 'explicit on behaves as on (no pending speech here)')
   delete process.env.OSBORN_SPEECH_TIMELINE_HOLD
 }
-console.log('speech-timeline: ok')
-process.exit(0)
-
+// pending speech: expires with the window, reset drops it
 {
-  const { SpeechTimeline, CONTINUATION_WINDOW_MS } = await import('../src/speech-timeline.js')
   const t = new SpeechTimeline()
   t.onTurnCommit(0); t.onTranscript(4, 2000); t.onTranscript(4, 4000)
   assert.equal(t.onTurnCommit(240_000), null, 'a 240 s late turn gets no note')
@@ -148,12 +146,30 @@ process.exit(0)
   const r = new SpeechTimeline()
   r.onTurnCommit(0); r.onTranscript(4, 2000); r.reset()
   assert.equal(r.onTurnCommit(3000), null, 'reset drops pending speech')
-  assert.ok(CONTINUATION_WINDOW_MS > 0)
+}
+// a handled voice action (or shh) is not a turn commit: the pending speech survives it (runtime, through chat())
+{
+  const inner: any = new Proxy({}, { get: (_t, k) => k === 'chat' ? () => ({}) : k === 'sessionId' ? 'aaaaaaaa-0000-4000-8000-000000000000' : () => undefined })
+  const pd: any = new PipelineDirectLLM({ workingDirectory: home, voiceMode: 'direct', skipTTSQueue: true, takeVoiceAction: (t: string) => isShhCue(t) })
+  pd.swapInner(inner)
+  const say = (text: string) => { const c = new llm.ChatContext(); c.addMessage({ role: 'user', content: text }); pd.chat({ chatCtx: c }) }
+  say('I want to refactor the auth module')
+  speechTimeline.onTranscript(4, Date.now() + 1)
+  assert.equal(speechTimeline.awaitingContinuation(Date.now() + 2), true)
+  say('shh')
+  assert.equal(speechTimeline.awaitingContinuation(Date.now() + 2), true, 'shh handled: no commit')
+  say('and the session store too')
+  assert.equal(speechTimeline.awaitingContinuation(Date.now() + 2), false, 'a model turn commits')
+  speechTimeline.reset()
+}
+// The toggle's note never steers a live turn
+assert.equal(steersTurn(getNoiseCancelNote(true)), false); assert.equal(steersTurn(getNoiseCancelNote(false)), false)
+// takeVoiceCommand and setNoiseGate are closures inside main() (not exported): their wiring is checked on the source text
+{
   const { readFileSync } = await import('node:fs')
-  const pd = readFileSync(new URL('../src/pipeline-direct-llm.ts', import.meta.url), 'utf8')
-  assert.ok(pd.indexOf('takeVoiceAction?.(userText)') < pd.indexOf('speechTimeline.onTurnCommit()'), 'voice action is not a commit')
   const ix = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
   assert.ok(/inPhoneRoom\(\) \|\| !isShhCue/.test(ix), 'shh not handled in a phone room')
-  assert.ok(/function setNoiseGate/.test(ix) && !/noise_cancel'\) \{[^}]*noiseGate\.setEnabled/.test(ix))
+  assert.equal((ix.match(/noiseGate\.setEnabled\([^)]*'ui'\)/g) || []).length, 1, 'the UI toggle and shh share setNoiseGate')
 }
-console.log('ok speech-timeline fixes')
+console.log('speech-timeline: ok')
+process.exit(0)

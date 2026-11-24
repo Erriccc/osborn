@@ -1766,6 +1766,13 @@ export function getContinuationNote(continuedAfterMs: number): string {
   return `<system-reminder>\nThe user kept talking about ${s}s after your previous turn started: this message continues that thought. Answer the whole thing; anything you said in reply to the earlier part may not have been heard.\n</system-reminder>`
 }
 
+/** Sent when the user turns the noise-cancellation (side-conversation filter) toggle on or off; a [SYSTEM prefix so it never steers a live turn. */
+export function getNoiseCancelNote(on: boolean): string {
+  return on
+    ? '[SYSTEM note — the user enabled noise-cancellation mode: they are in a noisy, multi-speaker environment (other conversations around them). Enter your meeting-mode behavior now even though no Recall meeting is connected: listen more than you speak, keep spoken replies short and only when clearly addressed, and expect filtered/sparse transcripts. Do not read this note aloud.]'
+    : '[SYSTEM note — the user disabled noise-cancellation mode: the room is back to a normal one-on-one voice conversation. Exit meeting-mode behavior and resume normal conversational responses. Do not read this note aloud.]'
+}
+
 /** What the hub hears when a dispatched spoke goes idle (summary bounded; the spoke's session holds the rest). */
 export function getSpokeReport(r: { project: string; sessionId: string; status: 'done' | 'failed' | 'stopped' | 'timed_out'; summary: string; offer?: { project: string; instruction: string } }): string {
   const summary = r.summary.trim().slice(0, 1500) || '(the spoke gave no final message)'

@@ -13,7 +13,7 @@ export const CONTINUATION_WINDOW_MS = 6_000
 /** A transcript needs this many words to count as speech: echo and noise show up as 1-2 word fragments (index.ts user_input_transcribed). */
 const MIN_WORDS = 3
 
-/** On unless OSBORN_SPEECH_TIMELINE_HOLD=off|0|false (kill switch): hold reply blocks while the user continues, and note it in the next turn. */
+/** On unless OSBORN_SPEECH_TIMELINE_HOLD=off|0|false|no (kill switch): hold reply blocks while the user continues, and note it in the next turn. */
 export const speechTimelineHold = (env: NodeJS.ProcessEnv = process.env): boolean => envFlagUnlessOff(env.OSBORN_SPEECH_TIMELINE_HOLD)
 
 export class SpeechTimeline {
