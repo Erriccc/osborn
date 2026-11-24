@@ -139,17 +139,23 @@ assert.equal(parseFrontMatter('no front matter').body, 'no front matter')
 
 console.log('agent-store: all assertions passed')
 
-// Boot copy of packaged core skills: adds the missing ones, never overwrites an existing folder.
+// Boot copy of packaged core skills: only the allowlist, never overwrites, never resurrects a removed one.
 {
   const root = mkdtempSync(join(tmpdir(), 'osb-core-skills-'))
-  const pkg = join(root, 'pkg'), home = join(root, 'home')
+  const pkg = join(root, 'pkg'), home = join(root, 'home'), marker = join(root, 'm', 'installed.json')
   for (const n of ['dispatch', 'meetings']) { mkdirSync(join(pkg, n), { recursive: true }); writeFileSync(join(pkg, n, 'SKILL.md'), `packaged ${n}`) }
-  mkdirSync(join(home, 'meetings'), { recursive: true }); writeFileSync(join(home, 'meetings', 'SKILL.md'), 'my edited copy')
-  assert.deepEqual(installMissingCoreSkills(home, pkg), ['dispatch'])
+  assert.deepEqual(installMissingCoreSkills(home, pkg, marker), ['dispatch'])
   assert.equal(readFileSync(join(home, 'dispatch', 'SKILL.md'), 'utf8'), 'packaged dispatch')
-  assert.equal(readFileSync(join(home, 'meetings', 'SKILL.md'), 'utf8'), 'my edited copy')
-  assert.deepEqual(installMissingCoreSkills(home, pkg), [])
-  assert.deepEqual(installMissingCoreSkills(join(root, 'new-home'), join(root, 'nope')), [])
+  assert.equal(existsSync(join(home, 'meetings')), false, 'other packaged skills are not copied')
+  assert.deepEqual(installMissingCoreSkills(home, pkg, marker), [], 'second run is a no-op')
+  rmSync(join(home, 'dispatch'), { recursive: true })
+  assert.deepEqual(installMissingCoreSkills(home, pkg, marker), [], 'a deleted skill is not reinstalled')
+  assert.equal(existsSync(join(home, 'dispatch')), false)
+  const home2 = join(root, 'home2'), marker2 = join(root, 'm2.json')
+  mkdirSync(join(home2, 'dispatch'), { recursive: true }); writeFileSync(join(home2, 'dispatch', 'SKILL.md'), 'my edited copy')
+  assert.deepEqual(installMissingCoreSkills(home2, pkg, marker2), [])
+  assert.equal(readFileSync(join(home2, 'dispatch', 'SKILL.md'), 'utf8'), 'my edited copy')
+  assert.deepEqual(installMissingCoreSkills(join(root, 'new-home'), join(root, 'nope'), join(root, 'm3.json')), [])
   rmSync(root, { recursive: true, force: true })
   console.log('installMissingCoreSkills tests passed')
 }

@@ -4,7 +4,8 @@
 // The frontend reads every rule it shows (roles, models, limits) from here
 // through /agents and agents_status; it keeps no copy.
 import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, cpSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
+import { homedir } from 'node:os'
 import { parse as parseYaml } from 'yaml'
 import { storeName } from './store-name.js'
 export { storeName }
@@ -320,15 +321,25 @@ export function coreSkillNames(pkgSkillsDir: string): Set<string> {
   } catch { return new Set() }
 }
 
-/** Copies each packaged core skill that has no folder yet into the user's skills dir (a local
- *  install never ran the cloud bootstraps' copy). An existing folder is never touched. */
-export function installMissingCoreSkills(skillsDir: string, pkgSkillsDir: string): string[] {
+/** Packaged skills a local install needs on disk; every installed skill enters the system prompt, so this stays small. */
+export const BOOT_INSTALLED_SKILLS = ['dispatch']
+const INSTALLED_MARKER = join(homedir(), '.osborn', 'installed-core-skills.json')
+
+/** Copies each allowlisted packaged skill once. An existing folder is never touched, and a name
+ *  already recorded in the marker is never reinstalled, so a skill the user removed stays removed. */
+export function installMissingCoreSkills(skillsDir: string, pkgSkillsDir: string, markerPath = INSTALLED_MARKER): string[] {
+  let done: string[] = []
+  try { const v = JSON.parse(readFileSync(markerPath, 'utf-8')); if (Array.isArray(v)) done = v.map(String) } catch { /* none yet */ }
   const added: string[] = []
-  for (const name of coreSkillNames(pkgSkillsDir)) {
-    const dst = join(skillsDir, name)
-    if (existsSync(dst)) continue
-    try { mkdirSync(skillsDir, { recursive: true }); cpSync(join(pkgSkillsDir, name), dst, { recursive: true }); added.push(name) } catch { /* best effort */ }
+  for (const name of BOOT_INSTALLED_SKILLS) {
+    const src = join(pkgSkillsDir, name), dst = join(skillsDir, name)
+    if (done.includes(name) || !existsSync(src)) continue
+    if (!existsSync(dst)) {
+      try { mkdirSync(skillsDir, { recursive: true }); cpSync(src, dst, { recursive: true }); added.push(name) } catch { continue }
+    }
+    done.push(name)
   }
+  if (added.length) try { mkdirSync(dirname(markerPath), { recursive: true }); writeFileSync(markerPath, JSON.stringify(done), 'utf-8') } catch { /* best effort */ }
   return added
 }
 
