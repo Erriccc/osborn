@@ -325,5 +325,69 @@ for (const how of ['fails', 'misses the 8s deadline'] as const) {
   })
 }
 
+await t('#539 D: successful interrupt with no result → leftover old block keeps the retired id, the next reply gets a fresh one', async () => {
+  const fq = makeFakeQueryFn()
+  const pd: any = newPipeline(fq)  // pipeline mode: index.ts asks the wrapper, which must forward to the inner ClaudeLLM
+  const llm: any = pd.inner
+  const ids: string[] = []
+  const c = cb(llm); (c.eventEmitter as EventEmitter).on('tts_say', (d: any) => ids.push(d.messageId))
+  llm.pushMessage('hi', {} as any, c)
+  const q: any = fq.spawned[0]
+  q.interrupt = () => Promise.resolve()
+  q.emit(asst('Cut off answer.')); await tick(); await tick()
+  assert.equal(await llm.interruptQuery(), true)
+  assert.equal(llm.isRetiredTurnId(ids[0]), true)
+  assert.equal(pd.isRetiredTurnId(ids[0]), true, 'PipelineDirectLLM forwards isRetiredTurnId')
+  q.emit(asst('Leftover of the old turn.')); await tick(); await tick()
+  assert.equal(ids[1], ids[0], 'leftover block carries the old id')
+  llm.pushMessage('again', {} as any, c)
+  await tick(); await tick(); await tick()
+  q.emit(asst('Reply to again.')); await tick(); await tick()
+  assert.equal(ids.length, 3, JSON.stringify(ids))
+  assert.ok(ids[2] !== ids[0], 'new reply has a fresh id')
+  assert.equal(llm.isRetiredTurnId(ids[2]), false)
+  assert.equal(llm.isRetiredTurnId(ids[0]), true)
+})
+
+await t('#539 D: deadline path — the retired id is the interrupted turn\'s, never the fresh reply\'s', async () => {
+  const fq = makeFakeQueryFn()
+  const llm: any = newLLM(fq, { skipTTSQueue: true })
+  const ids: string[] = []
+  const c = cb(llm); (c.eventEmitter as EventEmitter).on('tts_say', (d: any) => ids.push(d.messageId))
+  llm.pushMessage('hi', {} as any, c)
+  const q: any = fq.spawned[0]
+  let resolveInterrupt: () => void = () => {}
+  q.interrupt = () => new Promise<void>((r) => { resolveInterrupt = r })
+  q.emit(asst('Cut off answer.')); await tick(); await tick()
+  void llm.interruptQuery(); await tick()
+  const realSetTimeout = globalThis.setTimeout
+  ;(globalThis as any).setTimeout = (f: any, ms: number) => realSetTimeout(f, ms === 8000 ? 0 : ms)
+  try { llm.pushMessage('again', {} as any, c) } finally { (globalThis as any).setTimeout = realSetTimeout }
+  await tick(); await tick()
+  q.emit(asst('Reply part one.')); await tick(); await tick()
+  resolveInterrupt(); await tick(); await tick()
+  q.emit(asst('Reply part two.')); await tick(); await tick()
+  assert.equal(ids.length, 3, JSON.stringify(ids))
+  assert.equal(ids[1], ids[2], 'both reply parts keep the fresh id')
+  assert.ok(ids[0] !== ids[1])
+  assert.equal(llm.isRetiredTurnId(ids[1]), false)
+  assert.equal(llm.isRetiredTurnId(ids[0]), true)
+})
+
+await t('#539 phone "stop that": interruptAgent retires the id text buffered during the utterance carries', async () => {
+  const fq = makeFakeQueryFn()
+  const pd: any = newPipeline(fq)
+  const llm: any = pd.inner
+  const ids: string[] = []
+  const c = cb(llm); (c.eventEmitter as EventEmitter).on('tts_say', (d: any) => ids.push(d.messageId))
+  llm.pushMessage('hi', {} as any, c)
+  const q: any = fq.spawned[0]
+  q.interrupt = () => Promise.resolve()
+  q.emit(asst('Rest of the answer the caller stopped.')); await tick(); await tick()
+  assert.equal(pd.isRetiredTurnId(ids[0]), false, 'live before the stop')
+  await pd.interruptAgent()
+  assert.equal(pd.isRetiredTurnId(ids[0]), true, 'index.ts speakBuffered drops text whose suppressedTurnId is this id')
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
