@@ -32,7 +32,7 @@ import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
 import { isOwnApiCurl } from './canvas-key.js'
-import { retireTurnId, currentIdOnPush } from './stale-turn.js'
+import { currentIdOnPush } from './stale-turn.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -1851,6 +1851,7 @@ export class ClaudeLLM extends llm.LLM {
       try {
         // Expose the in-flight interrupt so pushMessage can order itself AFTER
         // the abort (callers like the sync voice chat() path can't await us).
+        const cut = this.#currentTurnMessageId  // before the await: on the 8s deadline path a new reply may already own the id
         const p: Promise<void> = Promise.resolve(this.#persistentQuery.interrupt()).then(() => {})
         let tracked: Promise<void>
         tracked = p.catch(() => {}).finally(() => {
@@ -1868,7 +1869,7 @@ export class ClaudeLLM extends llm.LLM {
         // (not decrement): an idle subprocess has no turn streaming. Safe — the
         // result handler clamps at > 0, so a late `result` can't drive it negative.
         this.#turnsInFlight = 0
-        retireTurnId(this.#retiredTurnIds, this.#currentTurnMessageId)  // the aborted turn may emit no result: its id must not name the next reply
+        if (cut) this.#retiredTurnIds.add(cut)  // the aborted turn may emit no result: its id must not name the next reply
         console.log('🛑 Interrupted persistent session (Esc equivalent — subprocess stays alive)')
         return true
       } catch (err: any) {

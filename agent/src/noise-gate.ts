@@ -209,6 +209,15 @@ class NoiseGate extends EventEmitter {
    * silence the user.
    */
   async classify(text: string, ctx: GateContext): Promise<GateVerdict> {
+    this.#triaging++
+    try { return await this.#classify(text, ctx) } finally { this.#triaging-- }
+  }
+
+  /** True while an utterance is held for triage (#539: the suppressed-text replay waits for it). */
+  get triaging(): boolean { return this.#triaging > 0 }
+  #triaging = 0
+
+  async #classify(text: string, ctx: GateContext): Promise<GateVerdict> {
     const apiKey = process.env.OPENROUTER_API_KEY
     if (!apiKey) return 'directed'
     const started = Date.now()
