@@ -34,14 +34,15 @@ export function newClientMsgId(): string {
 
 const ATTACHMENT_LINE_RE = /\n*\[(?:Image|File)(?: attached)?:[^\]]*\](?:\([^)]*\))?[\s\S]*$/
 
-/** Comparable form of a user turn: cleaned of pipeline wrappers and
- *  attachment markers, lower-cased, whitespace collapsed. Null = notice-only. */
+/** The user's words in a turn: pipeline wrappers and attachment markers removed. Null = none. */
+export function turnWords(text: string | null | undefined): string | null {
+  return stripSessionWrappers(text)?.replace(ATTACHMENT_LINE_RE, '').trim() || null
+}
+
+/** Comparable form of a user turn: turnWords, lower-cased, whitespace
+ *  collapsed. Null = notice-only. */
 export function echoMatchKey(text: string | null | undefined): string | null {
-  const cleaned = stripSessionWrappers(text)
-  if (cleaned === null) return null
-  const body = cleaned.replace(ATTACHMENT_LINE_RE, '')
-  const key = body.replace(/\s+/g, ' ').trim().toLowerCase()
-  return key || null
+  return turnWords(text)?.replace(/\s+/g, ' ').toLowerCase() ?? null
 }
 
 /** A fast-brain answer belongs to the latest user turn (#547): false once the

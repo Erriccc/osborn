@@ -8,7 +8,7 @@
 // User bubbles render through cleanSessionText (transcript-clean.ts).
 import {
   newClientMsgId, echoMatchKey, rememberTyped, takeTypedEcho, userBubbleText, TYPED_ECHO_WINDOW_MS,
-  isRapidDoubleSend, RAPID_DOUBLE_SEND_MS, answersLatestTurn,
+  isRapidDoubleSend, RAPID_DOUBLE_SEND_MS, answersLatestTurn, turnWords,
   type PendingTyped,
 } from '../src/lib/chat-echo'
 
@@ -167,6 +167,8 @@ t('fast-brain answer matches its own turn', () => {
   ok(answersLatestTurn('so I was saying the build failed', 'the build failed'), 'last bubble is part of the turn')
   ok(answersLatestTurn('', 'anything') && answersLatestTurn('q', undefined), 'unknown side is a match')
   ok(!answersLatestTurn('how did act1 get explained?', 'Okay, so guys, I read all those things'), 'an earlier question is not the latest turn')
+  eq(turnWords('[time: t] \n\n[Image: a.png](https://x.supabase.co/a.png)'), null, 'an attachment-only turn has no words to quote')
+  eq(turnWords('[time: t] look\n\n[Image: a.png](https://x.supabase.co/a.png)'), 'look', 'quote keeps the words, not the link')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)

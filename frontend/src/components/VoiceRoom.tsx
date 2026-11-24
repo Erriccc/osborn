@@ -36,8 +36,7 @@ import { backgroundSessionTitle } from '@/lib/rooms'
 import { pendingSwitchLabel, switchFailureText, switchPendingReducer } from '@/lib/switch-ui'
 import { isRedundantFinal } from '@/lib/claude-output'
 import { isAgentIdentity, isAuthGateTerminal } from '@/lib/connect-gate'
-import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, answersLatestTurn, type PendingTyped } from '@/lib/chat-echo'
-import { stripSessionWrappers } from '@/lib/transcript-clean'
+import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, answersLatestTurn, turnWords, type PendingTyped } from '@/lib/chat-echo'
 import { historyTurns, isControlNotice } from '@/lib/control-text'
 import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micPlatform, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
@@ -2611,7 +2610,7 @@ function VoiceRoomInner({
           // guesses a provider that isn't on the wire.
           const label = `${fastBrainLabel({ provider: data.provider, agentRole: data.agentRole })} (provisional \u2014 the full answer follows)`
           console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
-          const quote = stripSessionWrappers(data.question)?.split('\n')[0].slice(0, 80)
+          const quote = turnWords(data.question)?.split('\n')[0].slice(0, 80)
           addMessageRef.current?.('assistant', `${label}${quote ? `\n> ${quote}\n` : ''}\n${data.text}`, 'fast-brain', 'chat')
         }
       } else if (data.type === 'skills_status') {
