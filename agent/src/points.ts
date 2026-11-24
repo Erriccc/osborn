@@ -3,14 +3,14 @@
  * transcript into its separate points, and later mark which ones the reply covered.
  */
 import { HIDDEN_CHARS } from './dispatch.js'
-import { SPEECH_STOPWORDS } from './stopwords.js'
+import { SPEECH_STOPWORDS, terms } from './stopwords.js'
 import { clip } from './content/lens-ingest.js'
 import { cleanTurnText } from './content/transcript-sanitizer.js'
 
 /** A turn must be at least this many words and yield at least this many points. */
 const POINTS_MIN_WORDS = 60
 const POINTS_MIN_COUNT = 3
-/** Checklist cap, and the cap on points recorded in the ledger (the filing cap). */
+/** Checklist cap, and the cap on points recorded in the ledger (#461: about 4 per turn; local, never filed). */
 const POINTS_CHECKLIST_CAP = 6
 export const POINTS_FILE_CAP = 4
 export const POINT_MAX_CHARS = 160
@@ -21,12 +21,12 @@ const MARKER = /(?<=[,;.!?])\s+(?=(?:also|second(?:ly)?|third(?:ly)?|next|oh and
 const LEAD_MARKER = /^(?:and another thing|another thing|one more thing|oh and|and then there'?s|also|second(?:ly)?|third(?:ly)?|next|first(?:ly)?|and|so|okay|ok|well|um|uh|right|alright|yeah|anyway)\b[\s,:-]*/i
 const CHIT_CHAT = /^(?:(?:okay|ok|so|yeah|yes|no|right|alright|anyway|hmm+|um+|uh+|well|cool|great|thanks|thank you|sounds good|you know|i mean|got it|sure|please|and)\b[\s,.!?-]*)+$/i
 
-/** Lowercase content words, stopwords out, a trailing plural s folded. */
-function contentWords(text: string): string[] {
-  const out: string[] = []
-  for (const w of String(text || '').toLowerCase().match(/[a-z0-9][a-z0-9'-]*/g) ?? []) {
+/** The speech terms of `text` with a possessive or trailing plural s folded. */
+function contentWords(text: string): Set<string> {
+  const out = new Set<string>()
+  for (const w of terms(String(text || ''))) {
     const s = w.replace(/'s$/, '').replace(/(?<=[a-z]{3})s$/, '')
-    if (s.length >= 3 && !SPEECH_STOPWORDS.has(s) && !SPEECH_STOPWORDS.has(w)) out.push(s)
+    if (s.length >= 3 && !SPEECH_STOPWORDS.has(s)) out.add(s)
   }
   return out
 }
@@ -59,7 +59,7 @@ export function splitPoints(text: string): string[] {
   // A repeated point: the later restatement replaces the earlier one.
   const kept: Array<{ s: string; w: Set<string> }> = []
   for (const s of segs) {
-    const w = new Set(contentWords(s))
+    const w = contentWords(s)
     const dup = kept.findIndex((k) => {
       const inter = [...w].filter((x) => k.w.has(x)).length
       return inter >= 3 && inter / Math.min(w.size, k.w.size) >= 0.6
@@ -77,9 +77,9 @@ export function splitPoints(text: string): string[] {
  * long words; anything unsure stays open.
  */
 export function addressedPoints(points: string[], reply: string): string[] {
-  const have = new Set(contentWords(reply))
+  const have = contentWords(reply)
   return points.filter((p) => {
-    const words = [...new Set(contentWords(p))]
+    const words = [...contentWords(p)]
     const hit = words.filter((w) => have.has(w))
     const rare = hit.filter((w) => w.length >= 7).length
     return hit.length >= 2 && (hit.length / words.length >= 0.5 || rare >= 2)

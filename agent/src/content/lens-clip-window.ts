@@ -12,7 +12,7 @@
  */
 
 import { recordView, estimateTokens, type DbRecord } from './lens-db.js'
-import { SPEECH_STOPWORDS } from '../stopwords.js'
+import { terms } from '../stopwords.js'
 
 export type StopReason = 'topic-shift' | 'soft-limit:compaction' | 'soft-limit:time-gap' | 'cap' | 'session-edge'
 
@@ -45,16 +45,6 @@ export interface ClipWindow {
   stop: { before: StopReason; after: StopReason }
   profile: string[]
   blocks: { side: 'before' | 'after'; firstRowId: number; lastRowId: number; score: number; kept: boolean }[]
-}
-
-/** Lower-cased content terms (3+ chars, no stopwords). Keeps tokens like x-forwarded-host, 1006, 0.9.153. */
-export function terms(text: string): Set<string> {
-  const out = new Set<string>()
-  for (const m of text.toLowerCase().matchAll(/[a-z0-9][a-z0-9._'-]*[a-z0-9]/g)) {
-    const t = m[0]
-    if (t.length >= 3 && !SPEECH_STOPWORDS.has(t) && !/^\d{1,2}$/.test(t)) out.add(t)
-  }
-  return out
 }
 
 /** Merge anchor row ids into clusters of nearby conversation rows (by record index). */

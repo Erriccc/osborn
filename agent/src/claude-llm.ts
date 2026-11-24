@@ -1607,14 +1607,14 @@ export class ClaudeLLM extends llm.LLM {
       if (truncated) text = Buffer.from(text).subarray(0, MAX_PROMPT_BYTES).toString('utf-8')
       this.recordLoop({ kind: 'prompt', text, origin, ...(truncated ? { truncated: true } : {}) }, sessionId)
       let points: string[] = []
-      this.#turnPoints = []
-      this.#turnDispatched = ''
       if (origin === 'user_mic') {
         const asks = extractAsks(prompt)
         for (const ask of asks) this.recordLoop({ kind: 'ask', id: loopIds.ask(ask), text: ask, source: 'explicit', origin }, sessionId)
         // A long turn (#455): each point is a local, inferred `ask`; the checklist rides on this turn's context.
+        // Only a mic turn replaces them: a [MEETING]/[SYSTEM]/[NOTIFICATION] message folded into the live turn must not.
         points = splitPoints(prompt)
         const lowAsks = asks.map((a) => a.toLowerCase())
+        this.#turnDispatched = ''
         this.#turnPoints = points.slice(0, POINTS_FILE_CAP)
           .filter((p) => !lowAsks.some((a) => a.includes(p.toLowerCase()) || p.toLowerCase().includes(a)))
         for (const p of this.#turnPoints) this.recordLoop({ kind: 'ask', id: loopIds.ask(p), text: p, source: 'inferred', origin }, sessionId)
@@ -2155,6 +2155,7 @@ export class ClaudeLLM extends llm.LLM {
     this.#typeByAgentId.clear()
     this.#pendingInterrupt = null
     this.#turnsInFlight = 0
+    this.#turnPoints = []
     console.log('🔒 Persistent session closed')
   }
 
