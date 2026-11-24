@@ -18,6 +18,7 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createSupabaseBrowser, getBrowserUser } from '@/lib/supabase-browser'
 import SignInCard from '@/components/SignInCard'
+import { signInHref } from '@/lib/signin-href'
 import { REFINE_PLATFORMS, buildSeededChatUrl, refineSeed } from '@/lib/seed-chat'
 import { CONTENT_ITEM_COLUMNS, libraryGrid, matchesQuery, type StatusFilter } from '@/lib/library-grid'
 import type { User } from '@supabase/supabase-js'
@@ -518,7 +519,7 @@ export default function LibraryView({ initialId }: { initialId?: string }) {
           // Sign in comes back here (/login honours same-site ?next=).
           <SignInCard className="max-w-md mx-auto mt-10" icon={<DocIcon className="w-6 h-6 text-[var(--text-muted)]" />}
             title="Sign in to view your library" body="Your library is private to your account."
-            href={`/login?next=${encodeURIComponent(pathname || '/library')}`} label="Sign in" />
+            href={signInHref(pathname || '/library')} label="Sign in" />
         ) : error ? (
           <div className="rounded-lg border border-red-400/30 bg-red-400/[0.06] px-3 py-2.5 text-[12.5px] text-red-200">{error}</div>
         ) : visible.length === 0 ? (
