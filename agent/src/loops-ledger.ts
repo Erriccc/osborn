@@ -352,7 +352,8 @@ export function listLedgers(): Array<{ sessionId: string; path: string; cwd?: st
 /** Unfiled open items come back in this order: refused-at-capacity work, unanswered questions, the rest, then inferred points. */
 const UNFILED_RANK: Partial<Record<LoopKind, number>> = { queued: 0, question: 1, point: 3 }
 
-export interface RecapItem { text: string; url?: string }
+/** `filed` marks an item the ledger says was filed; `url` is set only when it points into this project's own repo. */
+export interface RecapItem { text: string; url?: string; filed?: true }
 
 /**
  * Not-yet-recapped foreground items across this project's sessions, at most `max` in all: filed ones first (newest
@@ -368,8 +369,9 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
       for (const item of foldLoops(readLoopRecordsAt(path)).values()) {
         // Foreground items only, as for filing: a background slot keeps its ledger local.
         if (item.recapped || !item.fg) continue
+        if (sessionId === skipSession || !item.text) continue
         if (item.filedUrl) filed.push({ sessionId, item })
-        else if (item.open && item.text && sessionId !== skipSession) unfiled.push({ sessionId, item })
+        else if (item.open) unfiled.push({ sessionId, item })
       }
     }
     filed.sort((a, b) => (b.item.filedAt ?? '').localeCompare(a.item.filedAt ?? ''))
@@ -377,7 +379,11 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
     unfiled.sort((a, b) => rank(a.item.kind) - rank(b.item.kind) || b.item.at.localeCompare(a.item.at))
     const picked = [...filed, ...unfiled].slice(0, max)
     for (const p of picked) appendLoopRecord(p.sessionId, workingDir, { kind: 'recapped', id: p.item.id })
-    return picked.map((p) => ({ text: p.item.text, ...(p.item.filedUrl ? { url: p.item.filedUrl } : {}) }))
+    const repo = repoFromCwd(workingDir)?.toLowerCase()
+    const own = (u: string) => !!repo && new RegExp(`^https://github\\.com/${repo.replace(/[.]/g, '\\.')}/issues/\\d+$`, 'i').test(u)
+    return picked.map((p) => p.item.filedUrl
+      ? { text: p.item.text, filed: true as const, ...(own(p.item.filedUrl) ? { url: p.item.filedUrl } : {}) }
+      : { text: p.item.text })
   } catch {
     return []
   }
