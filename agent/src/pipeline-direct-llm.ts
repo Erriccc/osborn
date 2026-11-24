@@ -216,7 +216,7 @@ export class PipelineDirectLLM extends llm.LLM {
         upstreamCompactionEvent?.(event)
       },
     }
-    this.#claudeLLM = new ClaudeLLM(chainedOpts)
+    this.#claudeLLM = new ClaudeLLM({ ...chainedOpts, turnTiming: true })
     this.#opts = chainedOpts
   }
 
