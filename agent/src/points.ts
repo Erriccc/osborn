@@ -5,6 +5,7 @@
 import { HIDDEN_CHARS } from './dispatch.js'
 import { SPEECH_STOPWORDS, countWords, terms } from './stopwords.js'
 import { clip } from './content/lens-ingest.js'
+import { MAX_ITEM_CHARS } from './loops-ledger.js'
 import { cleanTurnText } from './content/transcript-sanitizer.js'
 
 /** A turn must be at least this many words and yield at least this many points. */
@@ -13,7 +14,6 @@ const POINTS_MIN_COUNT = 3
 /** Checklist cap, and the cap on points recorded in the ledger (#461: about 4 per turn; local, never filed). */
 const POINTS_CHECKLIST_CAP = 6
 export const POINTS_FILE_CAP = 4
-export const POINT_MAX_CHARS = 160
 const MIN_FRAGMENT_WORDS = 6
 
 // A bare ordinal or "also" splits only after punctuation ("every second" must not); the longer phrases split anywhere.
@@ -66,7 +66,7 @@ export function splitPoints(text: string): string[] {
     kept.push({ s, w })
   }
   if (kept.length < POINTS_MIN_COUNT) return []
-  return kept.slice(0, POINTS_CHECKLIST_CAP).map((k) => clip(k.s, POINT_MAX_CHARS))
+  return kept.slice(0, POINTS_CHECKLIST_CAP).map((k) => clip(k.s, MAX_ITEM_CHARS))
 }
 
 /**

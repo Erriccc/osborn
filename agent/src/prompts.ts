@@ -5,7 +5,6 @@ import { fileURLToPath } from 'url'
 import { getSessionWorkspace } from './config.js'
 import { SIGNOFF_COMMAND } from './steward-gate.js'
 import { HIDDEN_CHARS, DISPATCH_TOOL } from './dispatch.js'
-import { POINT_MAX_CHARS } from './points.js'
 import { redactSecrets } from './content/secret-rules.js'
 import type { RecapItem } from './loops-ledger.js'
 
@@ -1768,8 +1767,8 @@ export function getSpokeReport(r: { project: string; sessionId: string; status: 
 }
 
 /** Ledger text is agent-writable: no control, bidi, zero-width or tag characters, one line, secrets redacted, short, quoted. */
-const recapText = (t: unknown, max = 120): string =>
-  JSON.stringify(redactSecrets(String(t || '').replace(HIDDEN_CHARS, '').replace(/\s+/g, ' ').trim()).slice(0, max))
+const recapText = (t: unknown): string =>
+  JSON.stringify(redactSecrets(String(t || '').replace(HIDDEN_CHARS, '').replace(/\s+/g, ' ').trim()).slice(0, 120))
 /** A forged `filed` record must not carry text in its url. */
 const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]{1,100}\/[\w.-]{1,100}\/issues\/\d{1,9}$/
 
@@ -1799,7 +1798,7 @@ export function getPointsChecklist(points: string[]): string {
   const kept: string[] = []
   let block = ''
   for (const p of points) {
-    kept.push(`${kept.length + 1}) ${recapText(p, POINT_MAX_CHARS)}`)
+    kept.push(`${kept.length + 1}) ${recapText(p)}`)
     const b = template.replace('{{n}}', String(kept.length)).replace('{{points}}', () => kept.join(' '))
     if (Buffer.byteLength(b) > POINTS_BLOCK_MAX_BYTES) break
     block = b
