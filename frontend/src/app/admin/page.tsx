@@ -21,8 +21,12 @@ type AdminUser = {
   sandbox_status: string | null
   instance_status: string | null
   machine_state: string | null
+  osborn_version: string | null
   last_active: string | null
 }
+
+// Per-machine update progress (keyed by sandbox_id). The roll is a long (~1–2 min) POST.
+type UpdateState = { phase: 'running' | 'error'; msg?: string }
 
 // ── Formatting helpers ──────────────────────────────────────────
 
@@ -106,6 +110,33 @@ export default function AdminPage() {
       setRefreshing(false)
     }
   }, [])
+
+  // Per-machine update progress, keyed by sandbox_id.
+  const [updating, setUpdating] = useState<Record<string, UpdateState>>({})
+
+  const handleUpdate = useCallback(async (sandboxId: string) => {
+    setUpdating((u) => ({ ...u, [sandboxId]: { phase: 'running' } }))
+    try {
+      const res = await fetch('/api/admin/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sandboxId }),
+        // The roll settles in ~1–2 min; allow headroom before the client gives up.
+        signal: AbortSignal.timeout(210_000),
+      })
+      const data = await res.json().catch(() => null)
+      if (res.ok && data?.success) {
+        setUpdating((u) => { const n = { ...u }; delete n[sandboxId]; return n })
+        await load() // reflect the new version
+      } else {
+        setUpdating((u) => ({ ...u, [sandboxId]: { phase: 'error', msg: (data?.error as string) || `HTTP ${res.status}` } }))
+      }
+    } catch (err) {
+      // Timeout/network: the roll may still be finishing server-side; a refresh will show it.
+      const aborted = err instanceof DOMException && err.name === 'TimeoutError'
+      setUpdating((u) => ({ ...u, [sandboxId]: { phase: 'error', msg: aborted ? 'Still running — Refresh to check' : 'Update request failed' } }))
+    }
+  }, [load])
 
   useEffect(() => {
     load()
@@ -201,6 +232,7 @@ export default function AdminPage() {
                     <th className="px-4 py-3 font-medium">Last sign-in</th>
                     <th className="px-4 py-3 font-medium">Machine</th>
                     <th className="px-4 py-3 font-medium">Status</th>
+                    <th className="px-4 py-3 font-medium">Version</th>
                     <th className="px-4 py-3 font-medium">Last active</th>
                   </tr>
                 </thead>
@@ -221,6 +253,9 @@ export default function AdminPage() {
                       </td>
                       <td className="px-4 py-3">
                         <StatusPill status={u.machine_state ?? u.sandbox_status ?? u.instance_status} stored={!u.machine_state} />
+                      </td>
+                      <td className="px-4 py-3">
+                        <VersionCell user={u} state={u.sandbox_id ? updating[u.sandbox_id] : undefined} onUpdate={handleUpdate} />
                       </td>
                       <td className="px-4 py-3 text-[var(--text-secondary)] text-[13px] whitespace-nowrap">
                         {fmtRelative(u.last_active)}
@@ -247,6 +282,10 @@ export default function AdminPage() {
                     <MobileField label="Machine" value={u.sandbox_id ?? '—'} mono />
                     <MobileField label="Last active" value={fmtRelative(u.last_active)} />
                   </dl>
+                  <div className="flex items-center justify-between gap-3 pt-1">
+                    <span className="text-[var(--text-muted)] text-[10px] uppercase tracking-wider">Version</span>
+                    <VersionCell user={u} state={u.sandbox_id ? updating[u.sandbox_id] : undefined} onUpdate={handleUpdate} />
+                  </div>
                 </div>
               ))}
             </div>
@@ -257,6 +296,34 @@ export default function AdminPage() {
         )}
       </div>
     </main>
+  )
+}
+
+/* ── Version + update control ─────────────────────────────────── */
+function VersionCell({ user, state, onUpdate }: { user: AdminUser; state?: UpdateState; onUpdate: (sandboxId: string) => void }) {
+  const { osborn_version: version, sandbox_id: sandboxId } = user
+  return (
+    <div className="flex items-center gap-2 whitespace-nowrap">
+      <span className="font-mono text-[13px] text-[var(--text-secondary)]">{version ?? '—'}</span>
+      {sandboxId && (
+        state?.phase === 'running' ? (
+          <span className="inline-flex items-center gap-1.5 text-[12px] text-[var(--text-muted)]">
+            <span className="w-3 h-3 border-2 border-[var(--border-subtle)] border-t-[var(--accent)] rounded-full animate-spin" />
+            Updating…
+          </span>
+        ) : (
+          <button
+            onClick={() => onUpdate(sandboxId)}
+            className="h-7 px-2.5 rounded-md border border-[var(--border-subtle)] bg-[var(--surface)] text-[var(--text-secondary)] text-[12px] font-medium hover:text-[var(--text-primary)] hover:bg-[var(--surface-raised)] transition-colors"
+          >
+            Update
+          </button>
+        )
+      )}
+      {state?.phase === 'error' && state.msg && (
+        <span className="text-[11px] text-[#c4756b] max-w-[200px] truncate" title={state.msg}>{state.msg}</span>
+      )}
+    </div>
   )
 }
 

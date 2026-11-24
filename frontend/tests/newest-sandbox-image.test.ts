@@ -3,7 +3,7 @@
 // tag that the manual release path leaves stale (it was 0.9.272 while the
 // fleet ran 0.9.277 on 2026-11-12).
 import assert from 'node:assert'
-import { pickNewestVersionTag, parseImageRef, sandboxImageWithTag, resolveNewestSandboxImage, resetNewestSandboxImageCache } from '../src/lib/machines'
+import { pickNewestVersionTag, parseImageRef, sandboxImageWithTag, resolveNewestSandboxImage, resetNewestSandboxImageCache, imageVersionFromRef } from '../src/lib/machines'
 
 const real = ['0.9.252', '0.9.269', '0.9.270', '0.9.271', '0.9.272', '0.9.275', '0.9.276', '0.9.277', 'latest', 'legacy-app-0.9.268']
 assert.strictEqual(pickNewestVersionTag(real), '0.9.277')
@@ -33,6 +33,17 @@ assert.strictEqual(sandboxImageWithTag('registry.fly.io/osborn-sandbox3:latest',
 assert.strictEqual(sandboxImageWithTag('registry.fly.io/osborn-sandbox3', '0.9.277'), 'registry.fly.io/osborn-sandbox3:0.9.277')
 assert.strictEqual(sandboxImageWithTag('registry.fly.io/osborn-sandbox3@sha256:' + 'b'.repeat(64), '0.9.277'), 'registry.fly.io/osborn-sandbox3:0.9.277')
 assert.strictEqual(sandboxImageWithTag('host:5000/team/repo:old', '1.2.3'), 'host:5000/team/repo:1.2.3')
+
+// imageVersionFromRef — the x.y.z a machine's configured image boots (admin version column).
+assert.strictEqual(imageVersionFromRef('registry.fly.io/osborn-sandbox4:0.9.302'), '0.9.302')
+assert.strictEqual(imageVersionFromRef('registry.fly.io/osborn-sandbox4:0.9.300@sha256:' + 'a'.repeat(64)), '0.9.300')
+assert.strictEqual(imageVersionFromRef('host:5000/team/repo:1.2.3'), '1.2.3')      // host port is not mistaken for the tag
+assert.strictEqual(imageVersionFromRef('registry.fly.io/osborn-sandbox4:latest'), null)
+assert.strictEqual(imageVersionFromRef('registry.fly.io/osborn-sandbox4'), null)   // no tag
+assert.strictEqual(imageVersionFromRef('registry.fly.io/osborn-sandbox4:0.9'), null) // not x.y.z
+assert.strictEqual(imageVersionFromRef(''), null)
+assert.strictEqual(imageVersionFromRef(null), null)
+assert.strictEqual(imageVersionFromRef(undefined), null)
 
 // resolveNewestSandboxImage against a mocked registry + npm.
 async function withFetch(impl: (url: string, init?: any) => Promise<Response>, fn: () => Promise<void>) {
