@@ -45,8 +45,8 @@ const WORK_SETTLE_MS = 10 * 1000
 /** A result is only surfaced while it is this fresh (the TTL above only drops rows). */
 export const WORK_SURFACE_WINDOW_MS = 20 * 60 * 1000
 /** At most one surfaced notice per this gap, and this many per hour. */
-export const WORK_NOTICE_GAP_MS = 5 * 60 * 1000
-export const WORK_NOTICE_PER_HOUR = 3
+const WORK_NOTICE_GAP_MS = 5 * 60 * 1000
+const WORK_NOTICE_PER_HOUR = 3
 /** OSBORN_WORK_LEDGER=on|1|true turns delegation tracking on; default off (foreground session only, see `recordWork`). */
 export const workLedgerEnabled = (env: NodeJS.ProcessEnv = process.env): boolean => /^(on|1|true)$/i.test(String(env.OSBORN_WORK_LEDGER ?? '').trim())
 

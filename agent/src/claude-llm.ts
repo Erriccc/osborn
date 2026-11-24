@@ -1605,7 +1605,7 @@ export class ClaudeLLM extends llm.LLM {
   #workSurfaced = new Map<string, number>()
 
   /**
-   * Work ledger: one `work_*` record, only for the foreground session and only while OSBORN_WORK_LEDGER is not off.
+   * Work ledger: one `work_*` record, only for the foreground session and only while OSBORN_WORK_LEDGER is on.
    * No model call. Text is redacted and bounded here, so nothing downstream sees a secret.
    */
   recordWork(rec: LoopRecordInput, sessionId?: string | null): void {
@@ -1629,14 +1629,15 @@ export class ClaudeLLM extends llm.LLM {
     this.recordWork({ kind: 'work_delivered', id, by: 'shown' }, sessionId)
   }
 
-  /**
-   * Turn end: reply text spoken after a result arrived in this turn is that result being told (text before it,
-   * such as "sending the reviewer", is not). Otherwise the row stays result_ready for `surfaceUndelivered`.
-   */
   resetTurnTools(): void { this.#turnTools = 0 }
   noteMainTool(): void { this.#turnTools++ }
 
-  /** Turn end (also the test seam). */
+  /**
+   * Turn end (also the test seam): reply text after a result arrived in this turn is that result being told (text
+   * before it, such as "sending the reviewer", is not); a later tool call, or any text or tool call in the next turn,
+   * means the main agent had it (`seen`: not that the user heard it). Otherwise the row stays result_ready for
+   * `surfaceUndelivered`, and the reply to that notice closes it.
+   */
   deliverTurnResults(sessionId: string | null | undefined, chunks: string[]): void {
     for (const [id, r] of this.#workResultTurn) {
       if (r.turn > this.#loopTurn) continue
