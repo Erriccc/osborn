@@ -24,9 +24,9 @@ The system has layered prompts at different levels — all centralized in `promp
 
 ## Main-agent speaking, questions and delegation (one rule, every layer)
 
-The pipeline main agent reads `direct-mode-research.md` (system prompt), `turn-shape-reminder.md` (each turn), `points-checklist.md` and the cadence note (`claude-llm.ts`). They say the same things:
+The pipeline main agent reads `direct-mode-research.md` (system prompt; realtime reads `getResearchSystemPrompt`), `turn-shape-reminder.md` (each turn), `points-checklist.md` and the cadence note (`claude-llm.ts`). They say the same things:
 - Speaking: no speech before the first grounding lookup; one short line before a long chain or slow step, and at least every `SPEAK_CADENCE_N` (6) calls. The code nudge stays.
 - Questions: at most one, only when its answer changes what you do next.
-- Delegation: the DELEGATION RUBRIC lives once in `direct-mode-research.md` (conditions, not counts). `MAIN_DIRECT_CALL_CAP` (10, `agent/src/main-agent-limits.ts`) is a ceiling, not a target; `step-budget.test.ts` asserts the prompts match it. Chain steps (tester, steward, reviewer) do not count against it.
+- Delegation: THE BUDGET and the DELEGATION RUBRIC (conditions, not counts) live once in `prompts/main-agent-budget.md`, included in both system prompts. `MAIN_DIRECT_CALL_CAP` (10) and `SPEAK_CADENCE_N` (6) are exported from `prompts.ts` and filled into the prompt files as `{{directCallCap}}` / `{{speakCadence}}`; the cap is a ceiling, not a target. Delegations and chain steps do not count against it.
 - `DIRECT_MODE_PROMPT` in `prompts.ts` never reaches Claude; keep its wording in line but do not tune it.
 - On boot the agent copies any packaged core skill missing from `~/.claude/skills` (`installMissingCoreSkills`); an existing folder is never overwritten.

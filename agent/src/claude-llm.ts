@@ -12,7 +12,7 @@ import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUse
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
-import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, getPointsChecklist, PHONE_TOOLS_DENIED } from './prompts.js'
+import { getResearchSystemPrompt, getDirectModeResearchPrompt, getTurnShapeReminder, SPEAK_CADENCE_N, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, getPointsChecklist, PHONE_TOOLS_DENIED } from './prompts.js'
 import { dispatchCallRefusal, DISPATCH_TOOL } from './dispatch.js'
 import { steersTurn } from './content/transcript-sanitizer.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
@@ -33,11 +33,9 @@ import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssu
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
 import { isOwnApiCurl } from './canvas-key.js'
 import { currentIdOnPush } from './stale-turn.js'
-import { SPEAK_CADENCE_N } from './main-agent-limits.js'
 
-// Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
+// Directory of this module — used to locate co-located prompt files (e.g., compact-learnings instruction).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
-const TURN_SHAPE_REMINDER_PATH = join(__claudeLlmDir, 'prompts', 'turn-shape-reminder.md')
 
 // ── Recall auto-injection (reliable "remembers to check" per Agent-SDK research) ──
 // The RELIABLE primitive the Agent SDK exposes is a UserPromptSubmit hook returning
@@ -295,7 +293,7 @@ function getSubagentsDir(workingDir: string): string {
 function loadAllSkills(_workingDir: string): string {
   // Single source of truth: ~/.claude/skills/
   // Defaults are seeded into this dir by the provisioning bootstrap (sprites.ts
-  // buildOsbornBootstrap + Dockerfile.sandbox entrypoint). PostCompact writes
+  // buildOsbornBootstrap + Dockerfile.sandbox entrypoint) and, locally, installMissingCoreSkills at boot. PostCompact writes
   // newly-learned skills here too. By unifying on one path we avoid the older
   // confusion where defaults loaded from node_modules/osborn/.claude/skills/
   // while PostCompact wrote to home — meaning learnings were second-class.
@@ -3050,7 +3048,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // Re-arm the spoken-progress cadence for the new turn.
                 pendingSpeakNudge = false
 
-                const reminder = readFileSync(TURN_SHAPE_REMINDER_PATH, 'utf-8')
+                const reminder = getTurnShapeReminder()
                 const promptPreview = String(input?.prompt || '').substring(0, 60).replace(/\n/g, ' ')
 
                 // Reliable recall: retrieve prior messages relevant to THIS prompt and inject

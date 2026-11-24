@@ -16,6 +16,16 @@ import type { RecapItem } from './loops-ledger.js'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROMPTS_FILE_DIR = join(__dirname, 'prompts')
 
+// Main-agent limits: the cadence nudge in claude-llm.ts fires every SPEAK_CADENCE_N calls, and the
+// prompts state both numbers through {{directCallCap}} / {{speakCadence}} (fillMainAgentLimits).
+export const MAIN_DIRECT_CALL_CAP = 10
+export const SPEAK_CADENCE_N = 6
+const fillMainAgentLimits = (t: string) => t.replaceAll('{{directCallCap}}', String(MAIN_DIRECT_CALL_CAP)).replaceAll('{{speakCadence}}', String(SPEAK_CADENCE_N))
+/** THE BUDGET and the DELEGATION RUBRIC, shared by both main-agent system prompts. */
+const getMainAgentBudget = () => fillMainAgentLimits(readFileSync(join(PROMPTS_FILE_DIR, 'main-agent-budget.md'), 'utf-8').trimEnd())
+/** The per-turn reminder (UserPromptSubmit), read fresh on every turn. */
+export const getTurnShapeReminder = () => fillMainAgentLimits(readFileSync(join(PROMPTS_FILE_DIR, 'turn-shape-reminder.md'), 'utf-8'))
+
 /**
  * refactored_prompts.ts
  *
@@ -228,7 +238,7 @@ TOOL DISCIPLINE:
 · If a tool returns an error, acknowledge it plainly and try an alternative
 · Chain tools as needed before speaking — Read a file, Grep for a pattern, then synthesize
 
-SUB-AGENT DELEGATION: not used by ClaudeLLM (it reads direct-mode-research.md). Do short work yourself; delegate by the rubric there, with at most 10 direct tool calls per turn.
+SUB-AGENT DELEGATION: not used by ClaudeLLM (it reads direct-mode-research.md, which carries the delegation rubric).
 </tools>
 
 <action-discipline>
@@ -511,7 +521,7 @@ export function getDirectModeResearchPrompt(workspacePath: string | null): strin
   try {
     const template = readFileSync(join(PROMPTS_FILE_DIR, fileName), 'utf-8')
     return workspacePath
-      ? template.replaceAll('${workspacePath}', workspacePath)
+      ? template.replaceAll('${workspacePath}', workspacePath).replace('{{mainAgentBudget}}', getMainAgentBudget)
       : template
   } catch (err) {
     console.error(`⚠️ Failed to load prompt file ${fileName}:`, err instanceof Error ? err.message : err)
@@ -597,7 +607,7 @@ NEVER skip tester, steward and reviewer after a code change. The steward never r
 You may OVERRIDE this chain at any time — stop a running agent, inject a step, or reorder — because you can see each task's live state. The chain is the default, not a cage.
 Surfacing findings and communicating to the user is YOUR job, not a sub-agent's.
 
-DELEGATION: Maximum 10 direct tool calls per turn (a ceiling). Do short work yourself; delegate when the next output will be large or noisy, when 3+ independent questions can run in parallel, when you lack the permission or tool (writer, tester), when you need fresh eyes (reasoner, steward, reviewer), or when the job will run past about a minute. Do not speak before your first lookup; speak one short line before a long chain or slow step and at least every 6 calls, so the user is never left in silence.
+${getMainAgentBudget()}
 
 You do NOT produce findings from training data alone. You use tools to confirm every specific fact — file names, version numbers, function signatures, configuration values, URLs. If a tool is not available to verify a claim, you say so.
 
