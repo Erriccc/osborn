@@ -42,12 +42,19 @@ export class SpeechTimeline {
 
   /** A user turn reached the agent. Returns how long after the PREVIOUS commit the user kept talking, or null. */
   onTurnCommit(now = Date.now()): { continuedAfterMs: number } | null {
-    const prev = this.#lastTurnCommitAt !== null && this.#spokeAfterAt !== null
+    const prev = this.#lastTurnCommitAt !== null && this.#spokeAfterAt !== null && now - this.#spokeAfterAt < CONTINUATION_WINDOW_MS
       ? { continuedAfterMs: this.#spokeAfterAt - this.#lastTurnCommitAt } : null
     this.#lastTurnCommitAt = now
     this.#spokeAfterAt = null
     this.#answered = false
     return prev
+  }
+
+  /** Forget everything (session switch, hang-up, re-attach): nothing pending carries over. */
+  reset(): void {
+    this.#answered = false
+    this.#lastTurnCommitAt = null
+    this.#spokeAfterAt = null
   }
 
   /** The user spoke after the newest commit, within the window: that turn was a fragment. */

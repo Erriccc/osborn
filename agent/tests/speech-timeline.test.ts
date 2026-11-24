@@ -18,8 +18,8 @@ const { PipelineDirectLLM } = await import('../src/pipeline-direct-llm.js')
 const { llm } = await import('@livekit/agents')
 
 // #587: whole utterance or first word only
-for (const t of ['shh', 'Shh.', 'shhh', 'Shhhh!', 'shush', 'Shush.', 'shh, hold on', 'shush the dog', 'shhh I think']) assert.equal(isShhCue(t), true, t)
-for (const t of ['', 'sh', 'she', 'she said shh', 'shell', 'show me', 'should we ship', 'hush', 'ssh into the box', 'ok shh', 'can you shh', 'shoo', 's h h']) assert.equal(isShhCue(t), false, t)
+for (const t of ['shh', 'Shh.', 'shhh', 'Shhhh!', 'shush', 'Shush.', 'shh please', 'ok shh', 'shush now']) assert.equal(isShhCue(t), true, t)
+for (const t of ['', 'sh', 'she', 'she said shh', 'shush the dog now', 'shell', 'show me', 'should we ship', 'hush', 'ssh into the box', 'shh, hold on, what does parseConfig return?', 'shhh I think the plan is fine', 'can you shh', 'shoo', 's h h']) assert.equal(isShhCue(t), false, t)
 
 // The flag: on by default, off only for off/0/false
 assert.equal(speechTimelineHold({}), true)
@@ -136,3 +136,24 @@ for (const v of ['on', '1', 'TRUE', 'yes', '']) assert.equal(speechTimelineHold(
 }
 console.log('speech-timeline: ok')
 process.exit(0)
+
+{
+  const { SpeechTimeline, CONTINUATION_WINDOW_MS } = await import('../src/speech-timeline.js')
+  const t = new SpeechTimeline()
+  t.onTurnCommit(0); t.onTranscript(4, 2000); t.onTranscript(4, 4000)
+  assert.equal(t.onTurnCommit(240_000), null, 'a 240 s late turn gets no note')
+  const u = new SpeechTimeline()
+  u.onTurnCommit(0); u.onTranscript(4, 2000)
+  assert.deepEqual(u.onTurnCommit(3000), { continuedAfterMs: 2000 })
+  const r = new SpeechTimeline()
+  r.onTurnCommit(0); r.onTranscript(4, 2000); r.reset()
+  assert.equal(r.onTurnCommit(3000), null, 'reset drops pending speech')
+  assert.ok(CONTINUATION_WINDOW_MS > 0)
+  const { readFileSync } = await import('node:fs')
+  const pd = readFileSync(new URL('../src/pipeline-direct-llm.ts', import.meta.url), 'utf8')
+  assert.ok(pd.indexOf('takeVoiceAction?.(userText)') < pd.indexOf('speechTimeline.onTurnCommit()'), 'voice action is not a commit')
+  const ix = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
+  assert.ok(/inPhoneRoom\(\) \|\| !isShhCue/.test(ix), 'shh not handled in a phone room')
+  assert.ok(/function setNoiseGate/.test(ix) && !/noise_cancel'\) \{[^}]*noiseGate\.setEnabled/.test(ix))
+}
+console.log('ok speech-timeline fixes')

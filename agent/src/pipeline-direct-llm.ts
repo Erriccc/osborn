@@ -382,9 +382,8 @@ export class PipelineDirectLLM extends llm.LLM {
       })
     }
 
-    // #581: the speaking timeline learns a user turn reached the agent (a voice action included).
+    // #581: userTurn is committed to the speaking timeline below, once a voice action has not taken it.
     const userTurn = !!userText.trim() && !isAmbientTurn(userText)
-    const continued = userTurn ? speechTimeline.onTurnCommit() : null
 
     // ── PHONE VOICE ACTIONS (#367) ───────────────────────────────────────────
     // "stop that", "what are you doing?", a yes/no to a pending approval … run
@@ -395,6 +394,8 @@ export class PipelineDirectLLM extends llm.LLM {
       console.log(`📞 [voice-action] handled without the model: "${userText.slice(0, 60)}"`)
       return new NoiseGateStream(this, { chatCtx, toolCtx, connOptions }, async () => {})
     }
+    // A handled voice action (or shh) is not a turn: only now does the timeline commit.
+    const continued = userTurn ? speechTimeline.onTurnCommit() : null
 
     // ── SESSION TAIL injection (seam-only) ───────────────────────────────────
     // Inject the tail ONCE on the first real user turn after a compaction

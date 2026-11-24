@@ -11,6 +11,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { closeSync, existsSync, mkdirSync, openSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
+import { envFlagUnlessOff } from '../env-keys.js'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -45,7 +46,7 @@ export type LensLaunchResult =
 
 /** ON unless the env var is 0 | off | false | no. */
 function envOn(name: string): boolean {
-  return !['0', 'off', 'false', 'no'].includes((process.env[name] ?? '').trim().toLowerCase())
+  return envFlagUnlessOff(process.env[name])
 }
 
 /** ON by default; kill switch: OSBORN_CONTENT_LENS=0 | off | false | no. */
