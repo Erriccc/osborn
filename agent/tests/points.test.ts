@@ -27,10 +27,10 @@ const SHORT = 'Remind me to rotate the staging key before Friday.'
 
 t('a rambling five-point turn splits to five and chit-chat is dropped', () => {
   const pts = P.splitPoints(RAMBLE)
-  assert.equal(pts.length, 4, JSON.stringify(pts))
+  assert.equal(pts.length, 5, JSON.stringify(pts))
   assert.ok(pts.every((p) => !/^(okay|yeah|anyway|thanks)/i.test(p)))
   assert.match(pts[0], /login page/)
-  assert.match(pts[3], /nightly export/)
+  assert.match(pts[4], /weekends/)
 })
 
 t('noisy fixtures split on markers without punctuation', () => {
@@ -51,7 +51,7 @@ t('a repeated point keeps the last restatement', () => {
   assert.ok(!pts.some((p) => /every second\./.test(p) && !/cap at one hour/.test(p)))
 })
 
-t('caps: checklist 6, filing 4', () => {
+t('caps: split is uncapped, turnPoints caps at 4', () => {
   const many = [
     'The billing invoices page shows duplicate charges for annual customers.',
     'Our login redirect drops people on a blank screen after email verification.',
@@ -63,14 +63,15 @@ t('caps: checklist 6, filing 4', () => {
     'The search box keeps stale text after submitting a query.',
     'Mobile footer overlaps the menu on narrow phones.',
   ].join(' ')
-  assert.equal(P.splitPoints(many).length, 4)
+  assert.ok(P.splitPoints(many).length >= 5)
+  assert.equal(P.turnPoints(many, []).points.length, 4)
 })
 
 t('injected blocks are not the user\'s points: a session tail before a short reply yields nothing', () => {
   const tail = ['<session_tail>', ...RAMBLE.split('. ').map((l, i) => `2026-11-01T00:00:0${i % 10}  Assistant: ${l}.`), '</session_tail>'].join('\n')
   assert.deepEqual(P.splitPoints(`${tail}\n\nyes go ahead with that`), [])
   assert.deepEqual(P.splitPoints(`<system-reminder>${RAMBLE}</system-reminder>\n\nok`), [])
-  assert.equal(P.splitPoints(`${tail}\n\n${RAMBLE}`).length, 4)
+  assert.equal(P.splitPoints(`${tail}\n\n${RAMBLE}`).length, 5)
 })
 
 t('addressedPoints: a reply covering two of four leaves exactly two open', () => {
@@ -109,7 +110,7 @@ t('only mic turns split: meeting, system, phone and notification turns never do'
 t('a mic turn records local points and returns the checklist', () => {
   const llm: any = createClaudeLLM({ workingDirectory: cwd, followThrough: true })
   const out: string = llm.noteUserTurn(RAMBLE, 's-mic')
-  assert.match(out, /\[POINTS\] The user raised 4 points/)
+  assert.match(out, /\[POINTS\] The user raised the first 4 of 5 points/)
   const pts = L.readLoopRecords('s-mic', cwd).filter((r) => r.kind === 'point')
   assert.equal(pts.length, 4)
   assert.ok(pts.every((r) => r.source === 'inferred'))
@@ -166,8 +167,29 @@ t('a no-followThrough LLM records no points and returns nothing', () => {
 t('turnPoints: fewer than 3 points left after the ask filter yields none', () => {
   const all = P.splitPoints(RAMBLE)
   assert.ok(all.length >= 4)
-  assert.deepEqual(P.turnPoints(RAMBLE, all.slice(0, 3)), [])
-  assert.equal(P.turnPoints(RAMBLE, []).length, all.length)
+  assert.deepEqual(P.turnPoints(RAMBLE, all.slice(0, 3)).points, [])
+  assert.equal(P.turnPoints(RAMBLE, []).points.length, 4)
+})
+
+t('a restatement replaces its point in place, so it survives the cap', () => {
+  const body = 'The login page shows a blank screen after the email link redirect today. The dashboard chart for weekly signups shows last month numbers instead. Rename the billing settings tab because customers cannot find invoices anywhere. The nightly export job failed twice this week without any alert. Onboarding emails should stop going out during weekends for trial users. Seriously, the login blank screen after the email link redirect is the big one. Also please thank the whole team for everything they did this quarter okay.'
+  const pts = P.splitPoints(body)
+  assert.ok(pts.some((p) => /big one/.test(p)), JSON.stringify(pts))
+  assert.match(pts[0], /big one/)
+  assert.equal(pts.length, 6)
+})
+
+t('turnPoints: asks do not waste cap slots, and the checklist names the true count', () => {
+  const { points, total } = P.turnPoints(RAMBLE, [])
+  assert.equal(points.length, 4)
+  assert.ok(total >= 5)
+  assert.match(getPointsChecklist(points, total), new RegExp(`the first 4 of ${total} points`))
+  assert.match(getPointsChecklist(points), /raised 4 points/)
+})
+
+t('a point with fewer than two content words is folded, not tracked', () => {
+  const pts = P.splitPoints(RAMBLE.replace('Yeah.', 'The thing is I want you to do it again.'))
+  assert.ok(pts.every((p) => !/^the thing is/i.test(p)), JSON.stringify(pts))
 })
 
 console.log(`${pass} passed`)

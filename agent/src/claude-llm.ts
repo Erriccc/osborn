@@ -13,7 +13,7 @@ import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
 import { getResearchSystemPrompt, getDirectModeResearchPrompt, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, getPointsChecklist, PHONE_TOOLS_DENIED } from './prompts.js'
-import { dispatchCallRefusal } from './dispatch.js'
+import { dispatchCallRefusal, DISPATCH_TOOL } from './dispatch.js'
 import { steersTurn } from './content/transcript-sanitizer.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
 import { openStore, recall, storeExists, updateSessionStore, getStorePath, type RecallHit } from './session-store.js'
@@ -1596,7 +1596,8 @@ export class ClaudeLLM extends llm.LLM {
   /**
    * A real user turn (main thread): the raw prompt as evidence, the user's own asks as
    * explicit items (mic only), the last-session pointer, and once per instance the
-   * recap of earlier open items (filed or not). Returns the recap text ('' if none).
+   * recap of earlier open items (filed or not). Returns the context to add to the turn: the recap
+   * and, for a long turn, the points checklist ('' if none).
    */
   noteUserTurn(prompt: string, sessionId?: string | null): string {
     try {
@@ -1607,17 +1608,20 @@ export class ClaudeLLM extends llm.LLM {
       if (truncated) text = Buffer.from(text).subarray(0, MAX_PROMPT_BYTES).toString('utf-8')
       this.recordLoop({ kind: 'prompt', text, origin, ...(truncated ? { truncated: true } : {}) }, sessionId)
       let points: string[] = []
+      let pointsTotal = 0
       if (origin === 'user_mic') {
         const asks = extractAsks(prompt)
         for (const ask of asks) this.recordLoop({ kind: 'ask', id: loopIds.ask(ask), text: ask, source: 'explicit', origin }, sessionId)
         // A long turn (#455): each point is a local `point` item; the checklist rides on this turn's context.
         // Only a mic turn replaces them: a [MEETING]/[SYSTEM]/[NOTIFICATION] message folded into the live turn must not.
-        points = this.#opts.followThrough ? turnPoints(prompt, asks) : []
+        const tp = this.#opts.followThrough ? turnPoints(prompt, asks) : { points: [] as string[], total: 0 }
+        points = tp.points
+        pointsTotal = tp.total
         this.#turnDispatched = ''
         this.#turnPoints = points
         for (const p of this.#turnPoints) this.recordLoop({ kind: 'point', id: loopIds.point(p), text: p, source: 'inferred', origin }, sessionId)
       }
-      const checklist = this.#opts.followThrough && points.length ? getPointsChecklist(points) : ''
+      const checklist = points.length ? getPointsChecklist(points, pointsTotal) : ''
       const sid = sessionId || this.#sessionId
       const cwd = this.#opts.workingDirectory
       if (!this.#opts.followThrough || !sid || !cwd) return checklist
@@ -2458,8 +2462,9 @@ export class ClaudeLLM extends llm.LLM {
             } else if (block.type === 'tool_use' && this.#turnPoints.length) {
               // What this turn dispatched, to close its points at turn end (#455).
               // A Task/Agent prompt is the main agent restating the turn, not a sign the points were handled.
-              const delegating = block.name === 'Task' || block.name === 'Agent'
-              this.#turnDispatched += [block.input?.description, delegating ? undefined : block.input?.prompt, block.input?.instruction].filter((x) => typeof x === 'string').join(' ') + '\n'
+              // Same for the dispatch tool: a delegation alone never closes a point.
+              const delegating = block.name === 'Task' || block.name === 'Agent' || block.name === DISPATCH_TOOL
+              if (!delegating) this.#turnDispatched += [block.input?.description, block.input?.prompt, block.input?.instruction].filter((x) => typeof x === 'string').join(' ') + '\n'
             }
           }
         }
@@ -3055,7 +3060,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 if (!fromSubagent && sid && this.#opts.workingDirectory) {
                   this.#llmRef.triggerStoreUpdate(sid, this.#opts.workingDirectory)
                 }
-                // Follow-through ledger (#378): raw prompt + the user's own asks; recap once.
+                // Follow-through ledger (#378): raw prompt + the user's own asks; recap once. The returned text is the recap plus any points checklist.
                 const loopRecap = fromSubagent ? '' : this.#llmRef.noteUserTurn(String(input?.prompt || ''), sid)
 
                 // Recall is best-effort and must never approach the SDK's 30s hook budget.

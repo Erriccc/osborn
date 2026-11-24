@@ -47,7 +47,7 @@ export function splitPoints(text: string): string[] {
       for (let i = 0; i < 4 && LEAD_MARKER.test(s); i++) s = s.replace(LEAD_MARKER, '')
       s = s.replace(/^[\s,;:-]+|[\s,;:-]+$/g, '')
       if (!s || !/\w/.test(s) || CHIT_CHAT.test(s)) continue
-      if (countWords(s) < MIN_FRAGMENT_WORDS) {
+      if (countWords(s) < MIN_FRAGMENT_WORDS || contentWords(s).size < 2) {
         if (segs.length) segs[segs.length - 1] += ' ' + s
         continue
       }
@@ -62,11 +62,11 @@ export function splitPoints(text: string): string[] {
       const inter = [...w].filter((x) => k.w.has(x)).length
       return inter >= 3 && inter / Math.min(w.size, k.w.size) >= 0.6
     })
-    if (dup >= 0) kept.splice(dup, 1)
-    kept.push({ s, w })
+    if (dup >= 0) kept[dup] = { s, w }
+    else kept.push({ s, w })
   }
   if (kept.length < POINTS_MIN_COUNT) return []
-  return kept.slice(0, POINTS_CAP).map((k) => clip(k.s, MAX_ITEM_CHARS))
+  return kept.map((k) => clip(k.s, MAX_ITEM_CHARS))
 }
 
 /**
@@ -84,12 +84,12 @@ export function addressedPoints(points: string[], reply: string): string[] {
   })
 }
 
-/** The points of a turn to track: capped, minus any that restate an explicit ask (those are filed as asks). */
-export function turnPoints(prompt: string, asks: string[]): string[] {
+/** The points of a turn to track (the first POINTS_CAP of `total`), minus any that restate an explicit ask (those are filed as asks). */
+export function turnPoints(prompt: string, asks: string[]): { points: string[]; total: number } {
   const lowAsks = asks.map((a) => a.toLowerCase())
   const kept = splitPoints(prompt).filter((p) => {
     const l = p.toLowerCase()
     return !lowAsks.some((a) => a.includes(l) || l.includes(a))
   })
-  return kept.length < POINTS_MIN_COUNT ? [] : kept
+  return kept.length < POINTS_MIN_COUNT ? { points: [], total: 0 } : { points: kept.slice(0, POINTS_CAP), total: kept.length }
 }
