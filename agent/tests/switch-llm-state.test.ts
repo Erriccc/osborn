@@ -349,5 +349,30 @@ await t('#539 D: successful interrupt with no result → leftover old block keep
   assert.equal(llm.isRetiredTurnId(ids[0]), true)
 })
 
+await t('#539 D: deadline path — the retired id is the interrupted turn\'s, never the fresh reply\'s', async () => {
+  const fq = makeFakeQueryFn()
+  const llm: any = newLLM(fq, { skipTTSQueue: true })
+  const ids: string[] = []
+  const c = cb(llm); (c.eventEmitter as EventEmitter).on('tts_say', (d: any) => ids.push(d.messageId))
+  llm.pushMessage('hi', {} as any, c)
+  const q: any = fq.spawned[0]
+  let resolveInterrupt: () => void = () => {}
+  q.interrupt = () => new Promise<void>((r) => { resolveInterrupt = r })
+  q.emit(asst('Cut off answer.')); await tick(); await tick()
+  void llm.interruptQuery(); await tick()
+  const realSetTimeout = globalThis.setTimeout
+  ;(globalThis as any).setTimeout = (f: any, ms: number) => realSetTimeout(f, ms === 8000 ? 0 : ms)
+  try { llm.pushMessage('again', {} as any, c) } finally { (globalThis as any).setTimeout = realSetTimeout }
+  await tick(); await tick()
+  q.emit(asst('Reply part one.')); await tick(); await tick()
+  resolveInterrupt(); await tick(); await tick()
+  q.emit(asst('Reply part two.')); await tick(); await tick()
+  assert.equal(ids.length, 3, JSON.stringify(ids))
+  assert.equal(ids[1], ids[2], 'both reply parts keep the fresh id')
+  assert.ok(ids[0] !== ids[1])
+  assert.equal(llm.isRetiredTurnId(ids[1]), false)
+  assert.equal(llm.isRetiredTurnId(ids[0]), true)
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
