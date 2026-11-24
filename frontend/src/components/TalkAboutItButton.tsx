@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { createSupabaseBrowser } from '@/lib/supabase-browser'
 import { buildSeededChatUrl, reproduceTaskSeed } from '@/lib/seed-chat'
-import { signInHref } from '@/lib/signin-href'
+import { signInHere } from '@/lib/signin-href'
 
 /**
  * Public-page CTA to REPRODUCE the task. A published piece is a finished task;
@@ -50,7 +50,7 @@ export default function TalkAboutItButton({
     if (signedIn) {
       router.push(buildSeededChatUrl(reproduceTaskSeed({ type, title, hook, body })))
     } else {
-      router.push(signInHref(window.location.pathname + window.location.search))
+      router.push(signInHere())
     }
   }
 

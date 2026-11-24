@@ -13,4 +13,6 @@ for (const bad of ['//evil.com', '/\\evil.com', '\\\\evil.com', '/.//evil.com', 
   '/./\\evil.com', 'https://evil.com/x', 'javascript:alert(1)', '', null, undefined]) {
   assert.equal(sameSitePath(bad, o), '/dashboard', String(bad))
 }
+for (const bad of ['/login', '/login/', '/login?x', '/login#h', '/login/.']) assert.equal(sameSitePath(bad, o), '/dashboard', bad)
+for (const ok of ['/login-help', '/loginx', '/login/x']) assert.equal(sameSitePath(ok, o), ok, ok)
 console.log('signin-href ok')
