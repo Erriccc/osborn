@@ -4,12 +4,15 @@
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 
 const home = mkdtempSync(join(tmpdir(), 'loops-recap-test-'))
 process.env.CLAUDE_CONFIG_DIR = join(home, '.claude')
 const cwd = join(home, 'proj')
 mkdirSync(cwd, { recursive: true })
+execFileSync('git', ['init', '-q'], { cwd })
+execFileSync('git', ['remote', 'add', 'origin', 'https://github.com/o/r.git'], { cwd })
 const L = await import('../src/loops-ledger.js')
 const { readLastSession } = await import('../src/content/lens-paths.js')
 const { createClaudeLLM } = await import('../src/claude-llm.js')
@@ -162,3 +165,28 @@ t('forged kinds are ignored and do not break the recap', () => {
 
 rmSync(home, { recursive: true, force: true })
 console.log(`\n${pass} passed`)
+
+t('#532: the filed branch honours skipSession', () => {
+  L.appendLoopRecord('u-own', cwd, { kind: 'ask', id: 'ask:own', text: 'own filed', source: 'explicit', origin: 'user_mic', fg: true })
+  L.appendLoopRecord('u-own', cwd, { kind: 'filed', id: 'ask:own', url: 'https://github.com/o/r/issues/500', at: '2026-11-21T00:00:00.000Z' })
+  assert.deepEqual(L.takeLoopsRecap(cwd, 3, 'u-own'), [])
+  assert.equal(L.takeLoopsRecap(cwd).length, 1) // not consumed
+})
+
+t('#532: a filed item with another repo url is shown without it, still labelled filed', () => {
+  L.appendLoopRecord('u-foreign', cwd, { kind: 'ask', id: 'ask:foreign', text: 'foreign link', source: 'explicit', origin: 'user_mic', fg: true })
+  L.appendLoopRecord('u-foreign', cwd, { kind: 'filed', id: 'ask:foreign', url: 'https://github.com/evil/x/issues/1', at: '2026-11-22T00:00:00.000Z' })
+  const r = L.takeLoopsRecap(cwd)
+  assert.equal(r.length, 1)
+  assert.equal(r[0].url, undefined)
+  assert.equal(r[0].filed, true)
+  const out = getFollowThroughRecap(r)
+  assert.ok(!/evil/.test(out))
+  assert.match(out, /Filed while you were away: "foreign link" \(link not shown\)/)
+  assert.ok(!/Still open, not filed/.test(out))
+})
+
+t('#532: a filed item whose url fails the shape check is not labelled unfiled', () => {
+  const out = getFollowThroughRecap([{ text: 'x', filed: true, url: 'https://github.com/o/r/issues/1/' }])
+  assert.match(out, /Filed while you were away: "x" \(link not shown\)/)
+})
