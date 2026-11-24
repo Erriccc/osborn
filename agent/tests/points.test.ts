@@ -157,4 +157,17 @@ t('lead markers only strip whole words', () => {
   assert.ok(!/(^|\| )\. ?\.|\. \./.test(j('Yeah. The login page throws a blank screen after the redirect from the email link.')))
 })
 
+t('a no-followThrough LLM records no points and returns nothing', () => {
+  const llm: any = createClaudeLLM({ workingDirectory: cwd })
+  assert.equal(llm.noteUserTurn(RAMBLE, 's-nofollow'), '')
+  assert.equal(L.readLoopRecords('s-nofollow', cwd).filter((r) => r.kind === 'point').length, 0)
+})
+
+t('turnPoints: fewer than 3 points left after the ask filter yields none', () => {
+  const all = P.splitPoints(RAMBLE)
+  assert.ok(all.length >= 4)
+  assert.deepEqual(P.turnPoints(RAMBLE, all.slice(0, 3)), [])
+  assert.equal(P.turnPoints(RAMBLE, []).length, all.length)
+})
+
 console.log(`${pass} passed`)

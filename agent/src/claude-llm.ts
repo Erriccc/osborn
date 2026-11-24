@@ -1612,12 +1612,12 @@ export class ClaudeLLM extends llm.LLM {
         for (const ask of asks) this.recordLoop({ kind: 'ask', id: loopIds.ask(ask), text: ask, source: 'explicit', origin }, sessionId)
         // A long turn (#455): each point is a local `point` item; the checklist rides on this turn's context.
         // Only a mic turn replaces them: a [MEETING]/[SYSTEM]/[NOTIFICATION] message folded into the live turn must not.
-        points = turnPoints(prompt, asks)
+        points = this.#opts.followThrough ? turnPoints(prompt, asks) : []
         this.#turnDispatched = ''
         this.#turnPoints = points
         for (const p of this.#turnPoints) this.recordLoop({ kind: 'point', id: loopIds.point(p), text: p, source: 'inferred', origin }, sessionId)
       }
-      const checklist = points.length ? getPointsChecklist(points) : ''
+      const checklist = this.#opts.followThrough && points.length ? getPointsChecklist(points) : ''
       const sid = sessionId || this.#sessionId
       const cwd = this.#opts.workingDirectory
       if (!this.#opts.followThrough || !sid || !cwd) return checklist

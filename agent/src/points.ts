@@ -1,6 +1,6 @@
 /**
- * points.ts — points raised in one long spoken turn (#455). Pure, no model: split a long
- * transcript into its separate points, and later mark which ones the reply covered.
+ * points.ts — points raised in one long user turn (#455). Pure, no model: split a long
+ * message (a voice transcript, or typed text, which is not told apart yet) into its separate points, and later mark which ones the reply covered.
  */
 import { SPEECH_STOPWORDS, countWords, terms } from './stopwords.js'
 import { clip } from './content/lens-ingest.js'
@@ -87,8 +87,9 @@ export function addressedPoints(points: string[], reply: string): string[] {
 /** The points of a turn to track: capped, minus any that restate an explicit ask (those are filed as asks). */
 export function turnPoints(prompt: string, asks: string[]): string[] {
   const lowAsks = asks.map((a) => a.toLowerCase())
-  return splitPoints(prompt).filter((p) => {
+  const kept = splitPoints(prompt).filter((p) => {
     const l = p.toLowerCase()
     return !lowAsks.some((a) => a.includes(l) || l.includes(a))
   })
+  return kept.length < POINTS_MIN_COUNT ? [] : kept
 }
