@@ -40,7 +40,7 @@ export type LoopOrigin = 'user_mic' | 'meeting' | 'phone' | 'tool' | 'system'
 export type LoopSource = 'explicit' | 'inferred'
 
 export type LoopKind =
-  | 'session' | 'prompt' | 'ask'
+  | 'session' | 'prompt' | 'ask' | 'ask_addressed'
   | 'todo' | 'todo_status' | 'task' | 'task_status'
   | 'dispatch_started' | 'dispatch_stopped' | 'dispatch_severed'
   | 'steward_block' | 'steward_clear'
@@ -140,6 +140,8 @@ export function diffTodos(
 
 const OPENS: Partial<Record<LoopKind, (r: LoopRecord) => boolean>> = {
   ask: () => true,
+  // A point of a long turn that the reply covered (#455).
+  ask_addressed: () => false,
   todo: (r) => r.status !== 'completed',
   todo_status: (r) => r.status === 'pending' || r.status === 'in_progress',
   task: (r) => r.status !== 'completed' && r.status !== 'deleted',
@@ -211,7 +213,8 @@ export function publicRepos(records: LoopRecord[]): Set<string> {
 
 /** Open items this machine may file: written by the foreground voice session only. */
 export function fileableLoops(records: LoopRecord[]): LoopItem[] {
-  return openLoops(records).filter((i) => i.fg)
+  // A point inferred from a long turn stays local until a read-back exists (#461).
+  return openLoops(records).filter((i) => i.fg && !(i.kind === 'ask' && i.source === 'inferred'))
 }
 
 function isLoopRecord(o: any): o is LoopRecord {

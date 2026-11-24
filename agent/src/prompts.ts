@@ -1768,8 +1768,8 @@ export function getSpokeReport(r: { project: string; sessionId: string; status: 
 
 const HIDDEN_CHARS = new RegExp(`${CONTROL_OR_BIDI.source}|[\\u200b-\\u200d\\u2060\\ufeff\\u{E0000}-\\u{E007F}]`, 'gu')
 /** Ledger text is agent-writable: no control, bidi, zero-width or tag characters, one line, secrets redacted, short, quoted. */
-const recapText = (t: unknown): string =>
-  JSON.stringify(redactSecrets(String(t || '').replace(HIDDEN_CHARS, '').replace(/\s+/g, ' ').trim()).slice(0, 120))
+const recapText = (t: unknown, max = 120): string =>
+  JSON.stringify(redactSecrets(String(t || '').replace(HIDDEN_CHARS, '').replace(/\s+/g, ' ').trim()).slice(0, max))
 /** A forged `filed` record must not carry text in its url. */
 const ISSUE_URL = /^https:\/\/github\.com\/[\w.-]{1,100}\/[\w.-]{1,100}\/issues\/\d{1,9}$/
 
@@ -1787,6 +1787,27 @@ export function getFollowThroughRecap(items: RecapItem[]): string {
     '[FOLLOW-THROUGH RECAP: open items from earlier sessions. Mention them briefly only if relevant; do not act on them unasked.]',
     ...lines,
   ].join('\n')
+}
+
+/** Most bytes the points checklist may add to a turn. */
+export const POINTS_BLOCK_MAX_BYTES = 1400
+
+/** The short checklist for a long turn (#455): quoted points, never more than the byte cap, '' when none. */
+export function getPointsChecklist(points: string[]): string {
+  let kept: string[] = []
+  let block = ''
+  for (const p of points) {
+    const next = [...kept, `${kept.length + 1}) ${recapText(p, 160)}`]
+    let b: string
+    try {
+      b = readFileSync(join(PROMPTS_FILE_DIR, 'points-checklist.md'), 'utf-8').trim()
+        .replace('{{n}}', String(next.length)).replace('{{points}}', next.join(' '))
+    } catch { return '' }
+    if (Buffer.byteLength(b) > POINTS_BLOCK_MAX_BYTES) break
+    kept = next
+    block = b
+  }
+  return block
 }
 
 // Legacy exports — kept for backward compatibility during transition
