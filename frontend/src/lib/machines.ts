@@ -122,7 +122,8 @@ export function sandboxImageWithTag(ref: string, version: string): string {
   return p ? `${p.host}/${p.repo}:${version}` : ref
 }
 
-function parseVersion(v: unknown): [number, number, number] | null {
+/** `[major, minor, patch]` of a plain `x.y.z` string, else null. Pure — exported for reuse/tests. */
+export function parseVersion(v: unknown): [number, number, number] | null {
   const m = typeof v === 'string' ? /^(\d+)\.(\d+)\.(\d+)$/.exec(v.trim()) : null
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
 }
@@ -397,7 +398,7 @@ export async function readMachineActivity(appName: string): Promise<{ status: Sa
 export function imageVersionFromRef(image: string | null | undefined): string | null {
   if (!image) return null
   const tag = image.split('@', 1)[0].split(':').pop() ?? ''
-  return /^\d+\.\d+\.\d+$/.test(tag) ? tag : null
+  return parseVersion(tag) ? tag : null
 }
 
 /**
