@@ -2597,7 +2597,12 @@ function VoiceRoomInner({
         }
       } else if (data.type === 'fast_brain_response') {
         // Pipeline mode: Gemini fast brain parallel response — show in main chat for monitoring
-        if (data.text && data.text.trim()) {
+        // The answer belongs to the question it was asked for: drop it once the user has said something else.
+        const fbQ = String(data.question || '').trim().toLowerCase()
+        const lastUser = [...messagesRef.current].reverse().find((m) => m.role === 'user')?.content.trim().toLowerCase()
+        const stale = !!fbQ && !!lastUser && !lastUser.includes(fbQ) && !fbQ.includes(lastUser)
+        if (stale) console.log('🧠⚡ Fast brain response dropped (question is not the latest)')
+        if (!stale && data.text && data.text.trim()) {
           // User-facing label only \u2014 the millisecond timing, responseType and
           // toolsUsed were developer telemetry that read as a bug in the chat.
           // They still arrive on `data` for logging below; keep the human marker.
@@ -2607,7 +2612,7 @@ function VoiceRoomInner({
           // guesses a provider that isn't on the wire.
           const label = `${fastBrainLabel({ provider: data.provider, agentRole: data.agentRole })} (provisional \u2014 the full answer follows)`
           console.log(`\uD83E\uDDE0\u26A1 Fast brain response:`, data)
-          addMessageRef.current?.('assistant', `${label}\n${data.text}`, 'fast-brain', 'chat')
+          addMessageRef.current?.('assistant', `${label}${data.question ? `\n> ${String(data.question).trim().slice(0, 80)}` : ''}\n${data.text}`, 'fast-brain', 'chat')
         }
       } else if (data.type === 'skills_status') {
         if (data.skills && Array.isArray(data.skills)) {

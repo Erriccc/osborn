@@ -192,6 +192,7 @@ export class PipelineDirectLLM extends llm.LLM {
   #claudeLLM: ClaudeLLM
   #opts: PipelineDirectOptions
   #turnAbort: AbortController | null = null
+  #turnSeq = 0
   // Set to true when PostCompact fires — cleared after injecting the tail once
   // on the next real user turn (seam-only injection, never per-turn).
   #postCompactionTailPending = false
@@ -576,6 +577,7 @@ export class PipelineDirectLLM extends llm.LLM {
     if (this.#turnAbort) this.#turnAbort.abort()
     this.#turnAbort = new AbortController()
     const signal = this.#turnAbort.signal
+    const turnSeq = ++this.#turnSeq
     // Bind this turn to the inner it started on. After swapInner() the closures
     // below must not reach the newly promoted session (see buildGuardedAgentControl).
     const inner = this.#claudeLLM
@@ -613,6 +615,7 @@ export class PipelineDirectLLM extends llm.LLM {
         chatHistory: this.#opts.getChatHistory?.() || [],
         researchContext: this.#opts.getResearchContext?.(),
         sessionBaseDir,
+        signal,
         agentControl: buildGuardedAgentControl({
           inner,
           getCurrentInner: () => this.#claudeLLM,
@@ -620,7 +623,10 @@ export class PipelineDirectLLM extends llm.LLM {
         }),
       })
 
-      if (signal.aborted) return
+      if (shouldDropFastBrainResult(turnSeq, this.#turnSeq, signal.aborted)) {
+        console.log('🧠⚡ [pipeline] fast brain answer dropped (newer turn)')
+        return
+      }
 
       const elapsedMs = Date.now() - startMs
       console.log(`🧠⚡ [pipeline] ${result.type} in ${elapsedMs}ms [${result.toolsUsed.join(',')}]: "${result.script.substring(0, 80)}"`)
@@ -642,6 +648,10 @@ export class PipelineDirectLLM extends llm.LLM {
     }
   }
 }
+
+/** A fast-brain answer belongs to the turn that asked; drop it once a newer turn started or this one was aborted. */
+export const shouldDropFastBrainResult = (turnSeq: number, latestSeq: number, aborted: boolean): boolean =>
+  aborted || turnSeq !== latestSeq
 
 /**
  * Fast-brain agentControl bound to the inner ClaudeLLM a turn started on. Every
