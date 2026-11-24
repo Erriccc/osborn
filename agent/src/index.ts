@@ -4090,7 +4090,13 @@ async function main() {
     } else {
       lastInterruption = { spokenText: '', recentMessages: '', suppressedText: t, timestamp: Date.now() }
     }
-    console.log(`🤐 Suppressed text buffered (+${t.length} chars, total ${lastInterruption.suppressedText.length}): "${t.substring(0, 80)}${t.length > 80 ? '...' : ''}"`)
+    console.log(`🤐 [suppressed] BUFFERED +${t.length} chars, total ${lastInterruption.suppressedText.length} (agent: ${agentState}, user: ${userState})`)
+  }
+
+  /** Clear lastInterruption, logging any suppressed reply text that was never spoken (#539 diagnostics). */
+  function clearInterruption(why: string) {
+    if (lastInterruption?.suppressedText) console.warn(`🤐 [suppressed] DISCARDED ${lastInterruption.suppressedText.length} chars unspoken (${why}, agent: ${agentState}, user: ${userState})`)
+    lastInterruption = null
   }
 
   // L2b: client notices (favorite_changed) ride the next real user turn as
@@ -4110,7 +4116,7 @@ async function main() {
     if (!lastInterruption) return null
     // Expire after 60s — user may have waited too long
     if (Date.now() - lastInterruption.timestamp > 60_000) {
-      lastInterruption = null
+      clearInterruption('expired 60s')
       return null
     }
     const ctx = {
@@ -4120,6 +4126,7 @@ async function main() {
       fullBlockText: lastInterruption.fullBlockText,
     }
     staleTurnId = staleIdOnConsume(lastInterruption, staleTurnId)
+    if (ctx.suppressedText) console.log(`🤐 [suppressed] CONSUMED ${ctx.suppressedText.length} chars into next prompt (new user turn)`)
     lastInterruption = null
     return ctx
   }
@@ -4476,7 +4483,7 @@ async function main() {
       isProcessingQueue = false
       currentSpeechHandle = null
       activeSpeechHandles.clear()
-      lastInterruption = null
+      clearInterruption('session reset')
       if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
       stopProactiveLoop()
       if (activeResearch) {
@@ -5256,7 +5263,7 @@ async function main() {
               handleSpeechDone(sh, spokenText, data.text, data.messageId)
             } else {
               console.log(`✅ [${sayId}] session.say DONE`)
-              if (currentSpeechHandle === sh) lastInterruption = null
+              if (currentSpeechHandle === sh) clearInterruption('uninterrupted say finished')
             }
           })
           console.log(`🗣️ [${sayId}] session.say queued (SpeechHandle tracked)`)
@@ -5521,7 +5528,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    lastInterruption = null
+    clearInterruption('session reset')
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -5770,7 +5777,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    lastInterruption = null
+    clearInterruption('session reset')
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -6193,13 +6200,16 @@ async function main() {
               userState === 'listening' &&
               currentSession
             ) {
-              console.log(`🔁 Replaying suppressed text (${capturedText.length} chars) — user returned to listening, no new turn arrived`)
+              console.log(`🔁 [suppressed] REPLAY ${capturedText.length} chars — user returned to listening, no new turn arrived`)
               lastInterruption.suppressedText = ''
               try {
                 ;(currentSession as any).say(capturedText)
               } catch (err) {
                 console.warn('⚠️ Suppressed text replay failed:', err instanceof Error ? err.message : err)
               }
+            } else {
+              const consumed = lastInterruption !== capturedInterruption || lastInterruption?.suppressedText !== capturedText
+              console.warn(`🤐 [suppressed] REPLAY SKIPPED ${capturedText.length} chars (agent: ${agentState}, user: ${userState}, session: ${!!currentSession}, newTurnConsumedOrChanged: ${consumed})`)
             }
           }, 1200)
         }
@@ -6759,7 +6769,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    lastInterruption = null
+    clearInterruption('session reset')
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
