@@ -378,10 +378,12 @@ export function BrowserPanel() {
 
   if (signedOut) {
     return (
-      <SignInCard className="max-w-md mx-auto mt-10"
-        icon={<svg className="w-6 h-6 text-[var(--text-muted)]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18" /></svg>}
+      <div className="flex min-h-[calc(100vh-6rem)] items-center justify-center">
+      <SignInCard className="w-full max-w-md"
+        icon={<svg className="w-6 h-6" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18" /></svg>}
         title="Sign in to use the browser" body="The live browser view is for signed-in accounts."
         href={signInHref('/browser')} label="Sign in" />
+      </div>
     )
   }
 
@@ -686,6 +688,9 @@ export function BrowserPanel() {
           {tasks.length > 0 && <a className="text-neutral-400 hover:underline" href={api('audio')} target="_blank" rel="noreferrer">run audio</a>}
         </div>
       </div>
+      <p className="mt-3 text-center text-xs text-neutral-600">
+        Watching wakes the engine (~40s to first pixels) and holds it awake while streaming.
+      </p>
     </div>
   )
 }
