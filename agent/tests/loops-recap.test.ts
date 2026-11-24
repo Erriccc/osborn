@@ -163,11 +163,31 @@ t('forged kinds are ignored and do not break the recap', () => {
   assert.equal(r[0].text, 'good one')
 })
 
-t('#532: the filed branch honours skipSession', () => {
+t('#532: the live session hears of its own filed items, but not its own unfiled ones', () => {
   L.appendLoopRecord('u-own', cwd, { kind: 'ask', id: 'ask:own', text: 'own filed', source: 'explicit', origin: 'user_mic', fg: true })
   L.appendLoopRecord('u-own', cwd, { kind: 'filed', id: 'ask:own', url: 'https://github.com/o/r/issues/500', at: '2026-11-21T00:00:00.000Z' })
-  assert.deepEqual(L.takeLoopsRecap(cwd, 3, 'u-own'), [])
-  assert.equal(L.takeLoopsRecap(cwd).length, 1) // not consumed
+  L.appendLoopRecord('u-own', cwd, { kind: 'question', id: 'question:own', text: 'own open q', origin: 'tool', fg: true })
+  const r = L.takeLoopsRecap(cwd, 3, 'u-own')
+  assert.deepEqual(r.map((x) => x.text), ['own filed'])
+  assert.deepEqual(L.takeLoopsRecap(cwd, 3, 'u-own'), []) // recapped once
+  assert.equal(L.takeLoopsRecap(cwd).length, 1) // the unfiled one, from another session
+})
+
+t('#532: only this repo exactly: o/r.evil and o/rx links are not shown', () => {
+  for (const [i, u] of ['https://github.com/o/r.evil/issues/1', 'https://github.com/o/rx/issues/2'].entries()) {
+    L.appendLoopRecord(`u-near${i}`, cwd, { kind: 'ask', id: `ask:near${i}`, text: `near ${i}`, source: 'explicit', origin: 'user_mic', fg: true })
+    L.appendLoopRecord(`u-near${i}`, cwd, { kind: 'filed', id: `ask:near${i}`, url: u, at: `2026-11-23T00:00:0${i}.000Z` })
+  }
+  const r = L.takeLoopsRecap(cwd)
+  assert.equal(r.length, 2)
+  assert.ok(r.every((x) => x.url === undefined && x.filed))
+  assert.equal((getFollowThroughRecap(r).match(/\(link not shown\)/g) ?? []).length, 2)
+})
+
+t('#532: a filed item with empty text is ignored', () => {
+  L.appendLoopRecord('u-notext', cwd, { kind: 'ask', id: 'ask:ghost', text: '', source: 'explicit', origin: 'user_mic', fg: true })
+  L.appendLoopRecord('u-notext', cwd, { kind: 'filed', id: 'ask:ghost', url: 'https://github.com/o/r/issues/600', at: '2026-11-24T00:00:00.000Z' })
+  assert.deepEqual(L.takeLoopsRecap(cwd), [])
 })
 
 t('#532: a filed item with another repo url is shown without it, still labelled filed', () => {
