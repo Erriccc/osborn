@@ -45,7 +45,7 @@ export type MirrorResult =
 
 const GITHUB_API = 'https://api.github.com'
 // Default to this repo; overridable so forks/staging can retarget without code edits.
-const REPO = (process.env.GITHUB_REPO || 'Erriccc/osborn').trim()
+export const REPO = (process.env.GITHUB_REPO || 'Erriccc/osborn').trim()
 const USER_REPORT_LABEL = 'user-report'
 
 function token(): string | null {

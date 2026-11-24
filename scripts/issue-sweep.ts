@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { terms } from '../agent/src/stopwords.js'
-import { FOLLOW_THROUGH_LABEL } from '../frontend/src/lib/github-issue-mirror.js'
+import { FOLLOW_THROUGH_LABEL, REPO } from '../frontend/src/lib/github-issue-mirror.js'
 
 const DAY = 864e5
 const CLAIM = /^claim:\s+(\S+)\s+(\S+)\s+(\S+?)[.,;]*[ \t]*$/m
@@ -94,14 +94,13 @@ const gh = (path) => {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const repo = (process.env.GITHUB_REPO || 'Erriccc/osborn').trim()
   const config = JSON.parse(readFileSync(new URL('../docs/issue-sweep-config.json', import.meta.url), 'utf8'))
-  const issues = gh(`repos/${repo}/issues?state=open&per_page=100`).filter((i) => !i.pull_request)
-  const prs = gh(`repos/${repo}/pulls?state=closed&per_page=100`).filter((p) => p.merged_at)
-  const openPrs = gh(`repos/${repo}/pulls?state=open&per_page=100`)
+  const issues = gh(`repos/${REPO}/issues?state=open&per_page=100`).filter((i) => !i.pull_request)
+  const prs = gh(`repos/${REPO}/pulls?state=closed&per_page=100`).filter((p) => p.merged_at)
+  const openPrs = gh(`repos/${REPO}/pulls?state=open&per_page=100`)
   const comments = {}
   for (const i of issues.filter((x) => x.comments && claimed(x)))
-    comments[i.number] = gh(`repos/${repo}/issues/${i.number}/comments?per_page=100`)
+    comments[i.number] = gh(`repos/${REPO}/issues/${i.number}/comments?per_page=100`)
   const r = sweep({ issues, prs, openPrs, comments, config })
   console.log(process.argv.includes('--json') ? JSON.stringify(r, null, 2) : render(r))
 }
