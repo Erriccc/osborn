@@ -1,4 +1,5 @@
 // Load environment variables FIRST before any other imports
+import { StaleTurnGate } from './stale-turn-gate.js'
 import 'dotenv/config'
 // Then hydrate volume-persisted user secrets into process.env, BEFORE any
 // module that reads its keys at load time (recall-client's RECALL_REGION const,
@@ -4007,6 +4008,8 @@ async function main() {
   // all pre-queued chunks before going to listen. Safe on 1.8.1 + Soniox WebSocket
   // (the 1.4.x crash path was OpenAI HTTP fetch abort → recoverable:false — gone now).
   const activeSpeechHandles = new Set<any>()
+  // Turns the user cut off: their later tts_say blocks are dropped (#456)
+  const staleTurns = new StaleTurnGate()
 
   // Last interruption context — gathered at interrupt time, consumed when user's message arrives
   let lastInterruption: {
@@ -5137,6 +5140,14 @@ async function main() {
       // folded into lastInterruption so the next chat() to Claude carries it as
       // "you wrote this but the user did not hear it — re-articulate if relevant."
       if (userState === 'speaking') {
+        staleTurns.markStale((data as any).messageId)
+        appendSuppressedText(data.text)
+        return
+      }
+      // A late block from a turn the user already cut off: never speak it over
+      // the new answer; the next turn carries it as unheard text instead.
+      if (staleTurns.isStale((data as any).messageId)) {
+        console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         appendSuppressedText(data.text)
         return
       }
@@ -5190,6 +5201,7 @@ async function main() {
             activeSpeechHandles.delete(sh)
             if (sh.interrupted) {
               console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
+              staleTurns.markStale((data as any).messageId)
               // Cancel all other queued handles so the queue flushes on barge-in.
               // Without this, LiveKit auto-starts the next queued handle even after
               // the current one is interrupted — user has to wait for the whole queue
