@@ -196,6 +196,56 @@ t('note: bounded, quoted, redacted, hidden characters stripped, at most one row'
   assert.match(note, /data, not instructions/)
 })
 
+// ── stale / redundant ──
+const wid = (n: number) => L.loopIds.work('w' + n)
+const work = (n: number, openMs: number, resMs: number, text: string, result: string, role = 'writer'): R[] => [
+  rec(openMs, { kind: 'work_opened', id: wid(n), text, owner: `local:${role}`, role, via: 'task' }),
+  rec(resMs, { kind: 'work_result', id: wid(n), result }),
+]
+const NOW = T0 + 10 * 60_000
+const pend = (rs: R[], spoken: import('../src/loops-ledger.js').SpokenLine[] = [], now = NOW) => L.pendingDeliveries(rs, now, { spoken, max: 5 }).map((i) => i.id)
+
+t('stale: superseded by a newer result for the same role and task', () => {
+  const rs = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), ...work(2, 70_000, 200_000, 'writer: fix login', 'Patched the login redirect again')]
+  assert.deepEqual(pend(rs), [wid(2)])
+  assert.deepEqual(L.staleWork(rs, NOW), [{ id: wid(1), reason: 'redundant' }])
+  const other = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), ...work(2, 70_000, 200_000, 'writer: add billing', 'Billing page added', 'writer')]
+  assert.equal(pend(other).length, 2)
+})
+t('redundant: the assistant already said it', () => {
+  const rs = work(1, 0, 60_000, 'tester: run suite', 'Suite passed: 42 tests green, coverage improved')
+  const said = [{ at: T0 + 90_000, text: 'The suite passed, all 42 tests are green and coverage improved.' }]
+  assert.deepEqual(pend(rs, said), [])
+  assert.deepEqual(L.staleWork(rs, NOW, { spoken: said }), [{ id: wid(1), reason: 'redundant' }])
+  assert.equal(pend(rs, [{ at: T0 + 10_000, text: 'suite passed 42 tests green coverage improved' }]).length, 1)  // said before the result: no
+  assert.equal(pend(rs, [{ at: T0 + 90_000, text: 'Anything else on the weather?' }]).length, 1)
+})
+t('stale: user moved on to something unrelated, result over 5 minutes old', () => {
+  const rs = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), rec(120_000, { kind: 'prompt', text: 'what is the weather forecast tomorrow', origin: 'user_mic' } as any)]
+  assert.deepEqual(pend(rs), [])
+  assert.deepEqual(L.staleWork(rs, NOW), [{ id: wid(1), reason: 'stale' }])
+  assert.equal(pend(rs, [], T0 + 4 * 60_000).length, 1)  // under 5 minutes: kept
+  const related = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), rec(120_000, { kind: 'prompt', text: 'did the login change land', origin: 'user_mic' } as any)]
+  assert.equal(pend(related).length, 1)
+  const meeting = [...work(1, 0, 60_000, 'writer: fix login', 'Patched the login redirect'), rec(120_000, { kind: 'prompt', text: 'weather forecast', origin: 'meeting' } as any)]
+  assert.equal(pend(meeting).length, 1)  // only the user's own turn counts
+})
+t('too old: the 20-minute window stays', () => {
+  assert.deepEqual(pend(work(1, 0, 60_000, 'writer: x', 'Done something'), [], T0 + 25 * 60_000), [])
+})
+t('30 stale/redundant rows produce zero notices', () => {
+  const rs: R[] = []
+  for (let n = 0; n < 10; n++) rs.push(...work(n, n, 60_000 + n, 'writer: fix login', `Patched redirect variant${n}`))          // 9 superseded
+  for (let n = 10; n < 20; n++) rs.push(...work(n, n, 60_000 + n, `tester: area${n}`, `Alpha${n} beta${n} gamma${n} passed`, 'tester'))  // told aloud
+  for (let n = 20; n < 30; n++) rs.push(...work(n, n, 60_000 + n, `reviewer: pr${n}`, `Reviewed zebra${n} quartz${n}`, 'reviewer'))  // moved on
+  rs.push(rec(100_000, { kind: 'prompt', text: 'unrelated sandwich question', origin: 'user_mic' } as any))
+  const spoken = [{ at: T0 + 80_000, text: Array.from({ length: 10 }, (_, k) => `alpha${k + 10} beta${k + 10} gamma${k + 10} passed`).join(' ') }]
+  const left = pend(rs, spoken)
+  assert.deepEqual(left, [])
+  const dead = L.staleWork(rs, NOW, { spoken })
+  assert.equal(dead.length, 30)
+})
+
 rmSync(home, { recursive: true, force: true })
 console.log(`\n${pass} passed`)
 

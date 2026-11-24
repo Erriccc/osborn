@@ -59,7 +59,7 @@ import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { outboundText } from './follow-through-client.js'
-import { loopIds, noticeThrottled, appendLoopRecord, appendQueuedLoop, markQueuedStarted, pendingDeliveries, expiredWork, readLoopRecords, workLedgerEnabled } from './loops-ledger.js'
+import { loopIds, noticeThrottled, appendLoopRecord, appendQueuedLoop, markQueuedStarted, pendingDeliveries, staleWork, expiredWork, readLoopRecords, workLedgerEnabled } from './loops-ledger.js'
 import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
@@ -3342,8 +3342,10 @@ async function main() {
       const records = readLoopRecords(sid, cwd)
       const now = Date.now()
       for (const id of expiredWork(records, now)) currentLLM.recordWork?.({ kind: 'work_dropped', id, reason: 'ttl' })
+      const spoken = (currentLLM as any).recentSpoken?.() ?? []
+      for (const d of staleWork(records, now, { sinceMs: ledgerStartedAt, spoken })) currentLLM.recordWork?.({ kind: 'work_dropped', id: d.id, reason: d.reason })
       if (noticeThrottled(records, now, noticeTimes)) return
-      const rows = pendingDeliveries(records, now, { sinceMs: ledgerStartedAt })
+      const rows = pendingDeliveries(records, now, { sinceMs: ledgerStartedAt, spoken })
       if (!rows.length) return
       // The reply to this notice closes its row (ClaudeLLM.deliverTurnResults); workSpoken is for spoke reports.
       noticeTimes.push(now)
