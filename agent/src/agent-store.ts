@@ -320,6 +320,18 @@ export function coreSkillNames(pkgSkillsDir: string): Set<string> {
   } catch { return new Set() }
 }
 
+/** Copies each packaged core skill that has no folder yet into the user's skills dir (a local
+ *  install never ran the cloud bootstraps' copy). An existing folder is never touched. */
+export function installMissingCoreSkills(skillsDir: string, pkgSkillsDir: string): string[] {
+  const added: string[] = []
+  for (const name of coreSkillNames(pkgSkillsDir)) {
+    const dst = join(skillsDir, name)
+    if (existsSync(dst)) continue
+    try { mkdirSync(skillsDir, { recursive: true }); cpSync(join(pkgSkillsDir, name), dst, { recursive: true }); added.push(name) } catch { /* best effort */ }
+  }
+  return added
+}
+
 const FORK_MARKER = '.forked-from'
 
 export function skillForkedFrom(skillsDir: string, folder: string): string | undefined {

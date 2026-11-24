@@ -33,6 +33,7 @@ import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssu
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
 import { isOwnApiCurl } from './canvas-key.js'
 import { currentIdOnPush } from './stale-turn.js'
+import { SPEAK_CADENCE_N } from './main-agent-limits.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., turn-shape reminder).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -140,7 +141,6 @@ function logCacheUsage(usage: any): void {
 // turns), NOT a workflow cap — a healthy turn never approaches it. Env-tunable; set
 // OSBORN_TOOL_HARD_CEILING=0 to disable the backstop entirely.
 let turnToolCallCount = 0
-const SPEAK_CADENCE_N = 6
 const TOOL_HARD_CEILING = Number(process.env.OSBORN_TOOL_HARD_CEILING ?? 60)
 
 // Armed when a cadence boundary is crossed; consumed at the PreToolUse allow/fall-through tail so

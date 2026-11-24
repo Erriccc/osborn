@@ -3,7 +3,7 @@ import assert from 'node:assert'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { storeWriteRefusal, storeWriteOriginAllowed, parseUserAgents, mergeAgents, describeAgents, forkSkill, removeUserSkill, addUserSkill, readUserSkill, skillForkedFrom, coreSkillNames, parseFrontMatter, skillHeading } from '../src/agent-store.js'
+import { storeWriteRefusal, storeWriteOriginAllowed, parseUserAgents, mergeAgents, describeAgents, forkSkill, installMissingCoreSkills, removeUserSkill, addUserSkill, readUserSkill, skillForkedFrom, coreSkillNames, parseFrontMatter, skillHeading } from '../src/agent-store.js'
 
 const core = {
   writer: { description: 'core writer', prompt: 'WRITER PROMPT', model: 'opus', tools: ['Edit'] },
@@ -138,3 +138,18 @@ assert.equal(parseFrontMatter('no front matter').body, 'no front matter')
 }
 
 console.log('agent-store: all assertions passed')
+
+// Boot copy of packaged core skills: adds the missing ones, never overwrites an existing folder.
+{
+  const root = mkdtempSync(join(tmpdir(), 'osb-core-skills-'))
+  const pkg = join(root, 'pkg'), home = join(root, 'home')
+  for (const n of ['dispatch', 'meetings']) { mkdirSync(join(pkg, n), { recursive: true }); writeFileSync(join(pkg, n, 'SKILL.md'), `packaged ${n}`) }
+  mkdirSync(join(home, 'meetings'), { recursive: true }); writeFileSync(join(home, 'meetings', 'SKILL.md'), 'my edited copy')
+  assert.deepEqual(installMissingCoreSkills(home, pkg), ['dispatch'])
+  assert.equal(readFileSync(join(home, 'dispatch', 'SKILL.md'), 'utf8'), 'packaged dispatch')
+  assert.equal(readFileSync(join(home, 'meetings', 'SKILL.md'), 'utf8'), 'my edited copy')
+  assert.deepEqual(installMissingCoreSkills(home, pkg), [])
+  assert.deepEqual(installMissingCoreSkills(join(root, 'new-home'), join(root, 'nope')), [])
+  rmSync(root, { recursive: true, force: true })
+  console.log('installMissingCoreSkills tests passed')
+}
