@@ -386,7 +386,7 @@ await t('#539 phone "stop that": interruptAgent retires the id text buffered dur
   q.emit(asst('Rest of the answer the caller stopped.')); await tick(); await tick()
   assert.equal(pd.isRetiredTurnId(ids[0]), false, 'live before the stop')
   await pd.interruptAgent()
-  assert.equal(pd.isRetiredTurnId(ids[0]), true, 'index.ts speakBuffered drops text whose suppressedTurnId is this id')
+  assert.equal(pd.isRetiredTurnId(ids[0]), true, 'index.ts speakBuffered never speaks a buffered block whose turnId is this id')
 })
 
 console.log(`\n${pass} passed, ${fail} failed`)
