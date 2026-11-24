@@ -1369,7 +1369,12 @@ async function updateOsbornImpl(
   // we got here, the install only counts as a real success if /health
   // reports the target version. If the probe fails or reports an older
   // version, surface that as an error instead of claiming success.
-  const { version: installed, volumeSync } = await readOsbornHealth(sandboxId)
+  let { version: installed, volumeSync } = await readOsbornHealth(sandboxId)
+  // One dropped request must not fail a healthy update.
+  for (let i = 0; !installed && i < 5; i++) {
+    await new Promise((r) => setTimeout(r, 2000))
+    ;({ version: installed, volumeSync } = await readOsbornHealth(sandboxId))
+  }
   if (!installed) {
     return finish(
       { success: false, version: null, log: 'Machine running but /health did not return a version' },

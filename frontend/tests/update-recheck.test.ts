@@ -59,6 +59,15 @@ async function main() {
     assert.strictEqual(r.log, 'Machine did not come back healthy after image update (state stopped, last event exit/stopped)')
   })
 
+  await t('Step 5: one dropped /health version read is retried, not a failure', async () => {
+    let n = 0
+    // 1st: waitForHealth's 200; 2nd: Step 5's read drops; 3rd: the retry answers.
+    stubFly(() => (++n === 2 ? null : json({ version: '0.9.301' })))
+    const r = await updateOsborn('app-d', 'user-1', '0.9.301')
+    assert.strictEqual(r.success, true, r.log)
+    assert.strictEqual(n, 3)
+  })
+
   await t('comes up on an older version: the version check reports it, not "not healthy"', async () => {
     stubFly(() => json({ version: '0.9.298' }))
     const r = await updateOsborn('app-c', 'user-1', '0.9.301')
