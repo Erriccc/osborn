@@ -13,8 +13,13 @@ export function staleIdOnConsume(
   return ctx && ctx.spokenText && ctx.messageId ? ctx.messageId : current
 }
 
-export function isStaleBlock(staleId: string | null, messageId?: string | null): boolean {
-  return !!messageId && messageId === staleId
+/** Stale when the turn was consumed as interrupted (#456) or retired by a successful interrupt (#539 D). */
+export function isStaleBlock(
+  staleId: string | null,
+  messageId?: string | null,
+  isRetired: (id: string) => boolean = () => false,
+): boolean {
+  return !!messageId && (messageId === staleId || isRetired(messageId))
 }
 
 /**
@@ -27,19 +32,10 @@ export function currentIdOnPush(retired: Set<string>, current: string | null): s
   return current && retired.has(current) ? null : current
 }
 
-/** Stale when the turn was consumed as interrupted (#456) or retired by a successful interrupt. */
-export function isStaleOrRetired(
-  staleId: string | null,
-  isRetired: (id: string) => boolean,
-  messageId?: string | null,
-): boolean {
-  return isStaleBlock(staleId, messageId) || (!!messageId && isRetired(messageId))
-}
-
 /** Buffered reply text and the interruption context both expire after this (#539 A). */
 const SUPPRESSED_MAX_AGE_MS = 60_000
 export const isExpired = (timestamp: number, now: number): boolean => now - timestamp > SUPPRESSED_MAX_AGE_MS
-export const MAX_REPLAY_REARMS = 5
+const MAX_REPLAY_REARMS = 5
 
 type ReplayInput = {
   hasSession: boolean
@@ -55,7 +51,7 @@ type ReplayInput = {
  * turn took the text, even while the agent is 'thinking'. Not while the gate
  * triages or the agent speaks: those re-arm (bounded) instead of giving up.
  */
-export function replayStep(i: ReplayInput & { expired: boolean; attempts: number }):
+function replayStep(i: ReplayInput & { expired: boolean; attempts: number }):
   { act: 'speak' } | { act: 'expire' } | { act: 'rearm'; reason: string } | { act: 'skip'; reason: string } {
   if (!i.hasSession) return { act: 'skip', reason: 'no session' }
   if (!i.userListening) return { act: 'skip', reason: 'user speaking' }
@@ -68,6 +64,10 @@ export function replayStep(i: ReplayInput & { expired: boolean; attempts: number
 }
 
 type Pending = { suppressedText: string; timestamp: number; suppressedTurnId?: string }
+type Buffered = Pending & { spokenText: string; recentMessages: string }
+/** A context that holds only buffered reply text: nothing was heard, nothing else to fold in. */
+const bufferOnly = (suppressedText: string, suppressedTurnId: string | undefined, timestamp: number): Buffered =>
+  ({ spokenText: '', recentMessages: '', suppressedText, suppressedTurnId, timestamp })
 type ReplayDeps<C extends Pending> = {
   current(): C | null
   userListening(): boolean
@@ -103,8 +103,8 @@ export class ReplayScheduler<C extends Pending> {
       })
       if (step.act === 'speak') this.d.speak()
       else if (step.act === 'expire') this.d.expire()
-      else if (step.act === 'rearm') { this.#attempts++; this.d.log(`REPLAY WAITING (${step.reason}, retry ${this.#attempts})`); this.arm(false) }
-      else this.d.log(`REPLAY SKIPPED (${step.reason})`)
+      else if (step.act === 'rearm') { this.#attempts++; this.d.log(`REPLAY WAITING ${captured.suppressedText.length} chars (${step.reason}, retry ${this.#attempts})`); this.arm(false) }
+      else this.d.log(`REPLAY SKIPPED ${captured.suppressedText.length} chars (${step.reason})`)
     }, this.d.delayMs ?? 1200)
   }
 }
@@ -118,10 +118,8 @@ export function takePending<T extends Pending>(li: T | null): { text: string; re
  * An uninterrupted say finished (#539 C): the old interruption context is done,
  * but text buffered after the say started was not covered by it and stays pending.
  */
-export function settleAfterSay(li: (Pending & { spokenText: string; recentMessages: string }) | null) {
-  return li?.suppressedText
-    ? { spokenText: '', recentMessages: '', suppressedText: li.suppressedText, suppressedTurnId: li.suppressedTurnId, timestamp: li.timestamp }
-    : null
+export function settleAfterSay(li: Buffered | null): Buffered | null {
+  return li?.suppressedText ? bufferOnly(li.suppressedText, li.suppressedTurnId, li.timestamp) : null
 }
 
 /**
@@ -129,11 +127,11 @@ export function settleAfterSay(li: (Pending & { spokenText: string; recentMessag
  * front of anything buffered since, with its original age and turn id, so the
  * next chat() folds it into the prompt. Expired text is not put back.
  */
-export function putBack<T extends Pending & { spokenText: string; recentMessages: string }>(
+export function putBack<T extends Buffered>(
   li: T | null, text: string, turnId: string | undefined, timestamp: number, now: number,
-): T | { spokenText: string; recentMessages: string; suppressedText: string; suppressedTurnId?: string; timestamp: number } | null {
+): T | Buffered | null {
   if (!text || isExpired(timestamp, now)) return li
-  if (!li) return { spokenText: '', recentMessages: '', suppressedText: text, suppressedTurnId: turnId, timestamp }
+  if (!li) return bufferOnly(text, turnId, timestamp)
   return {
     ...li,
     suppressedText: li.suppressedText ? `${text}\n${li.suppressedText}` : text,
