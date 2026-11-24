@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 import { createServerClient } from '@supabase/ssr'
+import { sameSitePath } from '@/lib/signin-href'
 
 export async function middleware(request: NextRequest) {
   // Skip middleware for public/static paths. `/p/` = public article pages,
@@ -54,7 +55,7 @@ export async function middleware(request: NextRequest) {
     // to someone already signed in). The marketing landing at / stays viewable
     // when logged in — the nav shows "Open dashboard" instead of "Sign in".
     if (user && pathname === '/login') {
-      return NextResponse.redirect(new URL('/dashboard', request.url))
+      return NextResponse.redirect(new URL(sameSitePath(request.nextUrl.searchParams.get('next'), request.nextUrl.origin, '/dashboard'), request.url))
     }
   } catch {
     // Supabase unreachable — let page handle auth state client-side

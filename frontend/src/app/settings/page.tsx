@@ -162,7 +162,7 @@ export default function SettingsPage() {
       clearTimeout(timeout)
       setUser(user)
       setLoading(false)
-      if (!user) router.replace(signInHref('/settings'))
+      if (!user) router.replace(signInHref(window.location.pathname + window.location.search))
     }).catch(() => { clearTimeout(timeout); setLoading(false) })
   }, [])
 
