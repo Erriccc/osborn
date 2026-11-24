@@ -1,0 +1,34 @@
+name: Bug or finding
+description: Something wrong, found by a person, Muse, the hourly loop or Osborn
+labels: ["q:open"]
+body:
+  - type: dropdown
+    id: source
+    attributes:
+      label: Source (also add the matching src: label)
+      options: ["src:muse", "src:loop", "src:osborn", "src:founder"]
+    validations: {required: true}
+  - type: input
+    id: where
+    attributes:
+      label: Version / where observed
+      description: Agent version, URL or screen, and the date
+    validations: {required: true}
+  - type: textarea
+    id: steps
+    attributes: {label: Steps / repro}
+    validations: {required: true}
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Screenshot or clip links
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected vs actual
+    validations: {required: true}
+  - type: input
+    id: related
+    attributes:
+      label: Related issues / PRs
