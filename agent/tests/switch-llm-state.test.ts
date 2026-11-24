@@ -327,7 +327,8 @@ for (const how of ['fails', 'misses the 8s deadline'] as const) {
 
 await t('#539 D: successful interrupt with no result → leftover old block keeps the retired id, the next reply gets a fresh one', async () => {
   const fq = makeFakeQueryFn()
-  const llm: any = newLLM(fq, { skipTTSQueue: true })
+  const pd: any = newPipeline(fq)  // pipeline mode: index.ts asks the wrapper, which must forward to the inner ClaudeLLM
+  const llm: any = pd.inner
   const ids: string[] = []
   const c = cb(llm); (c.eventEmitter as EventEmitter).on('tts_say', (d: any) => ids.push(d.messageId))
   llm.pushMessage('hi', {} as any, c)
@@ -336,6 +337,7 @@ await t('#539 D: successful interrupt with no result → leftover old block keep
   q.emit(asst('Cut off answer.')); await tick(); await tick()
   assert.equal(await llm.interruptQuery(), true)
   assert.equal(llm.isRetiredTurnId(ids[0]), true)
+  assert.equal(pd.isRetiredTurnId(ids[0]), true, 'PipelineDirectLLM forwards isRetiredTurnId')
   q.emit(asst('Leftover of the old turn.')); await tick(); await tick()
   assert.equal(ids[1], ids[0], 'leftover block carries the old id')
   llm.pushMessage('again', {} as any, c)
