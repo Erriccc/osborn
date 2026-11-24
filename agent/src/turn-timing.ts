@@ -2,7 +2,7 @@
 export const REPLAY_NEAR_MS = 2000
 
 export type TurnMarks = {
-  speechAt?: number // last user_input_transcribed (interim or final)
+  speechAt?: number // last interim transcript (the user was still talking)
   finalAt?: number // last final transcript
   chatAt?: number // chat() entry
   pushAt?: number // handed to the model (after any deferred wait)
@@ -30,8 +30,8 @@ export function formatTurnTiming(m: TurnMarks, turn: number): string {
 
 let marks: TurnMarks = {}
 let turn = 0
-export const markSpeech = (now = Date.now()) => { marks.speechAt = now }
-export const markFinal = (now = Date.now()) => { marks.finalAt = now }
+/** A final must not move speechAt, or speechToFinal is always 0 and speechToChat equals finalToChat. */
+export const markTranscript = (isFinal: boolean, now = Date.now()) => { if (isFinal) marks.finalAt = now; else marks.speechAt = now }
 export const markReplay = (now = Date.now()) => { marks.replayAt = now }
 export const markChat = (now = Date.now()) => { marks.chatAt = now; marks.pushAt = undefined; marks.deferredMs = undefined; marks.hookMs = undefined }
 export const markPush = (deferredMs = 0, now = Date.now()) => { marks.pushAt = now; marks.deferredMs = deferredMs }

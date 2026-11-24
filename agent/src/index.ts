@@ -91,7 +91,7 @@ import { readVolumeSyncStatus } from './volume-sync-status.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 import { closeSessionBounded } from './lib/settle-within.js'
-import { markSpeech, markFinal, markReplay } from './turn-timing.js'
+import { markTranscript, markReplay } from './turn-timing.js'
 
 // ============================================================
 // PIPELINE MODE: STT (Deepgram) → Claude Agent SDK → TTS
@@ -6352,7 +6352,7 @@ async function main() {
         const isFinal = !!ev.isFinal
         const words = t.trim().split(/\s+/).filter(Boolean).length
         const tag = isFinal ? '📝 FINAL' : '✏️  interim'
-        markSpeech(); if (isFinal) markFinal()
+        markTranscript(isFinal)
         console.log(`${tag} transcript (${words}w, ${t.length}c) [${new Date().toISOString()}]: "${t.slice(0, 120)}${t.length > 120 ? '…' : ''}"`)
       })
 
