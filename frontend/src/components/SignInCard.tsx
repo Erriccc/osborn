@@ -1,4 +1,7 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
+
+/** The primary sign-in button's fill (the /login form and this card). */
+export const SIGN_IN_BUTTON_STYLE: CSSProperties = { background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)', color: 'var(--background)' }
 
 /** The signed-out card: a title, a line of why, and one primary Sign in. */
 export default function SignInCard({ title, body, href, label, icon, secondary, className = '' }: {
@@ -21,7 +24,7 @@ export default function SignInCard({ title, body, href, label, icon, secondary, 
       <p className="text-[14px] text-[var(--text-primary)] font-medium">{title}</p>
       <p className="mt-1 text-[13px] text-[var(--text-secondary)]">{body}</p>
       <a href={href}
-        style={{ background: 'linear-gradient(135deg, var(--accent) 0%, var(--accent-dim) 100%)', color: 'var(--background)' }}
+        style={SIGN_IN_BUTTON_STYLE}
         className="mt-4 inline-flex min-h-11 items-center justify-center gap-2 rounded-lg px-5 text-[15px] font-semibold hover:opacity-90 active:scale-[0.98] transition-all">
         {label}
       </a>
