@@ -14,4 +14,13 @@ t('collapsed panel is visibility:hidden', /visibility:\s*showSettings \? 'visibl
 t('collapsed panel is aria-hidden', /aria-hidden=\{!showSettings\}/.test(block))
 t('panel only rendered for signed-in users', /\{user && \(\s*\n\s*<div id="login-settings-panel"/.test(src))
 t('gear has accessible name and expanded state', /aria-label="Connection settings" aria-expanded=\{showSettings\} aria-controls="login-settings-panel"/.test(src))
+// Structural guard: every settings control lives after the signed-in gate, so a guest never gets one.
+const gate = src.indexOf('{user && (')
+const settingsMarks = ['Agent URL', '<ToggleRow', 'Browse sessions', '<input']
+for (const m of settingsMarks) {
+  const idx: number[] = []
+  for (let k = src.indexOf(m); k >= 0; k = src.indexOf(m, k + 1)) idx.push(k)
+  t(`every "${m}" is inside the signed-in settings panel`, gate > 0 && idx.length > 0 && idx.every(k => k > gate))
+}
+t('gear toggles the panel open and closed', /setShowSettings\(s => !s\)/.test(src))
 process.exit(failed ? 1 : 0)

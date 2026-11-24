@@ -304,9 +304,7 @@ export default function Home() {
             )}
 
             {/* ── Settings (collapsible) ───────────────── */}
-            {/* #533: signed-in branch only (the gear lives there; guests cannot open it).
-                Collapsed = visibility:hidden + aria-hidden, so it leaves the tab order
-                and a11y tree while the maxHeight animation stays. */}
+            {/* Signed-in only (#533); collapsed = hidden + aria-hidden, so it is out of the tab order. */}
             {user && (
             <div id="login-settings-panel" className="overflow-hidden transition-all duration-200"
               aria-hidden={!showSettings}
