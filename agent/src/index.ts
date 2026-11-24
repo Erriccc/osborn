@@ -7,7 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { staleIdOnConsume, isStaleOrRetired, isExpired, ReplayScheduler, takePending, settleAfterSay } from './stale-turn.js'
+import { staleIdOnConsume, isStaleOrRetired, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
@@ -4120,6 +4120,7 @@ async function main() {
       console.log(`🔇 [suppressed] REPLAY DROPPED ${text.length} chars (its turn was interrupted)`)
       return
     }
+    const { suppressedTurnId: turnId, timestamp: bufferedAt } = lastInterruption!
     lastInterruption = rest
     console.log(`🔁 [suppressed] REPLAY ${text.length} chars (${why})`)
     try {
@@ -4129,7 +4130,12 @@ async function main() {
         h.addDoneCallback((sh: any) => {
           activeSpeechHandles.delete(sh)
           console.log(`🔁 [suppressed] REPLAY ${sh?.interrupted ? 'INTERRUPTED' : 'DONE'} ${text.length} chars`)
-          if (sh?.interrupted) flushQueuedSpeech()  // a newer block queued behind it must not start over the user
+          if (sh?.interrupted) {
+            flushQueuedSpeech()  // a newer block queued behind it must not start over the user
+            // Cut off before it was heard (the user's own turn committed): back into the buffer so the next prompt carries it, as when it was first suppressed.
+            lastInterruption = putBack(lastInterruption, text, turnId, bufferedAt, Date.now())
+            console.log(`🤐 [suppressed] REPLAY CUT OFF, ${text.length} chars back in the buffer`)
+          }
           replayTimer.arm()
         })
       }
