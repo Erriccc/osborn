@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { MarkdownMessage } from '../MarkdownMessage'
 import { FileCard } from '../chat/FileCard'
-import { userBubbleText } from '@/lib/chat-echo'
+import { userBubbleText, MARKDOWN_CHAR_RE } from '@/lib/chat-echo'
 import { stripProvenance, type ChatMessage, type CompactionMarker, type MessagePart, type SpeakingChunk, type StewardVerdict, type AgentResultRecord } from './shared'
 
 // Phase 1 of "compaction integrity / visible memory": a persistent, expandable
@@ -578,7 +578,7 @@ export const MessageBubble = React.memo(function MessageBubble({
                     return <MessageContent key={idx} content={part.content} />
                   }
                   // Check if content has markdown formatting (including tables with |)
-                  const hasMarkdown = /[*#`\[\]|]/.test(part.content) || /^-{3,}$/m.test(part.content)
+                  const hasMarkdown = MARKDOWN_CHAR_RE.test(part.content) || /^-{3,}$/m.test(part.content)
                   if (hasMarkdown) {
                     return <MarkdownMessage key={idx} content={part.content} />
                   }

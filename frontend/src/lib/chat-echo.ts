@@ -12,6 +12,7 @@
 import { cleanSessionText, stripSessionWrappers } from './transcript-clean'
 import { isControlNotice } from './control-text'
 import { redactSecrets } from './redactSecrets'
+import { clip } from './outputs-model'
 
 export const TYPED_ECHO_WINDOW_MS = 2 * 60 * 1000
 const MAX_PENDING = 20
@@ -36,7 +37,7 @@ export function newClientMsgId(): string {
 const ATTACHMENT_LINE_RE = /\n*\[(?:Image|File)(?: attached)?:[^\]]*\](?:\([^)]*\))?[\s\S]*$/
 
 /** The user's words in a turn: pipeline wrappers and attachment markers removed. Null = none. */
-export function turnWords(text: string | null | undefined): string | null {
+function turnWords(text: string | null | undefined): string | null {
   return stripSessionWrappers(text)?.replace(ATTACHMENT_LINE_RE, '').trim() || null
 }
 
@@ -46,13 +47,15 @@ export function echoMatchKey(text: string | null | undefined): string | null {
   return turnWords(text)?.replace(/\s+/g, ' ').toLowerCase() ?? null
 }
 
+/** A character that makes MessageBubble render a part as markdown. */
+export const MARKDOWN_CHAR_RE = /[*#`\[\]|]/
+
 /** The user's words, one plain line for the provisional fast-brain card (#547): secrets
  *  masked, characters that would turn the card into markdown dropped, cut at 80 with an
  *  ellipsis. Null = nothing to quote (an attachment-only turn). */
 export function fastBrainQuote(question: string | null | undefined): string | null {
-  const line = redactSecrets(turnWords(question)?.split('\n')[0]).replace(/[*#`\[\]|]/g, '').replace(/\s+/g, ' ').trim()
-  if (!line) return null
-  return line.length > 80 ? `${line.slice(0, 79).trimEnd()}\u2026` : line
+  const line = redactSecrets(turnWords(question)?.split('\n')[0]).replace(new RegExp(MARKDOWN_CHAR_RE.source, 'g'), '').replace(/\s+/g, ' ').trim()
+  return line ? clip(line, 80) : null
 }
 
 function prune(pending: readonly PendingTyped[], now: number): PendingTyped[] {
