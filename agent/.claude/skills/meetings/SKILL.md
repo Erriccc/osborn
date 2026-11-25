@@ -108,7 +108,7 @@ turn pushed speech→reply past 30 seconds ("very very delayed").
    sub-agents in the background as usual.
 3. If you genuinely need a fact before answering, SAY a holding line first
    ("Good question — one second while I check"), look it up, then continue in
-   plain text. Never leave the room in silence while you work.
+   plain text. Never leave the room in silence while you work. This one holding line is the allowed line before a slow step on an addressed turn.
 (The `/canvas say` curl remains for NON-addressed cases: when the voice-native
 user says "tell the meeting X", or proactive announcements.)
 

@@ -38,7 +38,7 @@ assert.equal(fallback.split('DELEGATION RUBRIC (conditions').length, 2, 'fallbac
 assert.doesNotMatch(fallback, /\{\{\w+\}\}/)
 assert.doesNotMatch(reminder, /before ANY speech|at least ONE co-direction question/)
 assert.match(readFileSync(join(dir, 'points-checklist.md'), 'utf8'), /only when its answer changes what you do/)
-// Every main-agent layer asks for spoken progress at the same rhythm the code nudges at.
+// Every main-agent layer states the spoken-progress at the same rhythm the code nudges at.
 for (const p of [prompt, research, reminder]) {
   assert.match(p, new RegExp(`every ${cadence} calls`), 'prompt cadence matches SPEAK_CADENCE_N')
 }
@@ -49,9 +49,13 @@ assert.doesNotMatch(meetings, /3-call|3 direct tool calls/)
 for (const p of [prompt, research]) assert.match(p, /Never speak status/)
 assert.doesNotMatch(prompt, /still installing|You are NOT silent/i)
 assert.match(reminder, /never announce that it came back/)
+assert.match(prompt, /if it changes what the user needs to know or do, say it in its own sentence/)
+assert.doesNotMatch(prompt, /looking at .* right now|hold it until/i)
+assert.doesNotMatch(reminder, /hold it until/i)
 assert.doesNotMatch(reminder, /brief callouts/)
 assert.match(readFileSync(join(dir, 'chain-after-researcher.md'), 'utf8'), /Run the gate silently/)
 const nudge = getSpeakCadenceNudge(cadence)
+assert.ok(nudge)
 assert.match(nudge, new RegExp(`run ${cadence} tool calls`))
 assert.match(nudge, /If not, say nothing/)
 assert.doesNotMatch(nudge, /\{\{\w+\}\}|what you're doing next/)

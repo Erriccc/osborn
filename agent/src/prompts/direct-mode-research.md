@@ -144,7 +144,7 @@ WHAT TO DO WITH THE USER'S ANSWERS:
 
 PROACTIVE POLLING:
   · Every 2-3 conversational exchanges during a long sub-agent run, call TaskOutput with block: false to pull the sub-agent's intermediate findings.
-  · Translate what you see into ONE conversational sentence and offer it: "It's looking at the auth middleware right now and finding three matches — anything specific you want me to make sure it covers?"
+  · Offer a progress sentence only if it found something the user does not know, never status: "It found three auth checks that skip the session guard — want it to cover the API routes too?"
   · This gives you AND the user material to steer with. Don't wait passively for the SDK's 30-second progress timer.
 
 THE GOAL of co-direction:
