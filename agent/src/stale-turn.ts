@@ -18,16 +18,8 @@ export function isStaleBlock(
   staleId: string | null,
   messageId?: string | null,
   isRetired: (id: string) => boolean = () => false,
-  newerTurnGenerating = false,
 ): boolean {
-  // While a newer turn is generating, a block with no id cannot be told from the cut-off turn's leftovers: it does not pass.
-  if (!messageId) return newerTurnGenerating
-  return messageId === staleId || isRetired(messageId)
-}
-
-/** The window after a turn consumed an interruption, until its own reply (a live id) arrives or it ages out. */
-export function newerTurnWindowOpen(since: number | null, now: number): boolean {
-  return since !== null && !isExpired(since, now)
+  return !!messageId && (messageId === staleId || isRetired(messageId))
 }
 
 /**
@@ -199,9 +191,4 @@ export function putBack<T extends Buffered>(li: T | null, blocks: SuppressedBloc
   if (!li) return bufferOnly(live, earliest(live, now))
   const merged = [...live, ...li.suppressedBlocks].sort((a, b) => a.at - b.at)  // stable: equal times keep put-back first
   return { ...li, suppressedBlocks: merged }  // timestamp is the heard context's own age: blocks never shift it
-}
-
-/** Chars of unspoken reply text that expiry discards, 0 when it keeps everything (the next turn is told, #593). */
-export function droppedOnExpire(li: Buffered | null, now: number): number {
-  return expireDecision(li, now) === 'keep' ? 0 : totalChars(li.suppressedBlocks)
 }

@@ -7,7 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { staleIdOnConsume, isStaleBlock, heardSlice, newerTurnWindowOpen, droppedOnExpire, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, heardSlice, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
@@ -4078,7 +4078,8 @@ async function main() {
   let staleTurnId: string | null = null
   let newerTurnSince: number | null = null  // set when a turn consumes an interruption; closed by its own reply
   let bargeInPausedAt: number | null = null  // diagnostic (#483): an overlap paused the agent's audio; set until it resumes or the turn hard-interrupts
-  let droppedUnspokenChars = 0  // unspoken reply text discarded; the next turn is told once
+  let droppedUnspokenChars = 0  // chars of buffered reply text lost when the whole buffer expired; the next turn is told once
+  const newerTurnGenerating = () => newerTurnSince !== null && !isExpired(newerTurnSince, Date.now())
 
   // Last interruption context — gathered at interrupt time, consumed when user's message arrives
   let lastInterruption: {
@@ -4179,7 +4180,7 @@ async function main() {
     const { blocks, rest } = takePending(lastInterruption)
     if (!blocks.length || !currentSession) return
     // Blocks of a turn the user cut off (a phone "stop that" interrupts without a new turn) are never spoken, but stay buffered so the next prompt still carries them; expired ones go.
-    const { speak, keep, expired } = partitionForReplay(blocks, Date.now(), (id) => isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t), newerTurnWindowOpen(newerTurnSince, Date.now())))
+    const { speak, keep, expired } = partitionForReplay(blocks, Date.now(), (id) => isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
     lastInterruption = rest && { ...rest, suppressedBlocks: keep }
     if (expired) console.log(`🤐 [suppressed] REPLAY EXPIRED ${expired} block(s) older than 60s`)
     if (keep.length) console.log(`🔇 [suppressed] REPLAY DROPPED ${keep.length} block(s), ${totalChars(keep)} chars (their turn was interrupted)`)
@@ -4217,7 +4218,7 @@ async function main() {
       sameInterruption: lastInterruption === captured,
       hasText: !!lastInterruption?.suppressedBlocks.length,
       agentSpeaking: activeSpeechHandles.size > 0 || agentState === 'speaking',
-      newerTurnGenerating: newerTurnWindowOpen(newerTurnSince, Date.now()),
+      newerTurnGenerating: newerTurnGenerating(),
       gateTriaging: noiseGate.triaging || speechTimeline.shouldHold(),  // or the user's next chunk will take the text (#581)
     }),
     speak: () => speakBuffered('user quiet, no new turn'),
@@ -4225,7 +4226,7 @@ async function main() {
       const d = expireDecision(lastInterruption, Date.now())
       if (d === 'clear') clearInterruption('expired 60s')
       else if (d === 'drop-blocks') {
-        droppedUnspokenChars += droppedOnExpire(lastInterruption, Date.now())
+        droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
         console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (expired 60s, heard context kept)`)
         lastInterruption = { ...lastInterruption, suppressedBlocks: [] }
       }
@@ -4234,8 +4235,9 @@ async function main() {
   })
 
   /** Clear lastInterruption, logging any suppressed reply text that was never spoken (#539 diagnostics). */
-  function clearInterruption(why: string, tellNextTurn = true) {
-    if (lastInterruption?.suppressedBlocks.length && tellNextTurn) droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
+  function clearInterruption(why: string, reset = false) {
+    if (reset) { droppedUnspokenChars = 0; newerTurnSince = null }
+    else if (lastInterruption?.suppressedBlocks.length) droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
     if (lastInterruption?.suppressedBlocks.length) console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (${why}, agent: ${agentState}, user: ${userState})`)
     lastInterruption = null
   }
@@ -4263,7 +4265,7 @@ async function main() {
     const heard = !isExpired(lastInterruption.timestamp, now)
     if (!heard && !live.length) {
       droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
-      clearInterruption('expired 60s', false)
+      clearInterruption('expired 60s')
       return null
     }
     const ctx = {
@@ -4632,7 +4634,7 @@ async function main() {
       isProcessingQueue = false
       currentSpeechHandle = null
       activeSpeechHandles.clear()
-      clearInterruption('performSessionSwitch', false); speechTimeline.reset()
+      clearInterruption('performSessionSwitch', true); speechTimeline.reset()
       if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
       stopProactiveLoop()
       if (activeResearch) {
@@ -5297,7 +5299,7 @@ async function main() {
 
       // A late block from a turn the user already cut off (#456): dropped, never
       // buffered, or the 1.2s replay below could still speak it.
-      if (isStaleBlock(staleTurnId, data.messageId, (id) => directLLM.isRetiredTurnId(id), newerTurnWindowOpen(newerTurnSince, Date.now()))) {
+      if (isStaleBlock(staleTurnId, data.messageId, (id) => directLLM.isRetiredTurnId(id))) {
         console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         return
       }
@@ -5384,15 +5386,13 @@ async function main() {
               } else if (sdkPlaybackSec > 0) {
                 // Second: LiveKit gave us playback duration — estimate chars from it
                 const CHARS_PER_SEC = 14
-                const charCount = Math.min(Math.round(sdkPlaybackSec * CHARS_PER_SEC), data.text.length)
-                spokenText = heardSlice(data.text, charCount)
+                spokenText = heardSlice(data.text, sdkPlaybackSec * CHARS_PER_SEC)
                 method = 'sdk-position'
               } else if (playbackStartedAt !== null) {
                 // Third: use our wall-clock timer from first audio frame
                 const elapsedSec = (Date.now() - playbackStartedAt) / 1000
                 const CHARS_PER_SEC = 14
-                const charCount = Math.min(Math.round(elapsedSec * CHARS_PER_SEC), data.text.length)
-                spokenText = heardSlice(data.text, charCount)
+                spokenText = heardSlice(data.text, elapsedSec * CHARS_PER_SEC)
                 method = 'wall-clock'
               } else {
                 // Fallback: interrupt fired before first frame — pass full block
@@ -5684,7 +5684,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('room-disconnect', false); speechTimeline.reset()
+    clearInterruption('room-disconnect', true); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -5933,7 +5933,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('room-join', false); speechTimeline.reset()
+    clearInterruption('room-join', true); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -6914,7 +6914,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('participant-disconnect', false); speechTimeline.reset()
+    clearInterruption('participant-disconnect', true); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
