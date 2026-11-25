@@ -7,7 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { staleIdOnConsume, isStaleBlock, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, heardSlice, newerTurnWindowOpen, droppedOnExpire, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
@@ -4076,6 +4076,9 @@ async function main() {
   const activeSpeechHandles = new Set<any>()
   // Turns the user cut off: their later tts_say blocks are dropped (#456)
   let staleTurnId: string | null = null
+  let newerTurnSince: number | null = null  // set when a turn consumes an interruption; closed by its own reply
+  let bargeInPausedAt: number | null = null  // diagnostic (#483): an overlap paused the agent's audio; set until it resumes or the turn hard-interrupts
+  let droppedUnspokenChars = 0  // unspoken reply text discarded; the next turn is told once
 
   // Last interruption context — gathered at interrupt time, consumed when user's message arrives
   let lastInterruption: {
@@ -4101,6 +4104,10 @@ async function main() {
     // fullText is the synchronized (word-accurate) transcript of what was actually spoken
     // before the interruption. fullBlockText is the original full TTS segment text.
     const fullBlockLen = fullBlockText?.length ?? fullText.length
+    if (bargeInPausedAt !== null) {
+      console.log(`🔬 BARGE-IN OUTCOME: hard-interrupted (turn committed ${Date.now() - bargeInPausedAt}ms after the overlap paused the audio, old speech not resumed)`)
+      bargeInPausedAt = null
+    }
     console.log(`🔇 Speech interrupted. Heard (${fullText.length} chars): "${fullText}" [full block was ${fullBlockLen} chars]`)
 
     // Read last 10 assistant messages from JSONL (Claude's full untruncated output).
@@ -4172,7 +4179,7 @@ async function main() {
     const { blocks, rest } = takePending(lastInterruption)
     if (!blocks.length || !currentSession) return
     // Blocks of a turn the user cut off (a phone "stop that" interrupts without a new turn) are never spoken, but stay buffered so the next prompt still carries them; expired ones go.
-    const { speak, keep, expired } = partitionForReplay(blocks, Date.now(), (id) => isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
+    const { speak, keep, expired } = partitionForReplay(blocks, Date.now(), (id) => isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t), newerTurnWindowOpen(newerTurnSince, Date.now())))
     lastInterruption = rest && { ...rest, suppressedBlocks: keep }
     if (expired) console.log(`🤐 [suppressed] REPLAY EXPIRED ${expired} block(s) older than 60s`)
     if (keep.length) console.log(`🔇 [suppressed] REPLAY DROPPED ${keep.length} block(s), ${totalChars(keep)} chars (their turn was interrupted)`)
@@ -4210,6 +4217,7 @@ async function main() {
       sameInterruption: lastInterruption === captured,
       hasText: !!lastInterruption?.suppressedBlocks.length,
       agentSpeaking: activeSpeechHandles.size > 0 || agentState === 'speaking',
+      newerTurnGenerating: newerTurnWindowOpen(newerTurnSince, Date.now()),
       gateTriaging: noiseGate.triaging || speechTimeline.shouldHold(),  // or the user's next chunk will take the text (#581)
     }),
     speak: () => speakBuffered('user quiet, no new turn'),
@@ -4217,6 +4225,7 @@ async function main() {
       const d = expireDecision(lastInterruption, Date.now())
       if (d === 'clear') clearInterruption('expired 60s')
       else if (d === 'drop-blocks') {
+        droppedUnspokenChars += droppedOnExpire(lastInterruption, Date.now())
         console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (expired 60s, heard context kept)`)
         lastInterruption = { ...lastInterruption, suppressedBlocks: [] }
       }
@@ -4225,7 +4234,8 @@ async function main() {
   })
 
   /** Clear lastInterruption, logging any suppressed reply text that was never spoken (#539 diagnostics). */
-  function clearInterruption(why: string) {
+  function clearInterruption(why: string, tellNextTurn = true) {
+    if (lastInterruption?.suppressedBlocks.length && tellNextTurn) droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
     if (lastInterruption?.suppressedBlocks.length) console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (${why}, agent: ${agentState}, user: ${userState})`)
     lastInterruption = null
   }
@@ -4237,6 +4247,7 @@ async function main() {
   const clientNotes = new ClientNoteQueue()
   const typedEchoes = new TypedEchoTracker()
   const getAndConsumeClientNotes = () => clientNotes.drain()
+  const getAndConsumeDroppedUnspoken = () => { const n = droppedUnspokenChars; droppedUnspokenChars = 0; return n }
 
   /**
    * Callback for PipelineDirectLLM — returns pending interruption context and clears it.
@@ -4251,7 +4262,8 @@ async function main() {
     const live = liveBlocks(lastInterruption.suppressedBlocks, now)
     const heard = !isExpired(lastInterruption.timestamp, now)
     if (!heard && !live.length) {
-      clearInterruption('expired 60s')
+      droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
+      clearInterruption('expired 60s', false)
       return null
     }
     const ctx = {
@@ -4260,7 +4272,9 @@ async function main() {
       suppressedText: joinBlocks(live),
       fullBlockText: heard ? lastInterruption.fullBlockText : undefined,
     }
+    const prevStale = staleTurnId
     staleTurnId = staleIdOnConsume(heard ? lastInterruption : null, staleTurnId)
+    if (staleTurnId !== prevStale) newerTurnSince = Date.now()
     if (ctx.suppressedText) console.log(`🤐 [suppressed] CONSUMED ${ctx.suppressedText.length} chars by chat() (may not reach the prompt if the turn text was empty)`)
     lastInterruption = null
     return ctx
@@ -4618,7 +4632,7 @@ async function main() {
       isProcessingQueue = false
       currentSpeechHandle = null
       activeSpeechHandles.clear()
-      clearInterruption('performSessionSwitch'); speechTimeline.reset()
+      clearInterruption('performSessionSwitch', false); speechTimeline.reset()
       if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
       stopProactiveLoop()
       if (activeResearch) {
@@ -5283,10 +5297,11 @@ async function main() {
 
       // A late block from a turn the user already cut off (#456): dropped, never
       // buffered, or the 1.2s replay below could still speak it.
-      if (isStaleBlock(staleTurnId, data.messageId, (id) => directLLM.isRetiredTurnId(id))) {
+      if (isStaleBlock(staleTurnId, data.messageId, (id) => directLLM.isRetiredTurnId(id), newerTurnWindowOpen(newerTurnSince, Date.now()))) {
         console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         return
       }
+      if (data.messageId) newerTurnSince = null  // the newer turn's own reply has begun
       // Suppress while the user is mid-utterance. Without this, agent text generated
       // in parallel by the Claude SDK plays right over the user — same problem as
       // pre-interrupt overlap, but at the *output* side. The suppressed text gets
@@ -5370,16 +5385,14 @@ async function main() {
                 // Second: LiveKit gave us playback duration — estimate chars from it
                 const CHARS_PER_SEC = 14
                 const charCount = Math.min(Math.round(sdkPlaybackSec * CHARS_PER_SEC), data.text.length)
-                const slicePoint = data.text.lastIndexOf(' ', charCount) || charCount
-                spokenText = slicePoint > 0 ? data.text.slice(0, slicePoint) : data.text
+                spokenText = heardSlice(data.text, charCount)
                 method = 'sdk-position'
               } else if (playbackStartedAt !== null) {
                 // Third: use our wall-clock timer from first audio frame
                 const elapsedSec = (Date.now() - playbackStartedAt) / 1000
                 const CHARS_PER_SEC = 14
                 const charCount = Math.min(Math.round(elapsedSec * CHARS_PER_SEC), data.text.length)
-                const slicePoint = data.text.lastIndexOf(' ', charCount) || charCount
-                spokenText = slicePoint > 0 ? data.text.slice(0, slicePoint) : data.text
+                spokenText = heardSlice(data.text, charCount)
                 method = 'wall-clock'
               } else {
                 // Fallback: interrupt fired before first frame — pass full block
@@ -5671,7 +5684,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('room-disconnect'); speechTimeline.reset()
+    clearInterruption('room-disconnect', false); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -5920,7 +5933,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('room-join'); speechTimeline.reset()
+    clearInterruption('room-join', false); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -6125,6 +6138,7 @@ async function main() {
         },
         getAndConsumeInterruptionContext,
         getAndConsumeClientNotes,
+        getAndConsumeDroppedUnspoken,
         onFastBrainResult: onPipelineFastBrainResult,
         takeVoiceAction: takeVoiceCommand,
       })
@@ -6375,6 +6389,7 @@ async function main() {
           fields: Object.keys(ev),
         }))
         if (ev.isInterruption === false) currentDuck?.setDuck(1, 'overlap not interruption')
+        else bargeInPausedAt = Date.now()
       })
 
       // agent_false_interruption — the SDK's "actually that was a false alarm,
@@ -6387,6 +6402,10 @@ async function main() {
           resumed: ev.resumed,
           createdAt: ev.createdAt,
         }))
+        if (bargeInPausedAt !== null) {
+          console.log(`🔬 BARGE-IN OUTCOME: ${ev.resumed ? 'resumed old speech (false interruption)' : 'resume blocked'} after ${Date.now() - bargeInPausedAt}ms`)
+          bargeInPausedAt = null
+        }
         currentDuck?.setDuck(1, 'false interruption')
       })
 
@@ -6610,6 +6629,7 @@ async function main() {
                 },
                 getAndConsumeInterruptionContext,
                 getAndConsumeClientNotes,
+                getAndConsumeDroppedUnspoken,
                 onFastBrainResult: onPipelineFastBrainResult,
                 takeVoiceAction: takeVoiceCommand,
               })
@@ -6894,7 +6914,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('participant-disconnect'); speechTimeline.reset()
+    clearInterruption('participant-disconnect', false); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()

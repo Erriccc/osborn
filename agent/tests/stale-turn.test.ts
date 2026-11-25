@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { staleIdOnConsume, isStaleBlock, currentIdOnPush, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks } from '../src/stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, currentIdOnPush, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, heardSlice, newerTurnWindowOpen, droppedOnExpire } from '../src/stale-turn.js'
 import { noiseGate } from '../src/noise-gate.js'
 
 let stale: string | null = null
@@ -188,5 +188,40 @@ assert.equal(isExpired(0, 60_000), false); assert.equal(isExpired(0, 60_001), tr
   assert.equal(expireDecision({ ...heard(59_500, 0), spokenText: '' }, 60_100), 'clear', 'nothing heard: nothing to keep')
   assert.equal(expireDecision(null, 60_100), 'keep', 'no context: no-op')
   assert.equal(expireDecision(heard(59_500, 30_000), 60_100), 'keep', 'a live block: nothing expired')
+}
+// B3: heardSlice
+assert.equal(heardSlice('hello world again', 8), 'hello', 'cut at the last space')
+assert.equal(heardSlice('extraordinarily long', 5), 'extra', 'first word longer than charCount: the chars, not the whole block')
+assert.equal(heardSlice('hi there', 0), '', 'nothing played')
+assert.equal(heardSlice('short', 99), 'short', 'clamped to the text')
+assert.equal(heardSlice('a b', 1), 'a')
+// B1 gap: id-less blocks do not bypass while a newer turn generates
+assert.equal(isStaleBlock('A', undefined, () => false, true), true)
+assert.equal(isStaleBlock('A', undefined, () => false, false), false)
+assert.equal(isStaleBlock('A', 'B', () => false, true), false, 'the newer turn\'s own id passes')
+assert.equal(newerTurnWindowOpen(null, 1000), false)
+assert.equal(newerTurnWindowOpen(1000, 2000), true)
+assert.equal(newerTurnWindowOpen(0, 60_001), false, 'the window ages out')
+{
+  const blocks = [{ text: 'old', at: 0 }, { text: 'tagged', turnId: 'NEW', at: 0 }]
+  const p = partitionForReplay(blocks, 100, (id) => isStaleBlock('A', id, () => false, true))
+  assert.deepEqual(p.speak.map((b) => b.text), ['tagged'])
+  assert.deepEqual(p.keep.map((b) => b.text), ['old'], 'id-less block kept, not spoken, during the window')
+}
+{
+  const logs: string[] = []; let spoke = 0, windowOpen = true
+  const li = appendBlock(null, 'x', 'A', Date.now())
+  const sch = new ReplayScheduler({ current: () => li, userListening: () => true, delayMs: 1, log: (m) => logs.push(m), speak: () => { spoke++ }, expire: () => {},
+    inputs: () => ({ hasSession: true, sameInterruption: true, hasText: true, agentSpeaking: false, gateTriaging: false, newerTurnGenerating: windowOpen }) })
+  sch.arm(); await new Promise((r) => setTimeout(r, 30)); sch.cancel()
+  assert.equal(spoke, 0, 'no replay while a newer turn generates'); assert.ok(logs.some((l) => l.includes('newer turn generating')))
+}
+// A residual: expiry reports what it discards
+{
+  const heard = { spokenText: 'h', recentMessages: 'r', timestamp: 59_500, suppressedBlocks: [{ text: 'abcd', at: 0 }] }
+  assert.equal(droppedOnExpire(heard, 60_100), 4, 'drop-blocks: the unspoken chars')
+  assert.equal(droppedOnExpire({ ...heard, spokenText: '' }, 60_100), 4, 'clear: the unspoken chars')
+  assert.equal(droppedOnExpire({ ...heard, suppressedBlocks: [{ text: 'abcd', at: 50_000 }] }, 60_100), 0, 'live block: nothing dropped')
+  assert.equal(droppedOnExpire(null, 0), 0)
 }
 console.log('stale-turn: ok')

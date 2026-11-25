@@ -1770,6 +1770,11 @@ export function getContinuationNote(continuedAfterMs: number): string {
   return `<system-reminder>\nThe user kept talking about ${s}s after your previous turn started: this message continues that thought. Answer the whole thing; anything you said in reply to the earlier part may not have been heard.\n</system-reminder>`
 }
 
+/** The next turn after unspoken reply text was discarded (expired or cleared): the user never heard it. */
+export function getDroppedUnspokenNote(chars: number): string {
+  return `[CONTEXT] A reply of about ${chars} characters that you wrote was dropped before it was spoken (it aged out or was cleared). The user did not hear it. If it still matters to what they say now, say it again briefly; otherwise ignore this.`
+}
+
 /** Sent when the user turns the noise-cancellation (side-conversation filter) toggle on or off; a [SYSTEM prefix so it never steers a live turn. */
 export function getNoiseCancelNote(on: boolean): string {
   return on

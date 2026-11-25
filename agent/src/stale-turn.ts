@@ -18,8 +18,27 @@ export function isStaleBlock(
   staleId: string | null,
   messageId?: string | null,
   isRetired: (id: string) => boolean = () => false,
+  newerTurnGenerating = false,
 ): boolean {
-  return !!messageId && (messageId === staleId || isRetired(messageId))
+  // While a newer turn is generating, a block with no id cannot be told from the cut-off turn's leftovers: it does not pass.
+  if (!messageId) return newerTurnGenerating
+  return messageId === staleId || isRetired(messageId)
+}
+
+/** The window after a turn consumed an interruption, until its own reply (a live id) arrives or it ages out. */
+export function newerTurnWindowOpen(since: number | null, now: number): boolean {
+  return since !== null && !isExpired(since, now)
+}
+
+/**
+ * Text heard of a block when only `chars` characters are known to have played:
+ * cut at the last space at or before `chars`. lastIndexOf returns -1 (truthy)
+ * with no space, so a first word longer than `chars` falls back to `chars`.
+ */
+export function heardSlice(text: string, chars: number): string {
+  const n = Math.max(0, Math.min(Math.round(chars), text.length))
+  const i = text.lastIndexOf(' ', n)
+  return text.slice(0, i > 0 ? i : n)
 }
 
 /**
@@ -44,6 +63,7 @@ type ReplayInput = {
   hasText: boolean
   agentSpeaking: boolean
   gateTriaging: boolean       // the noise gate holds a barge-in utterance: its turn will consume the text
+  newerTurnGenerating?: boolean  // a turn that consumed an interruption is still generating: its reply goes first
 }
 
 /**
@@ -58,7 +78,7 @@ function replayStep(i: ReplayInput & { expired: boolean; attempts: number }):
   if (!i.sameInterruption) return { act: 'skip', reason: 'replaced or consumed by a new turn' }
   if (!i.hasText) return { act: 'skip', reason: 'nothing buffered' }
   if (i.expired) return { act: 'expire' }
-  const busy = i.gateTriaging ? 'speech hold or noise gate' : i.agentSpeaking ? 'agent speaking' : ''
+  const busy = i.gateTriaging ? 'speech hold or noise gate' : i.newerTurnGenerating ? 'newer turn generating' : i.agentSpeaking ? 'agent speaking' : ''
   if (busy) return i.attempts < MAX_REPLAY_REARMS ? { act: 'rearm', reason: busy } : { act: 'skip', reason: `${busy}, gave up` }
   return { act: 'speak' }
 }
@@ -179,4 +199,9 @@ export function putBack<T extends Buffered>(li: T | null, blocks: SuppressedBloc
   if (!li) return bufferOnly(live, earliest(live, now))
   const merged = [...live, ...li.suppressedBlocks].sort((a, b) => a.at - b.at)  // stable: equal times keep put-back first
   return { ...li, suppressedBlocks: merged }  // timestamp is the heard context's own age: blocks never shift it
+}
+
+/** Chars of unspoken reply text that expiry discards, 0 when it keeps everything (the next turn is told, #593). */
+export function droppedOnExpire(li: Buffered | null, now: number): number {
+  return expireDecision(li, now) === 'keep' ? 0 : totalChars(li.suppressedBlocks)
 }
