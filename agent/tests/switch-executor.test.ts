@@ -163,7 +163,7 @@ await t('S4 performSessionSwitch: resets in the scoped order (4.17)', () => {
   const order = [
     'plan.stopSlotFirst',
     'voiceQueue.length = 0',
-    "clearInterruption('performSessionSwitch')",
+    "clearInterruption('performSessionSwitch'",
     'statusManager.upsertDispatch',
     'currentLLM.resetForSessionSwitch()',
     'setWorkingDirectory?.(cwd)',
