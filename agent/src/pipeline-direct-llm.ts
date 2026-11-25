@@ -548,7 +548,7 @@ export class PipelineDirectLLM extends llm.LLM {
       ctxForClaude = withNotePrepended(ctxForClaude, getContinuationNote(continued.continuedAfterMs))
     }
 
-    // Client notices (favorite_changed, L2b): UI actions that are context, not a
+    // Client notices (favorite_changed, L2b) and the dropped-reply note: context, not a
     // user turn. They ride the next real user turn as a leading
     // <system-reminder> block on the same shallow copy (the sanitizer strips
     // that block from history and titles). Never on meeting chunks.

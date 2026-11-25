@@ -24,8 +24,7 @@ export function isStaleBlock(
 
 /**
  * Text heard of a block when only `chars` characters are known to have played:
- * cut at the last space at or before `chars`. lastIndexOf returns -1 (truthy)
- * with no space, so a first word longer than `chars` falls back to `chars`.
+ * cut at the last space at or before `chars`, or at `chars` when the first word is longer.
  */
 export function heardSlice(text: string, chars: number): string {
   const n = Math.max(0, Math.min(Math.round(chars), text.length))
@@ -89,6 +88,8 @@ const bufferOnly = (suppressedBlocks: SuppressedBlock[], timestamp: number): Buf
 export const joinBlocks = (blocks: SuppressedBlock[]): string => blocks.map((b) => b.text).join('\n')
 export const totalChars = (blocks: SuppressedBlock[]): number => joinBlocks(blocks).length
 /** Blocks younger than the max age, measured from each block's own first-buffered time. */
+/** Characters in the blocks past the max age: reply text that will never be spoken. */
+export const expiredChars = (blocks: SuppressedBlock[], now: number): number => totalChars(blocks.filter((b) => isExpired(b.at, now)))
 export const liveBlocks = (blocks: SuppressedBlock[], now: number): SuppressedBlock[] => blocks.filter((b) => !isExpired(b.at, now))
 const earliest = (blocks: SuppressedBlock[], fallback: number): number => blocks.length ? Math.min(...blocks.map((b) => b.at)) : fallback
 
@@ -106,15 +107,15 @@ export function appendBlock<T extends Pending>(li: T | null, text: string, turnI
  */
 export function partitionForReplay(
   blocks: SuppressedBlock[], now: number, isStale: (turnId?: string) => boolean,
-): { speak: SuppressedBlock[]; keep: SuppressedBlock[]; expired: number } {
+): { speak: SuppressedBlock[]; keep: SuppressedBlock[]; expired: number; expiredChars: number } {
   const speak: SuppressedBlock[] = [], keep: SuppressedBlock[] = []
-  let expired = 0
+  let expired = 0, expiredChars = 0
   for (const b of blocks) {
-    if (isExpired(b.at, now)) expired++
+    if (isExpired(b.at, now)) { expired++; expiredChars += b.text.length }
     else if (isStale(b.turnId)) keep.push(b)
     else speak.push(b)
   }
-  return { speak, keep, expired }
+  return { speak, keep, expired, expiredChars }
 }
 
 type ReplayDeps<C extends Pending> = {

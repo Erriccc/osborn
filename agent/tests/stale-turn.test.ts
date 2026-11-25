@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { staleIdOnConsume, isStaleBlock, currentIdOnPush, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, heardSlice } from '../src/stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, currentIdOnPush, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, expiredChars, heardSlice } from '../src/stale-turn.js'
 import { noiseGate } from '../src/noise-gate.js'
 
 let stale: string | null = null
@@ -204,10 +204,11 @@ assert.equal(heardSlice('a b', 1), 'a')
   sch.arm(); await new Promise((r) => setTimeout(r, 30)); sch.cancel()
   assert.equal(spoke, 0, 'no replay while a newer turn generates'); assert.ok(logs.some((l) => l.includes('newer turn generating')))
 }
-// A residual: expiry that discards unspoken text is a non-keep decision (the caller then counts totalChars)
+// A residual: expired blocks are counted in chars, by the same clock as the partition
 {
-  const heard = { spokenText: 'h', recentMessages: 'r', timestamp: 59_500, suppressedBlocks: [{ text: 'abcd', at: 0 }] }
-  assert.equal(expireDecision(heard, 60_100), 'drop-blocks'); assert.equal(totalChars(heard.suppressedBlocks), 4)
-  assert.equal(expireDecision({ ...heard, spokenText: '' }, 60_100), 'clear')
+  const bs = [{ text: 'abcd', at: 0 }, { text: 'xy', at: 50_000 }]
+  assert.equal(expiredChars(bs, 60_100), 4)
+  assert.equal(expiredChars(bs, 1000), 0)
+  assert.equal(partitionForReplay(bs, 60_100, () => false).expiredChars, 4)
 }
 console.log('stale-turn: ok')

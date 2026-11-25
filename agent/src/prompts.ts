@@ -1770,7 +1770,7 @@ export function getContinuationNote(continuedAfterMs: number): string {
   return `<system-reminder>\nThe user kept talking about ${s}s after your previous turn started: this message continues that thought. Answer the whole thing; anything you said in reply to the earlier part may not have been heard.\n</system-reminder>`
 }
 
-/** The next turn after the whole buffer of unspoken reply text expired: the user never heard it. */
+/** The next turn after buffered unspoken reply text expired: the user never heard it. */
 export function getDroppedUnspokenNote(chars: number): string {
   return `<system-reminder>
 [CONTEXT] A reply of about ${chars} characters that you wrote aged out before it was spoken. The user did not hear it. If it still matters to what they say now, say it again briefly; otherwise ignore this.
