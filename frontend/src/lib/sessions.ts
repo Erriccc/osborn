@@ -228,6 +228,6 @@ export function formatTime(timestamp: Date | string | number, nowMs: number = Da
  * Group sessions under the shared day headings (outputs-model groupByDay), using
  * the last-activity time; each group is most-recently-active first.
  */
-export function groupSessionsByDate(sessions: SessionInfo[]): { label: string; sessions: SessionInfo[] }[] {
-  return groupByDay(sortSessionsByActivity(sessions), sessionActivityTime).map(g => ({ label: g.label, sessions: g.items }))
+export function groupSessionsByDate(sessions: SessionInfo[], now = Date.now()): { label: string; sessions: SessionInfo[] }[] {
+  return groupByDay(sortSessionsByActivity(sessions), sessionActivityTime, now).map(g => ({ label: g.label, sessions: g.items }))
 }

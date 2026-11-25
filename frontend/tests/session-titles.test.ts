@@ -146,13 +146,14 @@ ok('derive: filler + 6-word cap', deriveSessionTitle('can you help fix the very 
   ok('mobile activity: fallback', mobileSessionActivityTime(c) === c.timestamp && mobileSessionActivityTime(a) === a.lastActivityAt)
 
   // Date grouping follows activity, not mtime
-  const now = new Date()
+  // Fixed mid-day clock so the result never depends on the time of day the test runs
+  const now = new Date(2026, 10, 15, 12, 0, 0)
   const todayIso = new Date(now.getTime() - 60_000).toISOString()
   const oldIso = new Date(now.getTime() - 30 * 86400000).toISOString()
   const g = groupSessionsByDate([
     { sessionId: 'x', timestamp: todayIso, lastActivityAt: oldIso, messageCount: 1 },
     { sessionId: 'y', timestamp: oldIso, lastActivityAt: todayIso, messageCount: 1 },
-  ])
+  ], now.getTime())
   const today = g.find((x) => x.label === 'Today')
   const older = g.find((x) => x.label === 'Earlier')
   ok('group: uses lastActivityAt', today?.sessions.map((s) => s.sessionId).join('') === 'y' && older?.sessions.map((s) => s.sessionId).join('') === 'x', JSON.stringify(g))
