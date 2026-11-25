@@ -107,3 +107,12 @@ export function takeoverSessionUrl(href: string, stored: string | null, prevRole
   if (now - rec.at > LIVE_SESSION_MAX_AGE_MS) return null
   return chatUrlForSession(href, rec.sessionId, typeof rec.cwd === 'string' ? rec.cwd : null)
 }
+
+/**
+ * The cwd hint for the token. A session id in the URL is a resume, which needs its cwd (#112):
+ * the live URL's, else the one the page launched with. With no session id this is a fresh
+ * session, and a stale live cwd left in the tab must not reach an agent that trusts it raw (#183).
+ */
+export function connectWorkingDirectory(sessionId: string | null, live: { sessionId: string | null; workingDirectory: string }, launchCwd: string): string {
+  return sessionId && live.sessionId === sessionId ? live.workingDirectory || launchCwd : launchCwd
+}

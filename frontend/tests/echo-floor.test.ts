@@ -19,3 +19,22 @@ assert.equal(liftEchoFloor(0.005, 0.02), 0.008)
 assert.equal(liftEchoFloor(0.005, 0.09), FLOOR_MAX)
 assert.equal(liftEchoFloor(0.01, 0.001), 0.01, 'a lift never lowers the floor')
 console.log('echo-floor: all assertions passed')
+
+// #229 / #231: duck timing log and agent-track handling (pure decisions behind VoiceRoom's loop)
+import { bargeInTiming, shouldBuildAnalyser, trackSwapped } from '../src/lib/echo-floor'
+{
+  const eq: typeof assert.strictEqual = (a, b, m?) => assert.strictEqual(a, b, m)
+  eq(bargeInTiming(0, 1000, 1500), null, 'no duck: natural stop logs nothing')
+  eq(bargeInTiming(1650, 1000, 1500), 'barge-in timing: duck 650ms, agent stopped 500ms after your voice')
+  eq(bargeInTiming(1650, 1000, 900), 'barge-in timing: duck 650ms, agent was already quiet', 'stale heard-at is not a fake 0ms')
+  eq(bargeInTiming(1100, 1000, 1000), 'barge-in timing: duck 100ms, agent stopped 0ms after your voice', 'heard exactly at onset is a real 0')
+  const A = {}, B = {}
+  eq(trackSwapped(B, A), true, 'swap detected so the duck volume is re-applied')
+  eq(trackSwapped(A, A), false)
+  eq(trackSwapped(null, A), true)
+  eq(shouldBuildAnalyser(A, null, 5000, 0), true, 'new track: build')
+  eq(shouldBuildAnalyser(A, A, 9000, 0), false, 'already analysed: no rebuild')
+  eq(shouldBuildAnalyser(A, null, 5500, 5000), false, 'failed build: wait for the retry gap')
+  eq(shouldBuildAnalyser(A, null, 6100, 5000), true, 'failed build: retried after 1s')
+  console.log('PASS duck timing + track handling')
+}

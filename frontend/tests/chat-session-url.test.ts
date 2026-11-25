@@ -81,5 +81,19 @@ t('provider: preSelectedSessionId is fixed for the page life; reconnects read th
   assert.ok(/sessionParamsFromSearch\(/.test(prov), 'connect() must read the current URL session')
 })
 
+// #183: a fresh session must not forward a stale live cwd; a resume still needs its cwd (#112)
+import { connectWorkingDirectory } from '../src/lib/chat-url'
+t('connectWorkingDirectory: fresh session ignores stale live cwd', () => {
+  assert.equal(connectWorkingDirectory(null, { sessionId: null, workingDirectory: '/old/proj' }, '/launch'), '/launch')
+  assert.equal(connectWorkingDirectory(null, { sessionId: null, workingDirectory: '/old/proj' }, ''), '')
+})
+t('connectWorkingDirectory: resume uses live cwd, else launch cwd', () => {
+  assert.equal(connectWorkingDirectory(S1, { sessionId: S1, workingDirectory: '/p' }, '/launch'), '/p')
+  assert.equal(connectWorkingDirectory(S1, { sessionId: S1, workingDirectory: '' }, '/launch'), '/launch')
+})
+t('connectWorkingDirectory: preselected session (not in URL) does not take the URL cwd', () => {
+  assert.equal(connectWorkingDirectory(S2, { sessionId: null, workingDirectory: '/stale' }, '/launch'), '/launch')
+})
+
 console.log(`\n${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

@@ -27,7 +27,7 @@
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
-import { liveSessionKey, sessionParamsFromSearch, takeoverSessionUrl } from '@/lib/chat-url'
+import { connectWorkingDirectory as pickConnectCwd, liveSessionKey, sessionParamsFromSearch, takeoverSessionUrl } from '@/lib/chat-url'
 import { LiveKitRoom, RoomAudioRenderer } from '@livekit/components-react'
 import { DisconnectReason, type Room } from 'livekit-client'
 import '@livekit/components-styles'
@@ -745,7 +745,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       // this hint raw, and an empty one boots it in the workspace ROOT (#112).
       // The live URL's cwd wins; if a switch left it empty, fall back to the cwd
       // the page launched with.
-      const connectWorkingDirectory = live.workingDirectory || workingDirectory
+      const connectWorkingDirectory = pickConnectCwd(connectSessionId, live, workingDirectory)
       if (connectSessionId)
         url += `&sessionId=${encodeURIComponent(connectSessionId)}`
       // Forward the session's cwd into the token metadata so the agent boots with
