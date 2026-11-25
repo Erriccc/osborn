@@ -4135,6 +4135,7 @@ async function main() {
     // Preserve any already-buffered suppressed blocks (the user may have started speaking
     // BEFORE the previous TTS completed, and we may have already suppressed in-flight
     // tts_say events that arrived during that overlap).
+    droppedUnspokenChars += expiredChars(lastInterruption?.suppressedBlocks ?? [], Date.now())
     const carriedSuppressed = liveBlocks(lastInterruption?.suppressedBlocks ?? [], Date.now())  // original ages kept
     lastInterruption = {
       spokenText: fullText,
@@ -4190,6 +4191,7 @@ async function main() {
     const text = joinBlocks(speak)
     console.log(`🔁 [suppressed] REPLAY ${text.length} chars (${why})`)
     markReplay()
+    bargeInPausedAt = null  // each outcome belongs to the speech it paused
     try {
       const h = (currentSession as any).say(text)
       if (h && typeof h.addDoneCallback === 'function') {
@@ -4269,7 +4271,7 @@ async function main() {
     const live = liveBlocks(lastInterruption.suppressedBlocks, now)
     const heard = !isExpired(lastInterruption.timestamp, now)
     if (!heard && !live.length) {
-      clearInterruption('expired 60s')  // counts the dropped chars itself
+      clearInterruption('expired 60s')
       return null
     }
     droppedUnspokenChars += expiredChars(lastInterruption.suppressedBlocks, now)
