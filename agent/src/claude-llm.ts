@@ -12,7 +12,7 @@ import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUse
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
-import { getResearchSystemPrompt, getDirectModeResearchPrompt, getTurnShapeReminder, SPEAK_CADENCE_N, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, getPointsChecklist, PHONE_TOOLS_DENIED } from './prompts.js'
+import { getResearchSystemPrompt, getDirectModeResearchPrompt, getTurnShapeReminder, SPEAK_CADENCE_N, getSpeakCadenceNudge, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, getPointsChecklist, PHONE_TOOLS_DENIED } from './prompts.js'
 import { dispatchCallRefusal, DISPATCH_TOOL } from './dispatch.js'
 import { steersTurn } from './content/transcript-sanitizer.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
@@ -133,8 +133,8 @@ function logCacheUsage(usage: any): void {
 // Spoken-progress CADENCE (not a work cap). The main orchestrator agent may run as many direct
 // tool calls as a turn genuinely needs — we no longer STOP its work. Instead, every
 // SPEAK_CADENCE_N main-agent tool calls we inject a NON-BLOCKING note (PreToolUse
-// additionalContext) nudging it to say ONE short spoken progress line before its next call, then
-// keep going (do it itself or delegate — its choice). Reset on every UserPromptSubmit (new user
+// additionalContext, prompts/speak-cadence-nudge.md) to speak ONE short line only if it has something
+// new for the user (never status), then keep going (do it itself or delegate — its choice). Reset on every UserPromptSubmit (new user
 // message). Task/Agent delegations and sub-agent calls (agent_type !== null) do NOT count.
 //
 // TOOL_HARD_CEILING is a pure runaway/crash backstop (heap-OOM history on pathological deep
@@ -147,18 +147,6 @@ const TOOL_HARD_CEILING = Number(process.env.OSBORN_TOOL_HARD_CEILING ?? 60)
 // the spoken-progress note rides the next ACTUALLY-allowed main-agent tool call (even if the exact
 // cadence call was a deferred/denied write).
 let pendingSpeakNudge = false
-
-// The cadence nudge text. Framed as a system note so the model never mistakes it for a user turn;
-// asks for exactly ONE short spoken sentence (→ one text block → one tts_say → session.say), says
-// "keep going, your call to do it yourself or delegate" and "do not stop" so it is never read as a
-// turn-ender. Auto-suppressed if the user is mid-utterance (index.ts output gate) and routed
-// correctly into meetings.
-const speakProgressNudge = (n: number) =>
-  `[SPOKEN PROGRESS CADENCE — system note, not from the user] You've run ${n} tool calls on this ` +
-  `turn without checking in. Before your next tool call, say ONE short spoken sentence to the ` +
-  `user: plainly, what you just found or did and what you're doing next (~15 words, no question, ` +
-  `no menu). Then keep working — do it yourself or delegate via Task, your call. Do not stop, ` +
-  `wait, or ask permission; this is a nudge to stay audible, not to end the turn.`
 
 // Writer PROVENANCE REMINDER (Chesterton's Fence): before the writer mutates a
 // version-controlled file it should review that file's git history so the edit is
@@ -3078,7 +3066,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               // Consume an armed spoken-progress nudge on this allowed main-agent tool call:
               // inject it as NON-BLOCKING additionalContext (the model reads it; the tool still
               // runs). Riding the allow tail guarantees one clean, non-deny injection site.
-              const nudge = pendingSpeakNudge && !agentType ? speakProgressNudge(turnToolCallCount) : null
+              const nudge = pendingSpeakNudge && !agentType ? getSpeakCadenceNudge(turnToolCallCount) : null
               if (nudge) pendingSpeakNudge = false
               const context = [stewardNote, nudge].filter(Boolean).join('\n\n')
               if (context) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }

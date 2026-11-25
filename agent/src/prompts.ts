@@ -25,6 +25,8 @@ const fillMainAgentLimits = (t: string) => t.replaceAll('{{directCallCap}}', Str
 const getMainAgentBudget = () => fillMainAgentLimits(readFileSync(join(PROMPTS_FILE_DIR, 'main-agent-budget.md'), 'utf-8').trimEnd())
 /** The per-turn reminder (UserPromptSubmit), read fresh on every turn. */
 export const getTurnShapeReminder = () => fillMainAgentLimits(readFileSync(join(PROMPTS_FILE_DIR, 'turn-shape-reminder.md'), 'utf-8'))
+/** The non-blocking note claude-llm.ts injects every SPEAK_CADENCE_N main-agent calls. */
+export const getSpeakCadenceNudge = (calls: number) => readFileSync(join(PROMPTS_FILE_DIR, 'speak-cadence-nudge.md'), 'utf-8').trim().replaceAll('{{calls}}', String(calls))
 
 /**
  * refactored_prompts.ts
