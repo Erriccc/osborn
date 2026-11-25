@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { staleIdOnConsume, isStaleBlock, currentIdOnPush, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks } from '../src/stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, currentIdOnPush, ReplayScheduler, takePending, putBack, settleAfterSay, isExpired, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, expiredChars, heardSlice } from '../src/stale-turn.js'
 import { noiseGate } from '../src/noise-gate.js'
 
 let stale: string | null = null
@@ -188,5 +188,18 @@ assert.equal(isExpired(0, 60_000), false); assert.equal(isExpired(0, 60_001), tr
   assert.equal(expireDecision({ ...heard(59_500, 0), spokenText: '' }, 60_100), 'clear', 'nothing heard: nothing to keep')
   assert.equal(expireDecision(null, 60_100), 'keep', 'no context: no-op')
   assert.equal(expireDecision(heard(59_500, 30_000), 60_100), 'keep', 'a live block: nothing expired')
+}
+// B3: heardSlice
+assert.equal(heardSlice('hello world again', 8), 'hello', 'cut at the last space')
+assert.equal(heardSlice('extraordinarily long', 5), 'extra', 'first word longer than charCount: the chars, not the whole block')
+assert.equal(heardSlice('hi there', 0), 'hi there', 'nothing measurable played: still counts as a cut')
+assert.equal(heardSlice('short', 99), 'short', 'clamped to the text')
+assert.equal(heardSlice('a b', 1), 'a')
+// A residual: expired blocks are counted in chars, by the same clock as the partition
+{
+  const bs = [{ text: 'abcd', at: 0 }, { text: 'xy', at: 50_000 }]
+  assert.equal(expiredChars(bs, 60_100), 4)
+  assert.equal(expiredChars(bs, 1000), 0)
+  assert.equal(partitionForReplay(bs, 60_100, () => false).expired, 1)
 }
 console.log('stale-turn: ok')

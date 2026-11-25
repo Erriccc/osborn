@@ -7,7 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { staleIdOnConsume, isStaleBlock, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
+import { staleIdOnConsume, isStaleBlock, heardSlice, expiredChars, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
 } from '@livekit/rtc-node'
@@ -63,7 +63,7 @@ import { loopIds, noticeThrottled, appendLoopRecord, appendQueuedLoop, markQueue
 import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
-import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote, getNoiseCancelNote } from './prompts.js'
+import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote, getNoiseCancelNote, getDroppedUnspokenNote } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled, launchLoopsFlush, flushLastSessionThenExit } from './content/lens-launch.js'
 import { hasContentModelKey } from './content/content-llm.js'
@@ -4076,6 +4076,8 @@ async function main() {
   const activeSpeechHandles = new Set<any>()
   // Turns the user cut off: their later tts_say blocks are dropped (#456)
   let staleTurnId: string | null = null
+  let bargeInPausedAt: number | null = null  // diagnostic (#483): an overlap paused the agent's audio; set until it resumes or the turn hard-interrupts
+  let droppedUnspokenChars = 0  // chars of buffered reply text that expired unspoken; the next turn is told once
 
   // Last interruption context — gathered at interrupt time, consumed when user's message arrives
   let lastInterruption: {
@@ -4101,6 +4103,10 @@ async function main() {
     // fullText is the synchronized (word-accurate) transcript of what was actually spoken
     // before the interruption. fullBlockText is the original full TTS segment text.
     const fullBlockLen = fullBlockText?.length ?? fullText.length
+    if (bargeInPausedAt !== null) {
+      console.log(`🔬 BARGE-IN OUTCOME: hard-interrupted (turn committed ${Date.now() - bargeInPausedAt}ms after the overlap paused the audio, old speech not resumed)`)
+      bargeInPausedAt = null
+    }
     console.log(`🔇 Speech interrupted. Heard (${fullText.length} chars): "${fullText}" [full block was ${fullBlockLen} chars]`)
 
     // Read last 10 assistant messages from JSONL (Claude's full untruncated output).
@@ -4127,6 +4133,7 @@ async function main() {
     // Preserve any already-buffered suppressed blocks (the user may have started speaking
     // BEFORE the previous TTS completed, and we may have already suppressed in-flight
     // tts_say events that arrived during that overlap).
+    droppedUnspokenChars += expiredChars(lastInterruption?.suppressedBlocks ?? [], Date.now())
     const carriedSuppressed = liveBlocks(lastInterruption?.suppressedBlocks ?? [], Date.now())  // original ages kept
     lastInterruption = {
       spokenText: fullText,
@@ -4172,14 +4179,17 @@ async function main() {
     const { blocks, rest } = takePending(lastInterruption)
     if (!blocks.length || !currentSession) return
     // Blocks of a turn the user cut off (a phone "stop that" interrupts without a new turn) are never spoken, but stay buffered so the next prompt still carries them; expired ones go.
-    const { speak, keep, expired } = partitionForReplay(blocks, Date.now(), (id) => isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
+    const now = Date.now()
+    const { speak, keep, expired } = partitionForReplay(blocks, now, (id) => isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
     lastInterruption = rest && { ...rest, suppressedBlocks: keep }
+    droppedUnspokenChars += expiredChars(blocks, now)
     if (expired) console.log(`🤐 [suppressed] REPLAY EXPIRED ${expired} block(s) older than 60s`)
     if (keep.length) console.log(`🔇 [suppressed] REPLAY DROPPED ${keep.length} block(s), ${totalChars(keep)} chars (their turn was interrupted)`)
     if (!speak.length) return
     const text = joinBlocks(speak)
     console.log(`🔁 [suppressed] REPLAY ${text.length} chars (${why})`)
     markReplay()
+    bargeInPausedAt = null  // each outcome belongs to the speech it paused
     try {
       const h = (currentSession as any).say(text)
       if (h && typeof h.addDoneCallback === 'function') {
@@ -4217,6 +4227,7 @@ async function main() {
       const d = expireDecision(lastInterruption, Date.now())
       if (d === 'clear') clearInterruption('expired 60s')
       else if (d === 'drop-blocks') {
+        droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
         console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (expired 60s, heard context kept)`)
         lastInterruption = { ...lastInterruption, suppressedBlocks: [] }
       }
@@ -4225,7 +4236,9 @@ async function main() {
   })
 
   /** Clear lastInterruption, logging any suppressed reply text that was never spoken (#539 diagnostics). */
-  function clearInterruption(why: string) {
+  function clearInterruption(why: string, reset = false) {
+    if (reset) { droppedUnspokenChars = 0; bargeInPausedAt = null }
+    else if (lastInterruption?.suppressedBlocks.length) droppedUnspokenChars += expiredChars(lastInterruption.suppressedBlocks, Date.now())
     if (lastInterruption?.suppressedBlocks.length) console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (${why}, agent: ${agentState}, user: ${userState})`)
     lastInterruption = null
   }
@@ -4236,7 +4249,11 @@ async function main() {
   // user_transcript echo.
   const clientNotes = new ClientNoteQueue()
   const typedEchoes = new TypedEchoTracker()
-  const getAndConsumeClientNotes = () => clientNotes.drain()
+  const getAndConsumeClientNotes = () => {
+    const dropped = droppedUnspokenChars
+    droppedUnspokenChars = 0
+    return [clientNotes.drain(), dropped ? getDroppedUnspokenNote(dropped) : ''].filter(Boolean).join('\n')
+  }
 
   /**
    * Callback for PipelineDirectLLM — returns pending interruption context and clears it.
@@ -4254,6 +4271,7 @@ async function main() {
       clearInterruption('expired 60s')
       return null
     }
+    droppedUnspokenChars += expiredChars(lastInterruption.suppressedBlocks, now)
     const ctx = {
       spokenText: heard ? lastInterruption.spokenText : '',
       recentMessages: heard ? lastInterruption.recentMessages : '',
@@ -4618,7 +4636,7 @@ async function main() {
       isProcessingQueue = false
       currentSpeechHandle = null
       activeSpeechHandles.clear()
-      clearInterruption('performSessionSwitch'); speechTimeline.reset()
+      clearInterruption('performSessionSwitch', true); speechTimeline.reset()
       if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
       stopProactiveLoop()
       if (activeResearch) {
@@ -5361,6 +5379,7 @@ async function main() {
 
               let spokenText: string
               let method: string
+              const CHARS_PER_SEC = 14  // spoken-rate estimate for the two position-based branches
 
               if (sdkTranscript) {
                 // Best case: LiveKit gave us word-accurate transcript (requires alignedTranscript TTS)
@@ -5368,18 +5387,12 @@ async function main() {
                 method = 'sdk-transcript'
               } else if (sdkPlaybackSec > 0) {
                 // Second: LiveKit gave us playback duration — estimate chars from it
-                const CHARS_PER_SEC = 14
-                const charCount = Math.min(Math.round(sdkPlaybackSec * CHARS_PER_SEC), data.text.length)
-                const slicePoint = data.text.lastIndexOf(' ', charCount) || charCount
-                spokenText = slicePoint > 0 ? data.text.slice(0, slicePoint) : data.text
+                spokenText = heardSlice(data.text, sdkPlaybackSec * CHARS_PER_SEC)
                 method = 'sdk-position'
               } else if (playbackStartedAt !== null) {
                 // Third: use our wall-clock timer from first audio frame
                 const elapsedSec = (Date.now() - playbackStartedAt) / 1000
-                const CHARS_PER_SEC = 14
-                const charCount = Math.min(Math.round(elapsedSec * CHARS_PER_SEC), data.text.length)
-                const slicePoint = data.text.lastIndexOf(' ', charCount) || charCount
-                spokenText = slicePoint > 0 ? data.text.slice(0, slicePoint) : data.text
+                spokenText = heardSlice(data.text, elapsedSec * CHARS_PER_SEC)
                 method = 'wall-clock'
               } else {
                 // Fallback: interrupt fired before first frame — pass full block
@@ -5397,6 +5410,7 @@ async function main() {
               }))
               handleSpeechDone(sh, spokenText, data.text, data.messageId)
             } else {
+              bargeInPausedAt = null
               console.log(`✅ [${sayId}] session.say DONE`)
               if (currentSpeechHandle === sh) {
                 // Text buffered after this say started was never covered by it (#539 C).
@@ -5671,7 +5685,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('room-disconnect'); speechTimeline.reset()
+    clearInterruption('room-disconnect', true); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -5920,7 +5934,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('room-join'); speechTimeline.reset()
+    clearInterruption('room-join', true); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()
@@ -6375,6 +6389,7 @@ async function main() {
           fields: Object.keys(ev),
         }))
         if (ev.isInterruption === false) currentDuck?.setDuck(1, 'overlap not interruption')
+        else bargeInPausedAt = Date.now()
       })
 
       // agent_false_interruption — the SDK's "actually that was a false alarm,
@@ -6387,6 +6402,10 @@ async function main() {
           resumed: ev.resumed,
           createdAt: ev.createdAt,
         }))
+        if (bargeInPausedAt !== null) {
+          console.log(`🔬 BARGE-IN OUTCOME: ${ev.resumed ? 'resumed old speech (false interruption)' : 'resume blocked'} after ${Date.now() - bargeInPausedAt}ms`)
+          bargeInPausedAt = null
+        }
         currentDuck?.setDuck(1, 'false interruption')
       })
 
@@ -6894,7 +6913,7 @@ async function main() {
     isProcessingQueue = false
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    clearInterruption('participant-disconnect'); speechTimeline.reset()
+    clearInterruption('participant-disconnect', true); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
     stopProactiveLoop()

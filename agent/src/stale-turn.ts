@@ -23,6 +23,16 @@ export function isStaleBlock(
 }
 
 /**
+ * Text heard of a block when only `chars` characters are known to have played:
+ * cut at the last space at or before `chars`, or at `chars` when the first word is longer.
+ */
+export function heardSlice(text: string, chars: number): string {
+  const n = Math.max(0, Math.min(Math.round(chars), text.length))
+  const i = text.lastIndexOf(' ', n)
+  return text.slice(0, i > 0 ? i : n) || text  // nothing measurable played: a cut still counts as an interruption
+}
+
+/**
  * Turn ids retired by a successful interrupt (#539 D). The SDK may emit no
  * `result` for an interrupted turn, so its id would otherwise name the next
  * reply and the gate would drop every block of it. Leftover blocks keep the
@@ -78,6 +88,8 @@ export const joinBlocks = (blocks: SuppressedBlock[]): string => blocks.map((b) 
 export const totalChars = (blocks: SuppressedBlock[]): number => joinBlocks(blocks).length
 /** Blocks younger than the max age, measured from each block's own first-buffered time. */
 export const liveBlocks = (blocks: SuppressedBlock[], now: number): SuppressedBlock[] => blocks.filter((b) => !isExpired(b.at, now))
+/** Characters in the blocks past the max age: reply text that will never be spoken. */
+export const expiredChars = (blocks: SuppressedBlock[], now: number): number => totalChars(blocks.filter((b) => isExpired(b.at, now)))
 const earliest = (blocks: SuppressedBlock[], fallback: number): number => blocks.length ? Math.min(...blocks.map((b) => b.at)) : fallback
 
 /** Add a block after the existing ones; the others are untouched, a missing id stays missing. */
