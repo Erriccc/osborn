@@ -1,4 +1,4 @@
-// #458: the main agent's direct tool-call budget is 10 per turn, then it delegates.
+// #458: the main agent's direct tool-call budget is MAIN_DIRECT_CALL_CAP (3) per turn, then it delegates.
 // Run with `npx tsx agent/tests/step-budget.test.ts`.
 import assert from 'node:assert'
 import { readFileSync } from 'node:fs'
@@ -6,7 +6,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MAIN_DIRECT_CALL_CAP, SPEAK_CADENCE_N, getSpeakCadenceNudge, getDirectModeResearchPrompt, getResearchSystemPrompt, getTurnShapeReminder } from '../src/prompts.js'
 
-assert.equal(MAIN_DIRECT_CALL_CAP, 10)
+assert.ok(Number.isInteger(MAIN_DIRECT_CALL_CAP) && MAIN_DIRECT_CALL_CAP > 0)
 const prompt = getDirectModeResearchPrompt('/tmp/osb-ws')
 const research = getResearchSystemPrompt('/tmp/osb-ws')
 const reminder = getTurnShapeReminder()
@@ -42,9 +42,9 @@ assert.match(readFileSync(join(dir, 'points-checklist.md'), 'utf8'), /only when 
 for (const p of [prompt, research, reminder]) {
   assert.match(p, new RegExp(`every ${cadence} calls`), 'prompt cadence matches SPEAK_CADENCE_N')
 }
-// The packaged meetings skill no longer claims a 3-call budget.
+// The packaged meetings skill states the same budget as the constant.
 const meetings = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '.claude', 'skills', 'meetings', 'SKILL.md'), 'utf8')
-assert.doesNotMatch(meetings, /3-call|3 direct tool calls/)
+assert.match(meetings, new RegExp(`budget of ${MAIN_DIRECT_CALL_CAP} direct tool calls per turn`))
 // No result/status narration: every layer speaks a result only for what it changes, never status.
 for (const p of [prompt, research]) assert.match(p, /Never speak status/)
 assert.doesNotMatch(prompt, /still installing|You are NOT silent/i)

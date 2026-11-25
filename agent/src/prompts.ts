@@ -18,8 +18,8 @@ const PROMPTS_FILE_DIR = join(__dirname, 'prompts')
 
 // Main-agent limits: the cadence nudge in claude-llm.ts fires every SPEAK_CADENCE_N calls, and the
 // prompts state both numbers through {{directCallCap}} / {{speakCadence}} (fillMainAgentLimits).
-export const MAIN_DIRECT_CALL_CAP = 10
-export const SPEAK_CADENCE_N = 6
+export const MAIN_DIRECT_CALL_CAP = 3
+export const SPEAK_CADENCE_N = 2
 const fillMainAgentLimits = (t: string) => t.replaceAll('{{directCallCap}}', String(MAIN_DIRECT_CALL_CAP)).replaceAll('{{speakCadence}}', String(SPEAK_CADENCE_N))
 /** THE BUDGET and the DELEGATION RUBRIC, shared by both main-agent system prompts. */
 const getMainAgentBudget = () => fillMainAgentLimits(readFileSync(join(PROMPTS_FILE_DIR, 'main-agent-budget.md'), 'utf-8').trimEnd())
