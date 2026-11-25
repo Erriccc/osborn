@@ -88,9 +88,9 @@ const bufferOnly = (suppressedBlocks: SuppressedBlock[], timestamp: number): Buf
 export const joinBlocks = (blocks: SuppressedBlock[]): string => blocks.map((b) => b.text).join('\n')
 export const totalChars = (blocks: SuppressedBlock[]): number => joinBlocks(blocks).length
 /** Blocks younger than the max age, measured from each block's own first-buffered time. */
+export const liveBlocks = (blocks: SuppressedBlock[], now: number): SuppressedBlock[] => blocks.filter((b) => !isExpired(b.at, now))
 /** Characters in the blocks past the max age: reply text that will never be spoken. */
 export const expiredChars = (blocks: SuppressedBlock[], now: number): number => totalChars(blocks.filter((b) => isExpired(b.at, now)))
-export const liveBlocks = (blocks: SuppressedBlock[], now: number): SuppressedBlock[] => blocks.filter((b) => !isExpired(b.at, now))
 const earliest = (blocks: SuppressedBlock[], fallback: number): number => blocks.length ? Math.min(...blocks.map((b) => b.at)) : fallback
 
 /** Add a block after the existing ones; the others are untouched, a missing id stays missing. */
@@ -107,15 +107,15 @@ export function appendBlock<T extends Pending>(li: T | null, text: string, turnI
  */
 export function partitionForReplay(
   blocks: SuppressedBlock[], now: number, isStale: (turnId?: string) => boolean,
-): { speak: SuppressedBlock[]; keep: SuppressedBlock[]; expired: number; expiredChars: number } {
+): { speak: SuppressedBlock[]; keep: SuppressedBlock[]; expired: number } {
   const speak: SuppressedBlock[] = [], keep: SuppressedBlock[] = []
-  let expired = 0, expiredChars = 0
+  let expired = 0
   for (const b of blocks) {
-    if (isExpired(b.at, now)) { expired++; expiredChars += b.text.length }
+    if (isExpired(b.at, now)) expired++
     else if (isStale(b.turnId)) keep.push(b)
     else speak.push(b)
   }
-  return { speak, keep, expired, expiredChars }
+  return { speak, keep, expired }
 }
 
 type ReplayDeps<C extends Pending> = {

@@ -4180,9 +4180,10 @@ async function main() {
     const { blocks, rest } = takePending(lastInterruption)
     if (!blocks.length || !currentSession) return
     // Blocks of a turn the user cut off (a phone "stop that" interrupts without a new turn) are never spoken, but stay buffered so the next prompt still carries them; expired ones go.
-    const { speak, keep, expired, expiredChars: lostChars } = partitionForReplay(blocks, Date.now(), (id) => isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
+    const now = Date.now()
+    const { speak, keep, expired } = partitionForReplay(blocks, now, (id) => isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
     lastInterruption = rest && { ...rest, suppressedBlocks: keep }
-    droppedUnspokenChars += lostChars
+    droppedUnspokenChars += expiredChars(blocks, now)
     if (expired) console.log(`🤐 [suppressed] REPLAY EXPIRED ${expired} block(s) older than 60s`)
     if (keep.length) console.log(`🔇 [suppressed] REPLAY DROPPED ${keep.length} block(s), ${totalChars(keep)} chars (their turn was interrupted)`)
     if (!speak.length) return
@@ -5307,7 +5308,7 @@ async function main() {
         console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         return
       }
-      newerTurnSince = null  // a block that passed the stale check is the newer turn's own reply
+      newerTurnSince = null  // any block that passes the stale check ends the wait (a notice or report block ends it early, which only lifts the hold)
       // Suppress while the user is mid-utterance. Without this, agent text generated
       // in parallel by the Claude SDK plays right over the user — same problem as
       // pre-interrupt overlap, but at the *output* side. The suppressed text gets

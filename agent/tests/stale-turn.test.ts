@@ -209,6 +209,6 @@ assert.equal(heardSlice('a b', 1), 'a')
   const bs = [{ text: 'abcd', at: 0 }, { text: 'xy', at: 50_000 }]
   assert.equal(expiredChars(bs, 60_100), 4)
   assert.equal(expiredChars(bs, 1000), 0)
-  assert.equal(partitionForReplay(bs, 60_100, () => false).expiredChars, 4)
+  assert.equal(partitionForReplay(bs, 60_100, () => false).expired, 1)
 }
 console.log('stale-turn: ok')
