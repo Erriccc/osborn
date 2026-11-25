@@ -29,7 +29,7 @@ Two trigger patterns:
 
 ## CRITICAL: delegate the file + transcript work to the `writer` sub-agent
 
-The main orchestrator agent has a **budget of 10 direct tool calls per turn**, and every direct call keeps it out of the conversation. Writing `meeting-todos.md` and pulling transcripts (curl + jq + Write) is ongoing work that would eat that budget turn after turn, so **do not do it directly**.
+The main orchestrator agent has a **budget of 3 direct tool calls per turn**, and every direct call keeps it out of the conversation. Writing `meeting-todos.md` and pulling transcripts (curl + jq + Write) is ongoing work that would eat that budget turn after turn, so **do not do it directly**.
 
 **Sub-agents are exempt from this budget and have full permissions.** So for ALL meeting file/transcript work, **delegate to the `writer` sub-agent in ONE `Task` call** and let it do the whole job (fetch transcript, parse, write `meeting-todos.md`). That's a single tool call for you, and the writer has no budget cap.
 

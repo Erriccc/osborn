@@ -136,6 +136,8 @@ function logCacheUsage(usage: any): void {
 // turns), NOT a workflow cap — a healthy turn never approaches it. Env-tunable; set
 // OSBORN_TOOL_HARD_CEILING=0 to disable the backstop entirely.
 let turnToolCallCount = 0
+// Delegations and their control calls never eat the main agent's direct-call budget.
+const DELEGATION_CALLS = new Set(['Task', 'Agent', 'SendMessage', 'TaskOutput', 'TaskStop', DISPATCH_TOOL])
 const TOOL_HARD_CEILING = Number(process.env.OSBORN_TOOL_HARD_CEILING ?? 60)
 
 // Armed when a cadence boundary is crossed; consumed at the PreToolUse allow/fall-through tail so
@@ -2547,7 +2549,7 @@ export class ClaudeLLM extends llm.LLM {
               // What this turn dispatched, to close its points at turn end (#455).
               // A Task/Agent prompt is the main agent restating the turn, not a sign the points were handled.
               // Same for the dispatch tool: a delegation alone never closes a point.
-              const delegating = block.name === 'Task' || block.name === 'Agent' || block.name === DISPATCH_TOOL
+              const delegating = DELEGATION_CALLS.has(block.name)
               if (!delegating) this.#turnDispatched += [block.input?.description, block.input?.prompt, block.input?.instruction].filter((x) => typeof x === 'string').join(' ') + '\n'
             }
           }
@@ -2957,8 +2959,8 @@ class ClaudeLLMStream extends llm.LLMStream {
 
               // Spoken-progress cadence + runaway backstop (main orchestrator only).
               // Only the MAIN agent's direct tool calls count (agent_type === null).
-              // Task/Agent delegations and sub-agent calls are exempt.
-              if (!agentType && toolName !== 'Task' && toolName !== 'Agent') {
+              // Delegations, their control calls and sub-agent calls are exempt (DELEGATION_CALLS).
+              if (!agentType && !DELEGATION_CALLS.has(toolName)) {
                 turnToolCallCount++
                 // Runaway/crash backstop ONLY (not a workflow cap) — a healthy turn never
                 // reaches it. Disabled when OSBORN_TOOL_HARD_CEILING=0.

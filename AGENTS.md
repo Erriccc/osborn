@@ -68,7 +68,7 @@ The main agent (Sonnet) is an orchestrator with three named sub-agents defined i
 - **reasoner** (Opus) — deep thinking: architecture decisions, tradeoffs, implementation planning. Read-only tools. Returns plans for the writer.
 - **writer** (Sonnet) — execution with verify-first workflow: check assumptions → clarify unknowns → execute → verify (run tests/build). Tools: Read, Write, Edit, MultiEdit, Bash, Glob, Grep. Only agent with write access outside workspace.
 
-The `PreToolUse` hook checks `input.agent_type` — the writer agent (`agent_type === 'writer'`) gets full write access everywhere. All other agents are restricted to workspace-only writes. The prompt enforces a hard limit of 2-3 direct tool calls per turn for the main agent; anything more must be delegated.
+The `PreToolUse` hook checks `input.agent_type` — the writer agent (`agent_type === 'writer'`) gets full write access everywhere. All other agents are restricted to workspace-only writes. The prompts cap the main agent at 3 direct tool calls per turn (`MAIN_DIRECT_CALL_CAP`); anything more must be delegated.
 
 ### Research Mode
 
