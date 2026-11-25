@@ -15,3 +15,18 @@ export const learnEchoFloor = (floor: number, vol: number, dt: number) => {
 
 /** After a duck nobody kept talking through: lift the onset toward the level that tripped it. */
 export const liftEchoFloor = (floor: number, tripped: number) => Math.min(FLOOR_MAX, Math.max(floor, (tripped * 1.2) / 3))
+
+/** The barge-in timing line, or null unless a duck actually engaged (no timing for a natural stop).
+ * The agent "stopped" at its last audible frame only if that came after the duck's onset. */
+export const bargeInTiming = (duckedAt: number, duckOnsetAt: number, agentHeardAt: number): string | null => {
+  if (!duckedAt) return null
+  const stop = agentHeardAt >= duckOnsetAt ? `agent stopped ${Math.round(agentHeardAt - duckOnsetAt)}ms after your voice` : 'agent was already quiet'
+  return `barge-in timing: duck ${Math.round(duckedAt - duckOnsetAt)}ms, ${stop}`
+}
+
+export const ANALYSER_RETRY_MS = 1000
+/** A new agent track starts at full volume: the current duck level must be re-applied to it. */
+export const trackSwapped = (track: unknown, seen: unknown) => track !== seen
+/** Build (or retry building) the agent analyser: for a track not yet analysed, at most once per ANALYSER_RETRY_MS. */
+export const shouldBuildAnalyser = (track: unknown, analysed: unknown, now: number, triedAt: number) =>
+  track !== analysed && now - triedAt > ANALYSER_RETRY_MS

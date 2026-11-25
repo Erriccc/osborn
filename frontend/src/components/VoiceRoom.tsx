@@ -60,7 +60,7 @@ import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelD
 import { resolveTabId } from './panel/registry'
 import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
 import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, fileIdentity, isImageName, markUnread, replaceArtifacts, timeUnderDay, toMs, upsertAgentFile } from '@/lib/outputs-model'
-import { FLOOR_MAX, duckOnset, learnEchoFloor, liftEchoFloor } from '@/lib/echo-floor'
+import { FLOOR_MAX, bargeInTiming, duckOnset, shouldBuildAnalyser, trackSwapped, learnEchoFloor, liftEchoFloor } from '@/lib/echo-floor'
 
 // Folder icon: the workspace chip, its More-menu row below pane-xl, and Files Explorer.
 const FOLDER_ICON_PATH = 'M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'
@@ -1246,8 +1246,8 @@ function VoiceRoomInner({
       const t = agentAudioTrackRef.current
       // A new track starts at full volume: carry the current duck level over to it at once,
       // not behind the analyser's retry gate below.
-      if (t !== agentTrackSeen) { agentTrackSeen = t; if (t) applyVolume(curVol, true) }
-      if (t !== agentAnalysed && performance.now() - analyserTriedAt > 1000) {
+      if (trackSwapped(t, agentTrackSeen)) { agentTrackSeen = t; if (t) applyVolume(curVol, true) }
+      if (shouldBuildAnalyser(t, agentAnalysed, performance.now(), analyserTriedAt)) {
         analyserTriedAt = performance.now()
         try { void agentAnalyser?.cleanup() } catch { /* closed */ }
         agentAnalyser = null; agentAnalysed = null
@@ -1279,9 +1279,8 @@ function VoiceRoomInner({
           console.log(`🦆 [duck] peak mic while agent spoke=${peak.toFixed(3)} echoFloor=${echoFloorRef.current.toFixed(3)}`)
           // Only a real barge-in (the duck engaged) gets a timing line. The agent stopped at
           // its last audible frame, if that came after the duck; otherwise we only know the edge.
-          if (duckedAt) {
-            const stop = agentHeardAt >= duckOnsetAt ? `agent stopped ${Math.round(agentHeardAt - duckOnsetAt)}ms after your voice` : 'agent was already quiet'
-            const timing = `barge-in timing: duck ${Math.round(duckedAt - duckOnsetAt)}ms, ${stop}`
+          const timing = bargeInTiming(duckedAt, duckOnsetAt, agentHeardAt)
+          if (timing) {
             console.log(`🦆 [duck] ${timing}`)
             addMessageRef.current?.('system', `Voice ${timing}`, undefined, 'log')
           }
