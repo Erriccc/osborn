@@ -27,7 +27,7 @@ const getMainAgentBudget = () => fillMainAgentLimits(readFileSync(join(PROMPTS_F
 export const getTurnShapeReminder = () => fillMainAgentLimits(readFileSync(join(PROMPTS_FILE_DIR, 'turn-shape-reminder.md'), 'utf-8'))
 /** The non-blocking note claude-llm.ts injects every SPEAK_CADENCE_N main-agent calls. */
 export const getSpeakCadenceNudge = (calls: number): string | null => {
-  try { return readFileSync(join(PROMPTS_FILE_DIR, 'speak-cadence-nudge.md'), 'utf-8').trim().replaceAll('{{calls}}', String(calls)) } catch { return null }
+  try { return fillMainAgentLimits(readFileSync(join(PROMPTS_FILE_DIR, 'speak-cadence-nudge.md'), 'utf-8').trim().replaceAll('{{calls}}', String(calls))) } catch { return null }
 }
 
 /**

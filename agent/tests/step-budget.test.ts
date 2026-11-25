@@ -6,7 +6,8 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { MAIN_DIRECT_CALL_CAP, SPEAK_CADENCE_N, getSpeakCadenceNudge, getDirectModeResearchPrompt, getResearchSystemPrompt, getTurnShapeReminder } from '../src/prompts.js'
 
-assert.ok(Number.isInteger(MAIN_DIRECT_CALL_CAP) && MAIN_DIRECT_CALL_CAP > 0)
+assert.equal(MAIN_DIRECT_CALL_CAP, 3)
+assert.equal(SPEAK_CADENCE_N, 2)
 const prompt = getDirectModeResearchPrompt('/tmp/osb-ws')
 const research = getResearchSystemPrompt('/tmp/osb-ws')
 const reminder = getTurnShapeReminder()
@@ -25,7 +26,7 @@ const llm = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'sr
 const cadence = SPEAK_CADENCE_N
 assert.ok(cadence > 0 && cadence < MAIN_DIRECT_CALL_CAP, `SPEAK_CADENCE_N ${cadence} must nudge before the ${MAIN_DIRECT_CALL_CAP}-call ceiling`)
 assert.match(llm, /SPEAK_CADENCE_N[^\n]*from '\.\/prompts\.js'/)
-// Nothing the agent sees every turn still describes the old 3-call cycle.
+// Nothing the agent sees every turn still carries the old hard-limit script ("your 3rd tool call", "Call 3 max").
 const dir = join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'prompts')
 assert.doesNotMatch(prompt, /your 3rd tool call/)
 assert.doesNotMatch(reminder, /Call 3 max|\{\{\w+\}\}/)
@@ -59,5 +60,9 @@ assert.ok(nudge)
 assert.match(nudge, new RegExp(`run ${cadence} tool calls`))
 assert.match(nudge, /If not, say nothing/)
 assert.doesNotMatch(nudge, /\{\{\w+\}\}|what you're doing next/)
+assert.doesNotMatch(nudge, /\{\{/)
+assert.match(nudge, new RegExp(`past ${MAIN_DIRECT_CALL_CAP} direct calls in a Task`))
+assert.doesNotMatch(nudge, /your call/)
+for (const t of ['Task', 'SendMessage', 'TaskOutput', 'TaskStop']) assert.match(prompt, new RegExp(`control calls \\([^)]*\\b${t}\\b`))
 assert.match(llm, /getSpeakCadenceNudge\(turnToolCallCount\)/)
 console.log('step-budget tests passed')
