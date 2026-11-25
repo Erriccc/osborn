@@ -137,7 +137,7 @@ function logCacheUsage(usage: any): void {
 // OSBORN_TOOL_HARD_CEILING=0 to disable the backstop entirely.
 let turnToolCallCount = 0
 // Delegations and their control calls never eat the main agent's direct-call budget.
-const DELEGATION_CALLS = new Set(['Task', 'Agent', 'SendMessage', 'TaskOutput', 'TaskStop', 'mcp__dispatch__send'])
+const DELEGATION_CALLS = new Set(['Task', 'Agent', 'SendMessage', 'TaskOutput', 'TaskStop', DISPATCH_TOOL])
 const TOOL_HARD_CEILING = Number(process.env.OSBORN_TOOL_HARD_CEILING ?? 60)
 
 // Armed when a cadence boundary is crossed; consumed at the PreToolUse allow/fall-through tail so
@@ -2549,7 +2549,7 @@ export class ClaudeLLM extends llm.LLM {
               // What this turn dispatched, to close its points at turn end (#455).
               // A Task/Agent prompt is the main agent restating the turn, not a sign the points were handled.
               // Same for the dispatch tool: a delegation alone never closes a point.
-              const delegating = block.name === 'Task' || block.name === 'Agent' || block.name === DISPATCH_TOOL
+              const delegating = DELEGATION_CALLS.has(block.name)
               if (!delegating) this.#turnDispatched += [block.input?.description, block.input?.prompt, block.input?.instruction].filter((x) => typeof x === 'string').join(' ') + '\n'
             }
           }
