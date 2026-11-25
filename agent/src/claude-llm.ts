@@ -130,12 +130,7 @@ function logCacheUsage(usage: any): void {
   } catch { /* observability only */ }
 }
 
-// Spoken-progress CADENCE (not a work cap). The main orchestrator agent may run as many direct
-// tool calls as a turn genuinely needs — we no longer STOP its work. Instead, every
-// SPEAK_CADENCE_N main-agent tool calls we inject a NON-BLOCKING note (PreToolUse
-// additionalContext, prompts/speak-cadence-nudge.md) to speak ONE short line only if it has something
-// new for the user (never status), then keep going (do it itself or delegate — its choice). Reset on every UserPromptSubmit (new user
-// message). Task/Agent delegations and sub-agent calls (agent_type !== null) do NOT count.
+// Every SPEAK_CADENCE_N main-agent calls (reset per user message, sub-agents excluded) a non-blocking nudge is armed; it never stops work.
 //
 // TOOL_HARD_CEILING is a pure runaway/crash backstop (heap-OOM history on pathological deep
 // turns), NOT a workflow cap — a healthy turn never approaches it. Env-tunable; set
@@ -2977,8 +2972,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                   }
                 }
                 // At each Nth main-agent tool call, arm a non-blocking spoken-progress nudge
-                // (consumed at the allow tail below) so the agent stays audible without ever
-                // having its work stopped.
+                // (consumed at the allow tail below) so the agent speaks only what is new
+                // without ever having its work stopped.
                 if (turnToolCallCount % SPEAK_CADENCE_N === 0) {
                   pendingSpeakNudge = true
                 }
