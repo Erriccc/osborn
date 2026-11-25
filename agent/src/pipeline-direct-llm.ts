@@ -19,7 +19,7 @@ import { cleanTurnText, redactSecrets, isAmbientTurn } from './content/transcrip
 import { EventEmitter } from 'events'
 import { markChat } from './turn-timing.js'
 import { speechTimeline, speechTimelineHold } from './speech-timeline.js'
-import { getContinuationNote, getDroppedUnspokenNote } from './prompts.js'
+import { getContinuationNote } from './prompts.js'
 
 // Bypass marker for gate-approved contexts: the deferred gate stream re-enters
 // chat() with the SAME chatCtx after a forward verdict; the marker makes the
@@ -173,8 +173,6 @@ export interface PipelineDirectOptions extends ClaudeLLMOptions {
   getResearchContext?: () => string | undefined
   /** Returns pending interruption context and clears it (consumed once). null = no pending interruption. */
   getAndConsumeInterruptionContext?: () => InterruptionContext | null
-  /** Chars of unspoken reply text discarded since the last turn (consumed once); 0 = none. */
-  getAndConsumeDroppedUnspoken?: () => number
   /** Returns pending client notices as a hidden-context block and clears them ('' = none). */
   getAndConsumeClientNotes?: () => string
   /**
@@ -549,9 +547,6 @@ export class PipelineDirectLLM extends llm.LLM {
       console.log(`🧩 [pipeline] user kept talking after the previous turn started (${Math.round(continued.continuedAfterMs / 1000)}s)`)
       ctxForClaude = withNotePrepended(ctxForClaude, getContinuationNote(continued.continuedAfterMs))
     }
-
-    const droppedChars = (!isMeetingChunkEarly && userText.trim()) ? this.#opts.getAndConsumeDroppedUnspoken?.() ?? 0 : 0
-    if (droppedChars) ctxForClaude = withNotePrepended(ctxForClaude, getDroppedUnspokenNote(droppedChars))
 
     // Client notices (favorite_changed, L2b): UI actions that are context, not a
     // user turn. They ride the next real user turn as a leading

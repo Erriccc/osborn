@@ -63,7 +63,7 @@ import { loopIds, noticeThrottled, appendLoopRecord, appendQueuedLoop, markQueue
 import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
-import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote, getNoiseCancelNote } from './prompts.js'
+import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote, getNoiseCancelNote, getDroppedUnspokenNote } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled, launchLoopsFlush, flushLastSessionThenExit } from './content/lens-launch.js'
 import { hasContentModelKey } from './content/content-llm.js'
@@ -4248,8 +4248,11 @@ async function main() {
   // user_transcript echo.
   const clientNotes = new ClientNoteQueue()
   const typedEchoes = new TypedEchoTracker()
-  const getAndConsumeClientNotes = () => clientNotes.drain()
-  const getAndConsumeDroppedUnspoken = () => { const n = droppedUnspokenChars; droppedUnspokenChars = 0; return n }
+  const getAndConsumeClientNotes = () => {
+    const dropped = droppedUnspokenChars
+    droppedUnspokenChars = 0
+    return [clientNotes.drain(), dropped ? getDroppedUnspokenNote(dropped) : ''].filter(Boolean).join('\n')
+  }
 
   /**
    * Callback for PipelineDirectLLM — returns pending interruption context and clears it.
@@ -6137,7 +6140,6 @@ async function main() {
         },
         getAndConsumeInterruptionContext,
         getAndConsumeClientNotes,
-        getAndConsumeDroppedUnspoken,
         onFastBrainResult: onPipelineFastBrainResult,
         takeVoiceAction: takeVoiceCommand,
       })
@@ -6628,8 +6630,7 @@ async function main() {
                 },
                 getAndConsumeInterruptionContext,
                 getAndConsumeClientNotes,
-                getAndConsumeDroppedUnspoken,
-                onFastBrainResult: onPipelineFastBrainResult,
+                        onFastBrainResult: onPipelineFastBrainResult,
                 takeVoiceAction: takeVoiceCommand,
               })
               result = await createDirectSession(recoverySessionId, pipelineLLM)
