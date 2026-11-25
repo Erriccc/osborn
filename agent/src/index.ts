@@ -4236,7 +4236,7 @@ async function main() {
 
   /** Clear lastInterruption, logging any suppressed reply text that was never spoken (#539 diagnostics). */
   function clearInterruption(why: string, reset = false) {
-    if (reset) { droppedUnspokenChars = 0; newerTurnSince = null }
+    if (reset) { droppedUnspokenChars = 0; newerTurnSince = null; bargeInPausedAt = null }
     else if (lastInterruption?.suppressedBlocks.length) droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
     if (lastInterruption?.suppressedBlocks.length) console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (${why}, agent: ${agentState}, user: ${userState})`)
     lastInterruption = null
@@ -4264,8 +4264,7 @@ async function main() {
     const live = liveBlocks(lastInterruption.suppressedBlocks, now)
     const heard = !isExpired(lastInterruption.timestamp, now)
     if (!heard && !live.length) {
-      droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
-      clearInterruption('expired 60s')
+      clearInterruption('expired 60s')  // counts the dropped chars itself
       return null
     }
     const ctx = {
@@ -5303,7 +5302,7 @@ async function main() {
         console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         return
       }
-      if (data.messageId) newerTurnSince = null  // the newer turn's own reply has begun
+      newerTurnSince = null  // a block that passed the stale check is the newer turn's own reply
       // Suppress while the user is mid-utterance. Without this, agent text generated
       // in parallel by the Claude SDK plays right over the user — same problem as
       // pre-interrupt overlap, but at the *output* side. The suppressed text gets
