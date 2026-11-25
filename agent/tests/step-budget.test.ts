@@ -4,7 +4,7 @@ import assert from 'node:assert'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { MAIN_DIRECT_CALL_CAP, SPEAK_CADENCE_N, getDirectModeResearchPrompt, getResearchSystemPrompt, getTurnShapeReminder } from '../src/prompts.js'
+import { MAIN_DIRECT_CALL_CAP, SPEAK_CADENCE_N, getSpeakCadenceNudge, getDirectModeResearchPrompt, getResearchSystemPrompt, getTurnShapeReminder } from '../src/prompts.js'
 
 assert.equal(MAIN_DIRECT_CALL_CAP, 10)
 const prompt = getDirectModeResearchPrompt('/tmp/osb-ws')
@@ -45,13 +45,15 @@ for (const p of [prompt, research, reminder]) {
 // The packaged meetings skill no longer claims a 3-call budget.
 const meetings = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '.claude', 'skills', 'meetings', 'SKILL.md'), 'utf8')
 assert.doesNotMatch(meetings, /3-call|3 direct tool calls/)
+// No result/status narration: every layer speaks a result only for what it changes, never status.
+for (const p of [prompt, research]) assert.match(p, /Never speak status/)
+assert.doesNotMatch(prompt, /still installing|You are NOT silent/i)
+assert.match(reminder, /never announce that it came back/)
+assert.doesNotMatch(reminder, /brief callouts/)
+assert.match(readFileSync(join(dir, 'chain-after-researcher.md'), 'utf8'), /Run the gate silently/)
+const nudge = getSpeakCadenceNudge(cadence)
+assert.match(nudge, new RegExp(`run ${cadence} tool calls`))
+assert.match(nudge, /If not, say nothing/)
+assert.doesNotMatch(nudge, /\{\{\w+\}\}|what you're doing next/)
+assert.match(llm, /getSpeakCadenceNudge\(turnToolCallCount\)/)
 console.log('step-budget tests passed')
-
-// No result/status narration: returned results speak only when they change what the user needs.
-{
-  const fs = await import('node:fs'), path = await import('node:path'), url = await import('node:url')
-  const d = path.join(path.dirname(url.fileURLToPath(import.meta.url)), '../src/prompts')
-  assert.match(fs.readFileSync(path.join(d, 'chain-after-researcher.md'), 'utf8'), /Run the gate silently/)
-  assert.match(fs.readFileSync(path.join(d, 'main-agent-budget.md'), 'utf8'), /Never speak status/)
-  assert.match(fs.readFileSync(path.join(d, 'turn-shape-reminder.md'), 'utf8'), /never announce that it came back/)
-}

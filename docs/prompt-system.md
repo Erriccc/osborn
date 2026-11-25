@@ -24,8 +24,8 @@ The system has layered prompts at different levels — all centralized in `promp
 
 ## Main-agent speaking, questions and delegation (one rule, every layer)
 
-The pipeline main agent reads `direct-mode-research.md` (system prompt; realtime reads `getResearchSystemPrompt`), `turn-shape-reminder.md` (each turn), `points-checklist.md` and the cadence note (`claude-llm.ts`). They say the same things:
-- Speaking: no speech before the first grounding lookup; one short line before a long chain or slow step, and at least every `SPEAK_CADENCE_N` (6) calls. The code nudge stays.
+The pipeline main agent reads `direct-mode-research.md` (system prompt; realtime reads `getResearchSystemPrompt`), `turn-shape-reminder.md` (each turn), `points-checklist.md` and the cadence note (`speak-cadence-nudge.md`, injected by `claude-llm.ts`). They say the same things:
+- Speaking: no speech before the first grounding lookup; one short line before a long chain or slow step; every `SPEAK_CADENCE_N` (6) calls, speak again only with something new (a finding, a decision, a fork or a blocker). A returned result or gate verdict is spoken only for what it changes, never glued onto another turn, and status ("the result is back", "still running") is never spoken.
 - Questions: at most one, only when its answer changes what you do next.
 - Delegation: THE BUDGET and the DELEGATION RUBRIC (conditions, not counts) live once in `prompts/main-agent-budget.md`, included in both system prompts. `MAIN_DIRECT_CALL_CAP` (10) and `SPEAK_CADENCE_N` (6) are exported from `prompts.ts` and filled into the prompt files as `{{directCallCap}}` / `{{speakCadence}}`; the cap is a ceiling, not a target. Delegations and chain steps do not count against it.
 - `DIRECT_MODE_PROMPT` in `prompts.ts` never reaches Claude; keep its wording in line but do not tune it.
