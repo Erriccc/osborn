@@ -195,15 +195,6 @@ assert.equal(heardSlice('extraordinarily long', 5), 'extra', 'first word longer 
 assert.equal(heardSlice('hi there', 0), 'hi there', 'nothing measurable played: still counts as a cut')
 assert.equal(heardSlice('short', 99), 'short', 'clamped to the text')
 assert.equal(heardSlice('a b', 1), 'a')
-// B1 gap: no replay while a newer turn generates
-{
-  const logs: string[] = []; let spoke = 0, windowOpen = true
-  const li = appendBlock(null, 'x', 'A', Date.now())
-  const sch = new ReplayScheduler({ current: () => li, userListening: () => true, delayMs: 1, log: (m) => logs.push(m), speak: () => { spoke++ }, expire: () => {},
-    inputs: () => ({ hasSession: true, sameInterruption: true, hasText: true, agentSpeaking: false, gateTriaging: false, newerTurnGenerating: windowOpen }) })
-  sch.arm(); await new Promise((r) => setTimeout(r, 30)); sch.cancel()
-  assert.equal(spoke, 0, 'no replay while a newer turn generates'); assert.ok(logs.some((l) => l.includes('newer turn generating')))
-}
 // A residual: expired blocks are counted in chars, by the same clock as the partition
 {
   const bs = [{ text: 'abcd', at: 0 }, { text: 'xy', at: 50_000 }]

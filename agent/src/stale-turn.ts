@@ -54,7 +54,6 @@ type ReplayInput = {
   hasText: boolean
   agentSpeaking: boolean
   gateTriaging: boolean       // the noise gate holds a barge-in utterance: its turn will consume the text
-  newerTurnGenerating?: boolean  // a turn that consumed an interruption has not produced its reply yet: the replay waits (bounded) for its first block, which then speaks buffered text ahead of itself
 }
 
 /**
@@ -69,7 +68,7 @@ function replayStep(i: ReplayInput & { expired: boolean; attempts: number }):
   if (!i.sameInterruption) return { act: 'skip', reason: 'replaced or consumed by a new turn' }
   if (!i.hasText) return { act: 'skip', reason: 'nothing buffered' }
   if (i.expired) return { act: 'expire' }
-  const busy = i.gateTriaging ? 'speech hold or noise gate' : i.newerTurnGenerating ? 'newer turn generating' : i.agentSpeaking ? 'agent speaking' : ''
+  const busy = i.gateTriaging ? 'speech hold or noise gate' : i.agentSpeaking ? 'agent speaking' : ''
   if (busy) return i.attempts < MAX_REPLAY_REARMS ? { act: 'rearm', reason: busy } : { act: 'skip', reason: `${busy}, gave up` }
   return { act: 'speak' }
 }

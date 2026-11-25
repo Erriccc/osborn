@@ -4076,10 +4076,8 @@ async function main() {
   const activeSpeechHandles = new Set<any>()
   // Turns the user cut off: their later tts_say blocks are dropped (#456)
   let staleTurnId: string | null = null
-  let newerTurnSince: number | null = null  // set when a turn consumes an interruption; closed by its own reply
   let bargeInPausedAt: number | null = null  // diagnostic (#483): an overlap paused the agent's audio; set until it resumes or the turn hard-interrupts
   let droppedUnspokenChars = 0  // chars of buffered reply text that expired unspoken; the next turn is told once
-  const newerTurnGenerating = () => newerTurnSince !== null && !isExpired(newerTurnSince, Date.now())
 
   // Last interruption context — gathered at interrupt time, consumed when user's message arrives
   let lastInterruption: {
@@ -4222,7 +4220,6 @@ async function main() {
       sameInterruption: lastInterruption === captured,
       hasText: !!lastInterruption?.suppressedBlocks.length,
       agentSpeaking: activeSpeechHandles.size > 0 || agentState === 'speaking',
-      newerTurnGenerating: newerTurnGenerating(),
       gateTriaging: noiseGate.triaging || speechTimeline.shouldHold(),  // or the user's next chunk will take the text (#581)
     }),
     speak: () => speakBuffered('user quiet, no new turn'),
@@ -4240,8 +4237,8 @@ async function main() {
 
   /** Clear lastInterruption, logging any suppressed reply text that was never spoken (#539 diagnostics). */
   function clearInterruption(why: string, reset = false) {
-    if (reset) { droppedUnspokenChars = 0; newerTurnSince = null; bargeInPausedAt = null }
-    else if (lastInterruption?.suppressedBlocks.length) droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
+    if (reset) { droppedUnspokenChars = 0; bargeInPausedAt = null }
+    else if (lastInterruption?.suppressedBlocks.length) droppedUnspokenChars += expiredChars(lastInterruption.suppressedBlocks, Date.now())
     if (lastInterruption?.suppressedBlocks.length) console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (${why}, agent: ${agentState}, user: ${userState})`)
     lastInterruption = null
   }
@@ -4281,9 +4278,7 @@ async function main() {
       suppressedText: joinBlocks(live),
       fullBlockText: heard ? lastInterruption.fullBlockText : undefined,
     }
-    const prevStale = staleTurnId
     staleTurnId = staleIdOnConsume(heard ? lastInterruption : null, staleTurnId)
-    if (staleTurnId !== prevStale) newerTurnSince = Date.now()
     if (ctx.suppressedText) console.log(`🤐 [suppressed] CONSUMED ${ctx.suppressedText.length} chars by chat() (may not reach the prompt if the turn text was empty)`)
     lastInterruption = null
     return ctx
@@ -5310,7 +5305,6 @@ async function main() {
         console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
         return
       }
-      newerTurnSince = null  // any block that passes the stale check ends the wait (a notice or report block ends it early, which only lifts the hold)
       // Suppress while the user is mid-utterance. Without this, agent text generated
       // in parallel by the Claude SDK plays right over the user — same problem as
       // pre-interrupt overlap, but at the *output* side. The suppressed text gets
@@ -5385,6 +5379,7 @@ async function main() {
 
               let spokenText: string
               let method: string
+              const CHARS_PER_SEC = 14  // spoken-rate estimate for the two position-based branches
 
               if (sdkTranscript) {
                 // Best case: LiveKit gave us word-accurate transcript (requires alignedTranscript TTS)
@@ -5392,13 +5387,11 @@ async function main() {
                 method = 'sdk-transcript'
               } else if (sdkPlaybackSec > 0) {
                 // Second: LiveKit gave us playback duration — estimate chars from it
-                const CHARS_PER_SEC = 14
                 spokenText = heardSlice(data.text, sdkPlaybackSec * CHARS_PER_SEC)
                 method = 'sdk-position'
               } else if (playbackStartedAt !== null) {
                 // Third: use our wall-clock timer from first audio frame
                 const elapsedSec = (Date.now() - playbackStartedAt) / 1000
-                const CHARS_PER_SEC = 14
                 spokenText = heardSlice(data.text, elapsedSec * CHARS_PER_SEC)
                 method = 'wall-clock'
               } else {
