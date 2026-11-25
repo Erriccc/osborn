@@ -30,7 +30,7 @@ export function isStaleBlock(
 export function heardSlice(text: string, chars: number): string {
   const n = Math.max(0, Math.min(Math.round(chars), text.length))
   const i = text.lastIndexOf(' ', n)
-  return text.slice(0, i > 0 ? i : n)
+  return text.slice(0, i > 0 ? i : n) || text  // nothing measurable played: a cut still counts as an interruption
 }
 
 /**
@@ -55,7 +55,7 @@ type ReplayInput = {
   hasText: boolean
   agentSpeaking: boolean
   gateTriaging: boolean       // the noise gate holds a barge-in utterance: its turn will consume the text
-  newerTurnGenerating?: boolean  // a turn that consumed an interruption is still generating: its reply goes first
+  newerTurnGenerating?: boolean  // a turn that consumed an interruption has not produced its reply yet: the replay waits (bounded) for its first block, which then speaks buffered text ahead of itself
 }
 
 /**

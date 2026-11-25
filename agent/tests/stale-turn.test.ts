@@ -192,7 +192,7 @@ assert.equal(isExpired(0, 60_000), false); assert.equal(isExpired(0, 60_001), tr
 // B3: heardSlice
 assert.equal(heardSlice('hello world again', 8), 'hello', 'cut at the last space')
 assert.equal(heardSlice('extraordinarily long', 5), 'extra', 'first word longer than charCount: the chars, not the whole block')
-assert.equal(heardSlice('hi there', 0), '', 'nothing played')
+assert.equal(heardSlice('hi there', 0), 'hi there', 'nothing measurable played: still counts as a cut')
 assert.equal(heardSlice('short', 99), 'short', 'clamped to the text')
 assert.equal(heardSlice('a b', 1), 'a')
 // B1 gap: no replay while a newer turn generates

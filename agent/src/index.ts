@@ -4182,6 +4182,7 @@ async function main() {
     // Blocks of a turn the user cut off (a phone "stop that" interrupts without a new turn) are never spoken, but stay buffered so the next prompt still carries them; expired ones go.
     const { speak, keep, expired } = partitionForReplay(blocks, Date.now(), (id) => isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
     lastInterruption = rest && { ...rest, suppressedBlocks: keep }
+    if (expired) droppedUnspokenChars += totalChars(blocks.filter((b) => isExpired(b.at, Date.now())))
     if (expired) console.log(`🤐 [suppressed] REPLAY EXPIRED ${expired} block(s) older than 60s`)
     if (keep.length) console.log(`🔇 [suppressed] REPLAY DROPPED ${keep.length} block(s), ${totalChars(keep)} chars (their turn was interrupted)`)
     if (!speak.length) return
@@ -4270,6 +4271,7 @@ async function main() {
       clearInterruption('expired 60s')  // counts the dropped chars itself
       return null
     }
+    droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks.filter((b) => isExpired(b.at, now)))
     const ctx = {
       spokenText: heard ? lastInterruption.spokenText : '',
       recentMessages: heard ? lastInterruption.recentMessages : '',
@@ -6630,7 +6632,7 @@ async function main() {
                 },
                 getAndConsumeInterruptionContext,
                 getAndConsumeClientNotes,
-                        onFastBrainResult: onPipelineFastBrainResult,
+                onFastBrainResult: onPipelineFastBrainResult,
                 takeVoiceAction: takeVoiceCommand,
               })
               result = await createDirectSession(recoverySessionId, pipelineLLM)
