@@ -14,9 +14,6 @@ export type TurnMarks = {
   recallTimedOut?: boolean // recall hit the hook's 6000 ms backstop
 }
 
-/** Optional breakdown of the hook; every field is left out of the line when not given. */
-export type HookExtra = { recallMs?: number; nudgeMs?: number; recallTimedOut?: boolean }
-
 const d = (a?: number, b?: number): number | null => (a == null || b == null ? null : Math.max(0, b - a))
 
 export function formatTurnTiming(m: TurnMarks, turn: number): string {
@@ -42,15 +39,13 @@ let turn = 0
 /** A final must not move speechAt, or speechToFinal is always 0 and speechToChat equals finalToChat. */
 export const markTranscript = (isFinal: boolean, now = Date.now()) => { if (isFinal) marks.finalAt = now; else marks.speechAt = now }
 export const markReplay = (now = Date.now()) => { marks.replayAt = now }
-export const markChat = (now = Date.now()) => { marks.chatAt = now; marks.pushAt = undefined; marks.deferredMs = undefined; marks.hookMs = undefined; marks.recallMs = undefined; marks.nudgeMs = undefined; marks.recallTimedOut = undefined }
+export const markChat = (now = Date.now()) => { marks.chatAt = now; marks.pushAt = undefined; marks.deferredMs = undefined; marks.hookMs = undefined }
 export const markPush = (deferredMs = 0, now = Date.now()) => { marks.pushAt = now; marks.deferredMs = deferredMs }
-/** Hook is the last stage: log the line and start the next turn's marks (speech/replay carry over only if newer than the chat). */
-export function markHookDone(ms: number, extra?: HookExtra): void {
+/** Hook is the last stage: log the line and start the next turn's marks (speech/replay carry over only if newer than the chat). The optional breakdown is left out of the line when not given. */
+export function markHookDone(ms: number, extra?: Pick<TurnMarks, 'recallMs' | 'nudgeMs' | 'recallTimedOut'>): void {
   if (marks.chatAt == null) return
   marks.hookMs = ms
-  marks.recallMs = extra?.recallMs
-  marks.nudgeMs = extra?.nudgeMs
-  marks.recallTimedOut = extra?.recallTimedOut
+  Object.assign(marks, extra)
   console.log(formatTurnTiming(marks, ++turn))
   marks = { speechAt: marks.speechAt && marks.speechAt > marks.chatAt ? marks.speechAt : undefined, replayAt: marks.replayAt && marks.replayAt > marks.chatAt ? marks.replayAt : undefined }
 }

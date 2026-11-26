@@ -61,8 +61,11 @@ const RECALL_ENABLED = () => process.env.OSBORN_RECALL_INJECT !== '0'
 // than stalling the turn — the read path never waits the full write-path (20s) budget.
 const QUERY_EMBED_TIMEOUT_MS = Number(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS || 2500)
 
+/** embedMs: the query embed fetch inside recall() (unset when none ran); sqlMs: store open + recall() without that fetch. */
+type RecallTiming = { embedMs?: number; sqlMs?: number }
+
 /** Build the recalled-context block to inject alongside the turn-shape reminder. '' on any miss. */
-async function buildRecallInjection(sessionId: string | null, workingDir: string | undefined, prompt: string, timing?: { embedMs?: number; sqlMs?: number }): Promise<string> {
+async function buildRecallInjection(sessionId: string | null, workingDir: string | undefined, prompt: string, timing?: RecallTiming): Promise<string> {
   try {
     if (!RECALL_ENABLED() || !sessionId || !workingDir) return ''
     // CAP the recall query length (defense-in-depth). A pasted or echoed giant prompt — e.g. a
@@ -77,9 +80,11 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
     // embedder is unavailable or the query embed exceeds its short budget. Acquire the
     // embedder every turn with a tight query timeout — no warm-up needed (it's a cloud
     // fetch, not a local model load). If embed is null, recall() runs keyword-only.
-    const embedT0 = Date.now()
-    const embed = process.env.OSBORN_EMBED !== '0' ? (await getEmbedder(QUERY_EMBED_TIMEOUT_MS)) ?? undefined : undefined
-    if (timing) timing.embedMs = Date.now() - embedT0
+    const embedder = process.env.OSBORN_EMBED !== '0' ? (await getEmbedder(QUERY_EMBED_TIMEOUT_MS)) ?? undefined : undefined
+    // getEmbedder makes no request; the fetch runs inside recall(), so time it there.
+    const embed: typeof embedder = embedder && timing
+      ? async (texts) => { const t0 = Date.now(); try { return await embedder(texts) } finally { timing.embedMs = Date.now() - t0 } }
+      : embedder
 
     const { getStorePath } = await import('./session-store.js')
     // READ-ONLY open (regression fix): the writable branch runs synchronous
@@ -95,7 +100,7 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
       hits = await recall(db, q, { mode: embed ? 'hybrid' : 'keyword', topK: RECALL_TOP_K, embed })
     } finally {
       db.close()
-      if (timing) timing.sqlMs = Date.now() - sqlT0
+      if (timing) timing.sqlMs = Date.now() - sqlT0 - (timing.embedMs ?? 0)
     }
     if (!hits.length) return ''
 
@@ -3162,15 +3167,16 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // store), set well above the embed budget so a slow embed degrades to keyword
                 // rather than being cut to nothing.
                 const hookT0 = Date.now()
-                const recallTiming: { embedMs?: number; sqlMs?: number } = {}
-                let recallTimedOut = false
+                const recallTiming: RecallTiming = {}
+                let backstopFired = false
                 const recalled = fromSubagent
                   ? ''
                   : await Promise.race([
-                      buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || ''), recallTiming),
-                      new Promise<string>((res) => setTimeout(() => { recallTimedOut = true; res('') }, 6000)),
+                      buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || ''), this.#opts.turnTiming ? recallTiming : undefined),
+                      new Promise<string>((res) => setTimeout(() => { backstopFired = true; res('') }, 6000)),
                     ])
                 const recallMs = Date.now() - hookT0
+                const recallTimedOut = backstopFired // read now: the timer still fires after recall wins, during the nudge's wait
                 // Lightweight machine-load nudge (main agent only). Cheap synchronous
                 // snapshot, prepended so it's present even when recall degrades under load.
                 // Advisory only — never caps/refuses a dispatch.

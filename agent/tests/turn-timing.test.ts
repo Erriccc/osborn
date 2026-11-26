@@ -40,6 +40,7 @@ assert.strictEqual(seq.hook, 15)
   assert.strictEqual(to.recallTimedOut, true)
   const plain = JSON.parse(formatTurnTiming({ chatAt: 1, hookMs: 5 }, 1).slice(14))
   assert.ok(!('recall' in plain) && !('nudge' in plain))
+  assert.strictEqual(JSON.parse(formatTurnTiming({ chatAt: 1, hookMs: 0, recallMs: 0, nudgeMs: 0 }, 1).slice(14)).recall, 0) // 0 ms is kept
   const out: string[] = []; const o = console.log
   console.log = (...a: unknown[]) => { out.push(a.join(' ')) }
   try { markChat(10); markHookDone(7, { recallMs: 3, nudgeMs: 4, recallTimedOut: true }); markChat(20); markHookDone(8) } finally { console.log = o }
