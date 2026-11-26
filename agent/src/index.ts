@@ -75,7 +75,7 @@ import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, Cli
 import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
-import { missingRequiredEnv } from './env-keys.js'
+import { missingRequiredEnv, parseAecWarmupMs } from './env-keys.js'
 import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl, notifyPhone, isWatchBridgeEnabled, phonePushPending, settlePermissionPush } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate, isShhCue } from './noise-gate.js'
@@ -5524,8 +5524,10 @@ async function main() {
       const eotLive = await detector.probe()
       if (eotLive) turnDetection = detector
     }
+    const aecWarmupOverrideMs = parseAecWarmupMs(process.env.OSBORN_AEC_WARMUP_MS)
     const session = new voice.AgentSession({
       turnDetection,
+      ...(aecWarmupOverrideMs !== undefined ? { aecWarmupDuration: aecWarmupOverrideMs } : {}),
       preemptiveGeneration: false,  // Only fire LLM on final committed transcript, not partial preemptives
       // Commented out — kept for reference. These were added across 0.9.60/0.9.61
       // to try to harden interrupt + TTS handling, but evidence (osbornojure
@@ -5581,6 +5583,7 @@ async function main() {
         maxToolSteps: so.maxToolSteps,
         userAwayTimeout: so.userAwayTimeout,
         aecWarmupDuration: so.aecWarmupDuration,
+        aecWarmupOverrideMs: aecWarmupOverrideMs ?? null,
         ttsReadIdleTimeout: so.ttsReadIdleTimeout,
         forwardAudioIdleTimeout: so.forwardAudioIdleTimeout,
         useTtsAlignedTranscript: so.useTtsAlignedTranscript,
@@ -6385,6 +6388,8 @@ async function main() {
           type: ev.type,
           isInterruption: ev.isInterruption,
           interruptedAt: ev.interruptedAt,
+          agentSpeakingForMs: speakingSince > 0 ? Date.now() - speakingSince : undefined,
+          aecWarmupRemaining: (sess as any)._aecWarmupRemaining,
           // Whatever else SDK provides — dump it all for now
           fields: Object.keys(ev),
         }))
