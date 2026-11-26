@@ -5,9 +5,11 @@ import { readFileSync } from 'node:fs'
 
 const src = readFileSync(new URL('../src/index.ts', import.meta.url), 'utf8')
 for (const [m, path] of [['GET', '/room-code'], ['POST', '/leave-room']]) {
-  const i = src.indexOf(`req.method === '${m}' && url.pathname === '${path}') {`)
+  const head = `req.method === '${m}' && url.pathname === '${path}') {`
+  const i = src.indexOf(head)
   assert.ok(i > src.indexOf('const storeRefused = '), `${path} sits after storeRefused`)
-  assert.ok(src.slice(i, i + 140).includes('if (unauthorized() || storeRefused(true)) return'), `${path} checks access first`)
+  assert.equal(src.split(`url.pathname === '${path}'`).length - 1, 1, `${path} has one handler, so none can precede the gated one`)
+  assert.match(src.slice(i + head.length), /^\s*if \(unauthorized\(\) \|\| storeRefused\(true\)\) return/, `${path}: the gate is the first statement`)
 }
 const ev = src.indexOf("url.pathname === '/events') {")
 assert.ok(ev > 0 && !src.slice(ev, ev + 140).includes('Refused('), '/events stays open (an EventSource sends no header)')

@@ -490,7 +490,7 @@ The `agent/Dockerfile` (Path A, the long-running deploy) supports local docker r
 cd agent
 docker build -t osborn-agent .
 docker run -p 8741:8741 --env-file .env osborn-agent
-# Hits: http://localhost:8741/health, /sessions, /room-code
+# Hits: http://localhost:8741/health, /sessions (owner routes such as /room-code are refused here without OSBORN_SYNC_TOKEN: docker's bridge address is not loopback)
 ```
 
 For `Dockerfile.sandbox` (Path B), local run requires the volume mount (the entrypoint expects `/workspace` to exist and persists Claude credentials there):
