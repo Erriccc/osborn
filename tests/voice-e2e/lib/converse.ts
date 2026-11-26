@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test'
 import { optionalEnvKey } from './env'
+import { DEFAULT_GEMINI_MODEL } from './brain-model'
 
 /**
  * Dynamic conversation generation — no canned phrases. An LLM plays the role
@@ -36,13 +37,13 @@ export async function nextUtterance(
   if (google) {
     const parts: any[] = [{ text: userText }]
     if (screenshotB64) parts.push({ inline_data: { mime_type: 'image/jpeg', data: screenshotB64 } })
-    const gres = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${google}`, {
+    const gres = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${DEFAULT_GEMINI_MODEL}:generateContent?key=${google}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         system_instruction: { parts: [{ text: SYSTEM }] },
         contents: [{ parts }],
-        generationConfig: { responseMimeType: 'application/json', temperature: 0.9 },
+        generationConfig: { responseMimeType: 'application/json' },
       }),
     })
     if (gres.ok) {

@@ -387,7 +387,10 @@ async function main() {
           { contents: [{ parts: [{ text: 'ok' }] }], generationConfig: { maxOutputTokens: 1 } })
         return r ? r.status : null
       })
-      if (picked.model) return { model: `google/${picked.model}`, opts: { apiKey: g } }
+      if (picked.model) {
+        if (picked.tried.length) mark(`brain: ${picked.tried.join(', ')} — using ${picked.model}`)
+        return { model: `google/${picked.model}`, opts: { apiKey: g } }
+      }
       tried.push(...picked.tried)
       mark(`brain: ${picked.tried.join(', ')} — trying next provider`)
     }

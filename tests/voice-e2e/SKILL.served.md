@@ -204,7 +204,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v70
-- The engine's Gemini brain no longer uses the retired `gemini-2.5-flash` (a 404, so a Gemini-only key left the brain dead). It uses `gemini-3.5-flash-lite`, set `OSBORN_ENGINE_GEMINI_MODEL` to change it, and on a 404 it tries `gemini-3.1-flash-lite`, then `gemini-3.8-flash`; `/status` `brainError` names the model that failed. Refresh the harness (INSTALLATION step 2) to get it.
+- The engine's Gemini brain no longer uses the retired `gemini-2.5-flash` (a 404, so a Gemini-only key left the brain dead). It uses `gemini-3.5-flash-lite`, set `OSBORN_ENGINE_GEMINI_MODEL` to change it, and on a 404 it tries the default, then `gemini-3.1-flash-lite`, then `gemini-3.8-flash`; the engine log names each model that failed, and `/status` `brainError` does when no provider works. The composer (`lib/converse.ts`) uses the same model and no longer sends `temperature`. Refresh the harness (INSTALLATION step 2) to get it.
 
 ## What's new in v69
 - With no `BSR_DRIVER`, `drive.sh` now names the driver after `BSR_PROFILE` (`profile-<name>`), so parallel passes with different profiles get their own tabs, task numbers and journey instead of sharing your username's. Set `BSR_DRIVER` to keep one id across profiles; with neither set the driver is still your username. To finish tabs or a journey you started before v69 with `BSR_PROFILE` set, run once with `BSR_DRIVER=$(whoami)` so you drive as the same id as before.

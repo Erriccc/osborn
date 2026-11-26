@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict'
 import { pickGeminiModel, DEFAULT_GEMINI_MODEL } from './brain-model'
 
-assert.equal(DEFAULT_GEMINI_MODEL, 'gemini-3.5-flash-lite')
-
 const run = async (statuses: Record<string, number | null>, env: Record<string, string> = {}) => {
   const calls: string[] = []
   const r = await pickGeminiModel(async (m) => { calls.push(m); return m in statuses ? statuses[m] : 404 }, env)
@@ -11,8 +9,8 @@ const run = async (statuses: Record<string, number | null>, env: Record<string, 
 void (async () => {
   // Candidate order: the env model (else the default), then the fallbacks, without repeats.
   assert.deepEqual((await run({})).calls, ['gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'])
-  assert.deepEqual((await run({}, { OSBORN_ENGINE_GEMINI_MODEL: 'gemini-x' })).calls, ['gemini-x', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'])
-  assert.deepEqual((await run({}, { OSBORN_ENGINE_GEMINI_MODEL: 'gemini-3.1-flash-lite' })).calls, ['gemini-3.1-flash-lite', 'gemini-3.8-flash'])
+  assert.deepEqual((await run({}, { OSBORN_ENGINE_GEMINI_MODEL: 'gemini-x' })).calls, ['gemini-x', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.8-flash'])
+  assert.deepEqual((await run({}, { OSBORN_ENGINE_GEMINI_MODEL: 'gemini-3.1-flash-lite' })).calls, ['gemini-3.1-flash-lite', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'])
   assert.equal((await run({}, { OSBORN_ENGINE_GEMINI_MODEL: '  ' })).calls[0], DEFAULT_GEMINI_MODEL)
 
   let r = await run({ 'gemini-3.5-flash-lite': 200 })
