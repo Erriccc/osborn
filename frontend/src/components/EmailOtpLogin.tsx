@@ -1,8 +1,9 @@
 'use client'
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SIGN_IN_BUTTON_STYLE } from '@/components/SignInCard'
+import { INVALID_EMAIL_MESSAGE, OTP_NEWEST_NOTE, cooldownSecondsLeft, otpSendError, otpVerifyError, resendLabel, sentAtForWait } from '@/lib/otp-resend'
 
 /**
  * Email OTP (6-digit code) login — app-wide auth that needs no OAuth provider,
@@ -16,25 +17,58 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
   const [step, setStep] = useState<'email' | 'code'>('email')
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<null | 'send' | 'resend'>(null)
+  const [verifying, setVerifying] = useState(false) // separate: a verify can overlap a resend
+  const codeRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const [sentAt, setSentAt] = useState<number | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+  const secondsLeft = cooldownSecondsLeft(sentAt, now)
+
+  useEffect(() => {
+    if (secondsLeft <= 0) return
+    const id = setInterval(() => setNow(Date.now()), 500)
+    return () => clearInterval(id)
+  }, [secondsLeft > 0])
+
+  function requestCode() {
+    return supabase.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } })
+  }
 
   async function send(e: React.FormEvent) {
     e.preventDefault()
-    if (!email.includes('@')) { setError('Enter a valid email'); return }
-    setBusy(true); setError(null)
-    const { error } = await supabase.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } })
-    setBusy(false)
-    if (error) setError(error.message)
-    else setStep('code')
+    if (!email.includes('@')) { setError(INVALID_EMAIL_MESSAGE); return }
+    setBusy('send'); setError(null)
+    const { error } = await requestCode()
+    setBusy(null)
+    if (error) setError(otpSendError(error, 'first').message)
+    else { setSentAt(Date.now()); setNow(Date.now()); setNotice(null); setStep('code') }
+  }
+
+  async function resend() {
+    if (busy || verifying || secondsLeft > 0) return
+    setBusy('resend'); setError(null); setNotice(null)
+    const { error } = await requestCode()
+    setBusy(null)
+    const t = Date.now()
+    setNow(t)
+    if (error) {
+      const { message, waitSeconds } = otpSendError(error, 'resend')
+      setError(message)
+      if (waitSeconds != null) setSentAt(sentAtForWait(waitSeconds, t))
+      return
+    }
+    setSentAt(t); setCode(''); setNotice(`Sent a new code to ${email.trim()}.`)
+    codeRef.current?.focus()
   }
 
   async function verify(value: string) {
-    if (value.length < 6 || busy) return
-    setBusy(true); setError(null)
+    if (value.length < 6 || verifying) return
+    setVerifying(true); setError(null)
     const { error } = await supabase.auth.verifyOtp({ email: email.trim(), token: value.trim(), type: 'email' })
-    setBusy(false)
-    if (error) setError(error.message)
+    setVerifying(false)
+    if (error) setError(otpVerifyError(error))
     // success → parent onAuthStateChange sends to /dashboard
   }
 
@@ -53,11 +87,11 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
         />
         <button
           type="submit"
-          disabled={busy}
+          disabled={busy === 'send'}
           className="w-full h-11 rounded-lg font-semibold text-[15px] transition-all active:scale-[0.98] disabled:opacity-50"
           style={SIGN_IN_BUTTON_STYLE}
         >
-          {busy ? 'Sending…' : 'Email me a code'}
+          {busy === 'send' ? 'Sending…' : 'Email me a code'}
         </button>
         {error ? <p className="text-red-400 text-[13px] text-center">{error}</p> : null}
       </form>
@@ -75,6 +109,7 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
         aria-label="6-digit code"
         autoComplete="one-time-code"
         placeholder="______"
+        ref={codeRef}
         value={code}
         autoFocus
         onChange={(e) => {
@@ -84,18 +119,23 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
         }}
         className="w-full h-14 bg-[var(--background)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[26px] font-bold tracking-[0.4em] text-center px-3 outline-none focus:border-[var(--accent)]"
       />
+      <p className="text-[var(--text-muted)] text-[12px] text-center">{OTP_NEWEST_NOTE}</p>
       <button
         type="submit"
-        disabled={busy || code.length < 6}
+        disabled={verifying || code.length < 6}
         className="w-full h-11 rounded-lg font-semibold text-[15px] transition-all active:scale-[0.98] disabled:opacity-50"
         style={SIGN_IN_BUTTON_STYLE}
       >
-        {busy ? 'Verifying…' : 'Verify'}
+        {verifying ? 'Verifying…' : 'Verify'}
       </button>
-      <button type="button" onClick={() => { setStep('email'); setCode(''); setError(null) }} className="text-[var(--text-muted)] text-[13px] hover:text-[var(--text-primary)]">
+      <button type="button" onClick={resend} disabled={busy !== null || verifying || secondsLeft > 0} className="text-[var(--text-muted)] text-[13px] hover:text-[var(--text-primary)] disabled:opacity-50 disabled:hover:text-[var(--text-muted)]">
+        {resendLabel(secondsLeft, busy === 'resend')}
+      </button>
+      <button type="button" disabled={busy === 'resend'} onClick={() => { setStep('email'); setCode(''); setError(null); setNotice(null); setSentAt(null) }} className="text-[var(--text-muted)] text-[13px] hover:text-[var(--text-primary)] disabled:opacity-50">
         Use a different email
       </button>
-      {error ? <p className="text-red-400 text-[13px] text-center">{error}</p> : null}
+      <p role="status" className="text-[var(--text-muted)] text-[13px] text-center empty:sr-only">{notice}</p>
+      <p role="alert" className="text-red-400 text-[13px] text-center empty:sr-only">{error}</p>
     </form>
   )
 }

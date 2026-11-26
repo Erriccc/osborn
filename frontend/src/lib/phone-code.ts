@@ -14,6 +14,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { createSupabaseAnon } from '@/lib/supabase-anon'
+import { isWrongCodeError } from '@/lib/otp-resend'
 
 export const CALL_CODE_TTL_MS = 5 * 60_000
 export const CALL_CODE_MAX_TRIES = 3
@@ -70,16 +71,6 @@ export function dailyMisses(rows: Pick<CallCodeRow, 'misses' | 'created_at'>[], 
   return rows
     .filter((r) => Date.parse(r.created_at ?? '') > now - DAY_MS)
     .reduce((n, r) => n + (r.misses || 0), 0)
-}
-
-/**
- * Only Supabase's "invalid or expired token" answer is a wrong code. A rate
- * limit, network error or 5xx says nothing about the code.
- */
-export function isWrongCodeError(error: { code?: unknown; status?: unknown; message?: unknown } | null | undefined): boolean {
-  if (!error) return false
-  if (error.code === 'otp_expired') return true
-  return error.status === 403 && /expired|invalid/i.test(String(error.message ?? ''))
 }
 
 /** The answer to a try that was counted (`attempts` includes it). */
