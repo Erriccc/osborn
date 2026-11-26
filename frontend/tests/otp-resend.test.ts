@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { OTP_NEWEST_NOTE, cooldownSecondsLeft, otpSendError, otpVerifyError, resendLabel, sentAtForWait } from '../src/lib/otp-resend'
+import { INVALID_EMAIL_MESSAGE, OTP_NEWEST_NOTE, cooldownSecondsLeft, otpSendError, otpVerifyError, resendLabel, sentAtForWait } from '../src/lib/otp-resend'
 
 const CODE_LIMIT_MESSAGE = 'Too many codes requested. Try again later.'
 const CODE_REJECTED_MESSAGE = 'That code did not work. Codes expire, and a new request replaces the old one.'
@@ -33,13 +33,15 @@ assert.equal(otpSendError({ code: 'over_email_send_rate_limit', message: 'boom' 
 assert.equal(otpSendError({ status: 500, message: 'Unable to generate a code' }, 'resend').message, 'Could not send a new code. Try again.')
 assert.equal(otpSendError({ status: 500, message: 'boom SMTP internal' }, 'first').message, 'Could not send a code. Try again.')
 assert.ok(!otpSendError({ message: 'boom SMTP internal' }, 'first').message.includes('SMTP'))
+assert.equal(otpSendError({ status: 400, code: 'email_address_invalid', message: 'Email address "a@b" is invalid' }, 'first').message, INVALID_EMAIL_MESSAGE)
 assert.equal(otpSendError(null, 'first').message, 'Could not send a code. Try again.')
 assert.equal(otpSendError({ name: 'AuthRetryableFetchError', message: 'x' }, 'first').message, NETWORK_MESSAGE)
 assert.equal(otpSendError({ message: 'Failed to fetch' }, 'resend').message, NETWORK_MESSAGE)
 assert.equal(otpSendError({ message: 'Failed to fetch' }, 'resend').waitSeconds, null)
 
 assert.equal(otpVerifyError({ code: 'otp_expired', message: 'x' }), CODE_REJECTED_MESSAGE)
-assert.equal(otpVerifyError({ message: 'Token has expired or is invalid' }), CODE_REJECTED_MESSAGE)
+assert.equal(otpVerifyError({ status: 403, message: 'Token has expired or is invalid' }), CODE_REJECTED_MESSAGE)
+assert.equal(otpVerifyError({ status: 400, message: 'Invalid request' }), VERIFY_FAILED_MESSAGE)
 assert.equal(otpVerifyError({ name: 'AuthRetryableFetchError', message: 'Failed to fetch' }), NETWORK_MESSAGE)
 assert.equal(otpVerifyError({ status: 500, message: 'SMTP boom' }), VERIFY_FAILED_MESSAGE)
 assert.equal(OTP_NEWEST_NOTE, 'Only the newest code works.')

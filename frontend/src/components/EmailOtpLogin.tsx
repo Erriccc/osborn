@@ -3,7 +3,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { useEffect, useRef, useState } from 'react'
 import { SIGN_IN_BUTTON_STYLE } from '@/components/SignInCard'
-import { OTP_NEWEST_NOTE, cooldownSecondsLeft, otpSendError, otpVerifyError, resendLabel, sentAtForWait } from '@/lib/otp-resend'
+import { INVALID_EMAIL_MESSAGE, OTP_NEWEST_NOTE, cooldownSecondsLeft, otpSendError, otpVerifyError, resendLabel, sentAtForWait } from '@/lib/otp-resend'
 
 /**
  * Email OTP (6-digit code) login — app-wide auth that needs no OAuth provider,
@@ -38,7 +38,7 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
 
   async function send(e: React.FormEvent) {
     e.preventDefault()
-    if (!email.includes('@')) { setError('Enter a valid email'); return }
+    if (!email.includes('@')) { setError(INVALID_EMAIL_MESSAGE); return }
     setBusy('send'); setError(null)
     const { error } = await requestCode()
     setBusy(null)

@@ -141,6 +141,7 @@ async function main() {
   M._load = function (req: string, ...rest: any[]) { return req in mocks ? mocks[req] : orig.call(this, req, ...rest) }
 
   const code = await import('../src/lib/phone-code')
+  const { isWrongCodeError } = await import('../src/lib/otp-resend')
   const calls = await import('../src/lib/phone-calls')
   const route: any = await import('../src/app/api/phone/code/route')
   const realSetTimeout = globalThis.setTimeout
@@ -333,11 +334,11 @@ async function main() {
     eq(st.db.phone_call_codes[0].attempts, 0, 'try given back')
   })
   await t('isWrongCodeError: only the invalid-or-expired answer', () => {
-    eq(code.isWrongCodeError({ status: 403, code: 'otp_expired', message: 'Token has expired or is invalid' }), true, 'otp_expired')
-    eq(code.isWrongCodeError({ status: 403, message: 'Token has expired or is invalid' }), true, 'no code field')
-    eq(code.isWrongCodeError({ status: 429, code: 'over_request_rate_limit', message: 'rate limit' }), false, '429')
-    eq(code.isWrongCodeError({ status: 500, message: 'invalid upstream' }), false, '500')
-    eq(code.isWrongCodeError(null), false, 'none')
+    eq(isWrongCodeError({ status: 403, code: 'otp_expired', message: 'Token has expired or is invalid' }), true, 'otp_expired')
+    eq(isWrongCodeError({ status: 403, message: 'Token has expired or is invalid' }), true, 'no code field')
+    eq(isWrongCodeError({ status: 429, code: 'over_request_rate_limit', message: 'rate limit' }), false, '429')
+    eq(isWrongCodeError({ status: 500, message: 'invalid upstream' }), false, '500')
+    eq(isWrongCodeError(null), false, 'none')
   })
   await t('route: a code that could not be checked is a 503 error', async () => {
     reset(); st.db.phone_call_codes.push(row({ expires_at: new Date(Date.now() + 60_000).toISOString() }))
