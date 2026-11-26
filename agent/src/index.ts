@@ -8237,6 +8237,8 @@ async function main() {
       return createRoomSessionInflight
     }
     const run = async () => {
+      livekitState.error = null
+      livekitState.errorCode = null
       try {
         // Discard any prior (dead/stale) instance without reuse.
         if (activeRoom) {

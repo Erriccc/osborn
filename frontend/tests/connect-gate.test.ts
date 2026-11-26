@@ -219,14 +219,15 @@ t('progress text names the step', () => {
   eq(connectProgressText('agent', { reachable: true }, 0), 'Connecting to your agent…', 'old agent without livekit field')
   const lk = (livekitStatus: string, livekitErrorCode?: string | null) => connectProgressText('agent', { reachable: true, livekitStatus, livekitErrorCode }, 0)
   for (const st of ['failed', 'retrying']) {
-    eq(lk(st, 'quota_exceeded'), 'The voice service has hit its connection limit. Check the LiveKit plan, then try again.', `quota ${st}`)
-    eq(lk(st, 'auth'), 'The voice service keys on your agent look wrong. The agent needs fresh keys.', `auth ${st}`)
-    eq(lk(st, 'network'), 'Your agent cannot reach the voice service right now. It keeps retrying.', `network ${st}`)
-    for (const c of ['unknown', 'disconnected', 'bogus', null, undefined]) eq(lk(st, c), 'Your agent is still reaching the voice service…', `${c} ${st}`)
+    eq(lk(st, 'quota_exceeded'), 'The voice service is at its connection limit right now.', `quota ${st}`)
+  eq(lk(st, 'auth'), "The voice service rejected your agent's keys.", `auth ${st}`)
+    eq(lk(st, 'network'), 'Your agent cannot reach the voice service right now.', `network ${st}`)
+    for (const c of ['unknown', 'disconnected', 'bogus', 'constructor', 'toString', '__proto__', 'hasOwnProperty', null, undefined]) eq(lk(st, c), 'Your agent is still reaching the voice service…', `${c} ${st}`)
   }
   eq(lk('connecting', 'quota_exceeded'), 'Connecting to your agent…', 'code ignored when not failed')
   eq(lk('connected', 'auth'), 'Connecting to your agent…', 'stale code ignored when connected')
-  ok(/first start/.test(connectProgressText('agent', { reachable: true, livekitStatus: 'failed', livekitErrorCode: 'auth' }, 60_000)), 'hint kept with a reason')
+  ok(!/first start/.test(connectProgressText('agent', { reachable: true, livekitStatus: 'failed', livekitErrorCode: 'auth' }, 60_000)), 'no slow-start hint on a hard failure')
+  ok(/first start/.test(connectProgressText('agent', { reachable: true, livekitStatus: 'failed', livekitErrorCode: 'bogus' }, 60_000)), 'hint kept on the generic text')
   eq(connectProgressText('joining', null, 0), 'Joining your agent…', 'joining')
 })
 
@@ -250,6 +251,7 @@ t('provider: a failed connect drops the room; Retry starts clean', () => {
   ok(/dropRoom\(\)[^]*connect\(\)/.test(retry), 'retry drops the room, then connects')
   ok(provider.includes('reconnect: retry,'), 'Retry/Reconnect use retry')
   ok(provider.includes('connectProgressText('), 'connect() shows progress text')
+  ok(provider.includes('livekitErrorCode: h?.livekit?.errorCode ?? null'), 'the probe carries the agent livekit errorCode')
 })
 
 t('VoiceRoom: claude_auth_optional makes sign-in optional and startable', () => {
