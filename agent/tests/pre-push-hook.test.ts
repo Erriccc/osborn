@@ -3,13 +3,14 @@
 // for the pushed commit, and an auto/* push without the pre-PR review marker too (#629).
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, copyFileSync, chmodSync, mkdirSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, copyFileSync, chmodSync, mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const hook = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '.githooks', 'pre-push')
 const root = mkdtempSync(join(tmpdir(), 'pre-push-'))
+try {
 const git = (cwd: string, ...a: string[]) => execFileSync('git', a, { cwd, encoding: 'utf8' }).trim()
 const remote = join(root, 'remote.git'), work = join(root, 'work')
 git(root, 'init', '-q', '--bare', remote)
@@ -36,4 +37,12 @@ assert.equal(push('auto/1-x').status, 0, 'both markers: allowed')
 writeFileSync(join(work, 'a'), '2'); git(work, 'commit', '-qam', 'two')
 assert.notEqual(push('auto/1-x').status, 0, 'new commit invalidates both markers')
 assert.equal(spawnSync('git', ['push', '-q', 'origin', ':refs/heads/auto/1-x'], { cwd: work }).status, 0, 'deleting a branch is not gated')
+assert.equal(spawnSync('git', ['push', '-q', 'origin', 'HEAD:refs/tags/v1'], { cwd: work }).status, 0, 'tags are not gated')
+const wt = join(root, 'wt'); git(work, 'worktree', 'add', '-q', '-b', 'auto/2-wt', wt)
+const wtPush = () => spawnSync('git', ['push', '-q', 'origin', 'HEAD:refs/heads/auto/2-wt'], { cwd: wt, encoding: 'utf8' })
+assert.notEqual(wtPush().status, 0, 'a fresh worktree with no markers is refused')
+const wgd = git(wt, 'rev-parse', '--absolute-git-dir'), wh = git(wt, 'rev-parse', 'HEAD')
+writeFileSync(join(wgd, 'steward-reviewed'), wh + '\n'); writeFileSync(join(wgd, 'pre-pr-reviewed'), wh + '\n')
+assert.equal(wtPush().status, 0, 'markers written in the worktree git dir allow the push')
 console.log('pre-push-hook ok')
+} finally { rmSync(root, { recursive: true, force: true }) }

@@ -25,7 +25,7 @@ elif tool == "Bash" and re.search(r"(^|[;&|(]\s*|\n\s*)gh\s+pr\s+create\b", str(
 elif tool == "Bash" and re.search(r"(^|[;&|(]\s*|\n\s*)git\s+(-\S+\s+)*push\b", str(inp.get("command", ""))) \
         and not re.search(r"\s(--delete|-d)\b|\s:\S", str(inp.get("command", ""))):
     # a branch delete ships no commit: not gated
-    tool, ref = "push", "HEAD"  # a push updates the branch (and any open PR on it): steward sign-off only
+    tool, ref = "push", "HEAD"  # a push updates the branch (and any open PR on it): steward sign-off here; .githooks/pre-push also wants the pre-PR review on auto/*
 else:
     sys.exit(0)
 
