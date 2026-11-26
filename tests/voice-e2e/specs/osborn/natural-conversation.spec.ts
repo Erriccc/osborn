@@ -6,6 +6,7 @@ import { startElementCapture, saveCapture } from '../../lib/audio-capture'
 import { enterFreshRoom, drainSpeechEvents, waitForSpeechEvent, logResult } from '../../lib/steps'
 import { nextUtterance, screenTail, type Turn } from '../../lib/converse'
 import { envKey } from '../../lib/env'
+import { DEFAULT_GEMINI_MODEL } from '../../lib/brain-model'
 import { actWithCache } from '../../lib/step-cache'
 import { readFileSync } from 'fs'
 import { execSync } from 'child_process'
@@ -77,7 +78,7 @@ test('NATURAL CONVERSATION: LLM tester improvises a multi-turn voice chat', asyn
   const stagehand = new Stagehand({
     env: 'LOCAL',
     localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-3.5-flash-lite',
+    model: `google/${DEFAULT_GEMINI_MODEL}`,
     modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') },
     verbose: 0,
   })

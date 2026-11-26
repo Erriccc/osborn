@@ -6,6 +6,7 @@ import { startElementCapture, saveCapture } from '../../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive, waitForSpeechEvent, drainSpeechEvents } from '../../lib/steps'
 import { attachDevtools } from '../../lib/devtools'
 import { envKey } from '../../lib/env'
+import { DEFAULT_GEMINI_MODEL } from '../../lib/brain-model'
 import { actWithCache } from '../../lib/step-cache'
 
 /**
@@ -42,7 +43,7 @@ async function oneSession(label: string, videoDir?: string): Promise<{ replied: 
   process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
   const stagehand = new Stagehand({
     env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-3.5-flash-lite', modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
+    model: `google/${DEFAULT_GEMINI_MODEL}`, modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
   })
   await stagehand.init()
   const brain = (i: string) => actWithCache(stagehand, page, i)
