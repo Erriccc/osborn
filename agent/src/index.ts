@@ -1063,6 +1063,7 @@ function startApiServer(workingDir: string, port: number): void {
     // keep working during rollout. New frontends should instead call
     // POST /connect-room and use the returned { roomName }. Kept as a fallback.
     if (req.method === 'GET' && url.pathname === '/room-code') {
+      if (unauthorized() || storeRefused(true)) return
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ roomCode: currentRoomCode }))
       return
@@ -1131,6 +1132,7 @@ function startApiServer(workingDir: string, port: number): void {
     // user is done (no waiting for the agent-side alone timer). Sets
     // intentionalLeave so the Disconnected handler does NOT auto-rejoin.
     if (req.method === 'POST' && url.pathname === '/leave-room') {
+      if (unauthorized() || storeRefused(true)) return
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: true }))
       if (leaveRoomHook) {

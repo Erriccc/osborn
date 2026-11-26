@@ -437,10 +437,10 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
 
+      const roomCodeSyncToken = await getSyncToken()
       // If sandbox isn't running (warm/cold/stopped/error), start it first
       if (sb.status !== 'running') {
         console.log(`[sandbox] room-code: sandbox is ${sb.status}, starting...`)
-        const roomCodeSyncToken = await getSyncToken()
         const woken = await startSandbox(sb.id, user.id, roomCodeSyncToken)
         if (!woken || woken.status !== 'running') {
           return NextResponse.json({ error: 'Failed to wake sandbox' }, { status: 503 })
@@ -463,6 +463,7 @@ export async function POST(request: Request) {
       for (let i = 0; i < 5; i++) {
         try {
           const r = await fetch(`${sb.previewUrl}/room-code`, {
+            headers: roomCodeSyncToken ? { Authorization: `Bearer ${roomCodeSyncToken}` } : {},
             signal: AbortSignal.timeout(5000),
           })
           if (r.ok) {
@@ -514,8 +515,10 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true })
       }
       try {
+        const lrToken = await getSyncToken()
         const r = await fetch(`${sbLR.previewUrl}/leave-room`, {
           method: 'POST',
+          headers: lrToken ? { Authorization: `Bearer ${lrToken}` } : {},
           signal: AbortSignal.timeout(5000),
         })
         return NextResponse.json({ success: r.ok })
