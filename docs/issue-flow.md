@@ -4,8 +4,8 @@ The issue is the ledger. State is a label; a claim is one comment.
 
 - States: `q:open` (the issue template sets it), `q:claimed`, `q:done` (PR merged, not yet verified), `q:delivered` (verified on the deployed build, issue closed).
 - Source: every filer adds one of `src:muse`, `src:loop`, `src:osborn`, `src:founder` (the author field is always the founder's login, so it cannot tell sources apart). The issue template asks for it; Osborn's own filers (`frontend/src/lib/github-issue-mirror.ts`) do not add it yet.
-- Claim comment: `claim: <agent> <session> <expiry-iso>`, with the `q:claimed` label. Refresh it every 4 hours while working; the latest claim comment counts.
-- Claim order: the main agent and local specialists claim first. Cloud agents (the hourly loop, Muse) claim only items `q:open` for over 24 hours, or `q:claimed` with an expired claim.
+- Claim comment: `claim: <agent> <session> <expiry-iso>` (exactly three tokens after `claim:`, the shape `scripts/issue-sweep.ts` parses), with the `q:claimed` label. Refresh it every 4 hours while working; the sweep reads the latest claim comment.
+- Claim order: the main agent and local specialists claim first. The autopilot network's cloud hub claims immediately unless a live unexpired claim exists; the old rule that cloud agents wait 24 hours no longer applies to the network. Its claim is `claim: hub net <expiry-iso>` plus `q:claimed`. When several unexpired claims exist, the EARLIEST wins. An open PR naming the issue, or an `auto/<n>-*` branch, also means the issue is in flight.
 - Parked and founder-decision issues are the JSON lists in `docs/issue-sweep-config.json` (`parked`, `founderDecision`); labels for them do not exist yet. They are left out of the sweep's action lists, as are issues labelled `follow-through` (notes, not work orders) in Unclaimed, Claimable and Stale.
 
 ## Sweep
