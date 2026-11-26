@@ -60,7 +60,7 @@ import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelD
 import { resolveTabId } from './panel/registry'
 import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
 import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, fileIdentity, isImageName, markUnread, replaceArtifacts, timeUnderDay, toMs, upsertAgentFile } from '@/lib/outputs-model'
-import { FLOOR_MAX, bargeInTiming, duckOnset, shouldBuildAnalyser, trackSwapped, learnEchoFloor, liftEchoFloor } from '@/lib/echo-floor'
+import { FLOOR_MAX, afterAnalyserBuild, bargeInTiming, duckOnset, planAgentTrack, trackSwapped, type AgentTrackState, learnEchoFloor, liftEchoFloor } from '@/lib/echo-floor'
 
 // Folder icon: the workspace chip, its More-menu row below pane-xl, and Files Explorer.
 const FOLDER_ICON_PATH = 'M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'
@@ -1240,25 +1240,22 @@ function VoiceRoomInner({
     }
 
     let agentAnalyser: { calculateVolume: () => number; analyser: AnalyserNode; cleanup: () => Promise<void> } | null = null
-    let agentAnalysed: unknown = null, agentTrackSeen: unknown = null
-    let analyserFailedFor: unknown = null, analyserTriedAt = 0
+    let trk: AgentTrackState = { seen: null, analysed: null, failedFor: null, triedAt: 0 }
     const agentLevel = () => {
       const t = agentAudioTrackRef.current
-      // A new track starts at full volume: carry the current duck level over to it at once,
-      // not behind the analyser's retry gate below.
-      if (trackSwapped(t, agentTrackSeen)) { agentTrackSeen = t; if (t) applyVolume(curVol, true) }
-      if (shouldBuildAnalyser(t, agentAnalysed, performance.now(), analyserTriedAt)) {
-        analyserTriedAt = performance.now()
+      const now = performance.now()
+      const plan = planAgentTrack(t, trk, now)
+      // A new track starts at full volume: carry the current duck level over to it at once.
+      if (trackSwapped(t, trk.seen)) trk = { ...trk, seen: t }
+      if (plan.reapplyVolume) applyVolume(curVol, true)
+      if (plan.build) {
         try { void agentAnalyser?.cleanup() } catch { /* closed */ }
-        agentAnalyser = null; agentAnalysed = null
-        try {
-          if (t) {
-            agentAnalyser = createAudioAnalyser(t as never, { smoothingTimeConstant: 0.2, fftSize: 512 })
-            agentAnalysed = t  // set only on success: a failure is retried a second later
-          }
-        } catch (e) {
-          if (analyserFailedFor !== t) { console.log('🦆 [duck] agent level unavailable, retrying (state only meanwhile):', e); analyserFailedFor = t }
-        }
+        agentAnalyser = null
+        let err: unknown = null
+        try { if (t) agentAnalyser = createAudioAnalyser(t as never, { smoothingTimeConstant: 0.2, fftSize: 512 }) } catch (e) { err = e }
+        const r = afterAnalyserBuild(trk, t, !err && !!t, now)
+        trk = r.next
+        if (r.logFailure) console.log('🦆 [duck] agent level unavailable, retrying (state only meanwhile):', err)
       }
       const ctx = agentAnalyser?.analyser.context as AudioContext | undefined
       if (ctx?.state === 'suspended') void ctx.resume().catch(() => {})

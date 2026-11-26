@@ -38,3 +38,30 @@ import { bargeInTiming, shouldBuildAnalyser, trackSwapped } from '../src/lib/ech
   eq(shouldBuildAnalyser(A, null, 6100, 5000), true, 'failed build: retried after 1s')
   console.log('PASS duck timing + track handling')
 }
+
+import { afterAnalyserBuild, planAgentTrack, type AgentTrackState } from '../src/lib/echo-floor'
+{
+  const A = {}, B = {}
+  let st: AgentTrackState = { seen: null, analysed: null, failedFor: null, triedAt: 0 }
+  // first track: re-apply the duck level at once and build
+  let p = planAgentTrack(A, st, 5000)
+  assert.deepStrictEqual(p, { reapplyVolume: true, build: true })
+  st = { ...st, seen: A }
+  // a failed build is not marked analysed, logs once, and retries only after the gap
+  let r = afterAnalyserBuild(st, A, false, 5000); st = r.next
+  assert.strictEqual(r.logFailure, true); assert.strictEqual(st.analysed, null)
+  assert.strictEqual(planAgentTrack(A, st, 5500).build, false)
+  assert.deepStrictEqual(planAgentTrack(A, st, 6100), { reapplyVolume: false, build: true })
+  r = afterAnalyserBuild(st, A, false, 6100); st = r.next
+  assert.strictEqual(r.logFailure, false, 'same track failing again does not log again')
+  r = afterAnalyserBuild(st, A, true, 7200); st = r.next
+  assert.strictEqual(st.analysed, A)
+  assert.strictEqual(planAgentTrack(A, st, 9000).build, false, 'built: no rebuild')
+  // swap mid-duck: new track gets the volume re-applied even though no ramp is running
+  p = planAgentTrack(B, st, 9100)
+  assert.deepStrictEqual(p, { reapplyVolume: true, build: true })
+  // track dropped: nothing to re-apply; the old analyser is released
+  st = { ...st, seen: B }
+  assert.deepStrictEqual(planAgentTrack(null, st, 9200), { reapplyVolume: false, build: true })
+  console.log('PASS agent track wiring')
+}
