@@ -60,7 +60,7 @@ import { PanelDataProvider, usePanelState, type PanelData } from './panel/PanelD
 import { resolveTabId } from './panel/registry'
 import { isOAuthInProgress, shouldAutoOpenAuthModal } from '@/lib/connect-gate'
 import { AUTO_OPEN_OUTPUTS_ON_WRITE, CONTENT_REPLY_TIMEOUT_MS, LOAD_ERROR_NO_REPLY, LEGACY_FAVORITES_KEY, contentRequestFor, favoriteRepairAction, favoritesStorageKey, isSensitivePath, favoriteSaveOutcome, regeneratePrompt, fileFromToolEvent, fileIdentity, isImageName, markUnread, replaceArtifacts, timeUnderDay, toMs, upsertAgentFile } from '@/lib/outputs-model'
-import { FLOOR_MAX, afterAnalyserBuild, bargeInTiming, duckOnset, planAgentTrack, trackSwapped, type AgentTrackState, learnEchoFloor, liftEchoFloor } from '@/lib/echo-floor'
+import { FLOOR_MAX, afterAnalyserBuild, bargeInTiming, duckOnset, planAgentTrack, type AgentTrackState, learnEchoFloor, liftEchoFloor } from '@/lib/echo-floor'
 
 // Folder icon: the workspace chip, its More-menu row below pane-xl, and Files Explorer.
 const FOLDER_ICON_PATH = 'M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z'
@@ -1245,15 +1245,15 @@ function VoiceRoomInner({
       const t = agentAudioTrackRef.current
       const now = performance.now()
       const plan = planAgentTrack(t, trk, now)
+      trk = plan.next
       // A new track starts at full volume: carry the current duck level over to it at once.
-      if (trackSwapped(t, trk.seen)) trk = { ...trk, seen: t }
       if (plan.reapplyVolume) applyVolume(curVol, true)
       if (plan.build) {
         try { void agentAnalyser?.cleanup() } catch { /* closed */ }
         agentAnalyser = null
         let err: unknown = null
         try { if (t) agentAnalyser = createAudioAnalyser(t as never, { smoothingTimeConstant: 0.2, fftSize: 512 }) } catch (e) { err = e }
-        const r = afterAnalyserBuild(trk, t, !err && !!t, now)
+        const r = afterAnalyserBuild(trk, t, !!agentAnalyser, now)
         trk = r.next
         if (r.logFailure) console.log('🦆 [duck] agent level unavailable, retrying (state only meanwhile):', err)
       }

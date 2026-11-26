@@ -43,25 +43,24 @@ import { afterAnalyserBuild, planAgentTrack, type AgentTrackState } from '../src
 {
   const A = {}, B = {}
   let st: AgentTrackState = { seen: null, analysed: null, failedFor: null, triedAt: 0 }
-  // first track: re-apply the duck level at once and build
-  let p = planAgentTrack(A, st, 5000)
-  assert.deepStrictEqual(p, { reapplyVolume: true, build: true })
-  st = { ...st, seen: A }
-  // a failed build is not marked analysed, logs once, and retries only after the gap
-  let r = afterAnalyserBuild(st, A, false, 5000); st = r.next
-  assert.strictEqual(r.logFailure, true); assert.strictEqual(st.analysed, null)
-  assert.strictEqual(planAgentTrack(A, st, 5500).build, false)
-  assert.deepStrictEqual(planAgentTrack(A, st, 6100), { reapplyVolume: false, build: true })
-  r = afterAnalyserBuild(st, A, false, 6100); st = r.next
-  assert.strictEqual(r.logFailure, false, 'same track failing again does not log again')
-  r = afterAnalyserBuild(st, A, true, 7200); st = r.next
-  assert.strictEqual(st.analysed, A)
-  assert.strictEqual(planAgentTrack(A, st, 9000).build, false, 'built: no rebuild')
-  // swap mid-duck: new track gets the volume re-applied even though no ramp is running
-  p = planAgentTrack(B, st, 9100)
-  assert.deepStrictEqual(p, { reapplyVolume: true, build: true })
-  // track dropped: nothing to re-apply; the old analyser is released
-  st = { ...st, seen: B }
-  assert.deepStrictEqual(planAgentTrack(null, st, 9200), { reapplyVolume: false, build: true })
+  // One frame as VoiceRoom's agentLevel runs it: plan, carry the plan's state, then the build outcome.
+  const frame = (t: unknown, now: number, ok: boolean) => {
+    const p = planAgentTrack(t, st, now); st = p.next
+    const r = p.build ? afterAnalyserBuild(st, t, ok, now) : null
+    if (r) st = r.next
+    return { reapply: p.reapplyVolume, build: p.build, log: !!r?.logFailure }
+  }
+  const eq = (a: unknown, b: unknown, m?: string) => assert.deepStrictEqual(a, b, m)
+  eq(frame(A, 5000, false), { reapply: true, build: true, log: true }, 'first track: duck level re-applied at once; failure logged')
+  eq(st.analysed, null, 'a failed build is not marked analysed')
+  eq(frame(A, 5500, true), { reapply: false, build: false, log: false }, 'repeated frame: no re-apply, retry waits for the gap')
+  eq(frame(A, 6100, false), { reapply: false, build: true, log: false }, 'retried after 1s; same track failing again logs nothing')
+  eq(frame(A, 7200, true), { reapply: false, build: true, log: false })
+  eq(st.analysed, A)
+  eq(frame(A, 9000, true), { reapply: false, build: false, log: false }, 'built: no rebuild')
+  eq(frame(B, 9100, true), { reapply: true, build: true, log: false }, 'swap mid-duck: the new track gets the duck level')
+  eq(frame(null, 10200, false), { reapply: false, build: true, log: false }, 'track dropped: analyser released, nothing re-applied, no failure logged')
+  eq(st.failedFor, A, 'a dropped track does not reset the once-per-track log')
+  eq(frame(null, 11300, false), { reapply: false, build: false, log: false }, 'still dropped: nothing to do')
   console.log('PASS agent track wiring')
 }

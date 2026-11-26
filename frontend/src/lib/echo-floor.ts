@@ -32,13 +32,14 @@ export const shouldBuildAnalyser = (track: unknown, analysed: unknown, now: numb
   track !== analysed && now - triedAt > ANALYSER_RETRY_MS
 
 export type AgentTrackState = { seen: unknown; analysed: unknown; failedFor: unknown; triedAt: number }
-/** One frame of agent-track handling: re-apply the duck volume on a swap, (re)build the analyser, log a failure once per track. */
+/** One frame of agent-track handling: re-apply the duck volume to a new track, (re)build the analyser. */
 export const planAgentTrack = (track: unknown, st: AgentTrackState, now: number) => ({
   reapplyVolume: trackSwapped(track, st.seen) && !!track,
   build: shouldBuildAnalyser(track, st.analysed, now, st.triedAt),
+  next: { ...st, seen: track },
 })
-/** After a build attempt: mark the track analysed only on success; on failure report whether to log (once per track). */
+/** After a build attempt: mark the track analysed only on success; log a failure once per track (a dropped track is not one). */
 export const afterAnalyserBuild = (st: AgentTrackState, track: unknown, ok: boolean, now: number) => {
-  const logFailure = !ok && st.failedFor !== track
+  const logFailure = !ok && !!track && st.failedFor !== track
   return { next: { ...st, triedAt: now, analysed: ok ? track : null, failedFor: logFailure ? track : st.failedFor }, logFailure }
 }
