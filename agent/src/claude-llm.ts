@@ -25,6 +25,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync, mkdirSync, statSy
 import { join, dirname, resolve, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
+import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { stewardGate } from './steward-gate.js'
 import { addressedPoints, turnPoints } from './points.js'
 import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, workLedgerEnabled, type LoopRecordInput, type SpokenLine } from './loops-ledger.js'
@@ -63,6 +64,9 @@ const QUERY_EMBED_TIMEOUT_MS = Number(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS 
 
 /** embedMs: the query embed fetch inside recall() (unset when none ran); sqlMs: store open + recall() without that fetch. */
 type RecallTiming = { embedMs?: number; sqlMs?: number }
+
+/** Shared event-loop delay sampler for the `[hook-timing]` line; created on the first timed hook. */
+let hookLoopDelay: ReturnType<typeof monitorEventLoopDelay> | null = null
 
 /** Build the recalled-context block to inject alongside the turn-shape reminder. '' on any miss. */
 async function buildRecallInjection(sessionId: string | null, workingDir: string | undefined, prompt: string, timing?: RecallTiming): Promise<string> {
@@ -3167,6 +3171,9 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // store), set well above the embed budget so a slow embed degrades to keyword
                 // rather than being cut to nothing.
                 const hookT0 = Date.now()
+                // Longest event-loop stall during this hook (about 20 ms when idle): tells a blocked loop from slow I/O. Only with turn timing on.
+                const loopDelay = !fromSubagent && this.#opts.turnTiming ? (hookLoopDelay ??= monitorEventLoopDelay({ resolution: 20 })) : null
+                if (loopDelay) { loopDelay.enable(); loopDelay.reset() }
                 const recallTiming: RecallTiming = {}
                 let backstopFired = false
                 const recalled = fromSubagent
@@ -3193,7 +3200,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 if (!fromSubagent && this.#opts.turnTiming) {
                   const hookMs = Date.now() - hookT0
                   markHookDone(hookMs, { recallMs, nudgeMs, recallTimedOut })
-                  if (hookMs > 1500) console.log(`[hook-timing] recall=${recallMs}ms embed=${recallTiming.embedMs ?? '-'}ms sql=${recallTiming.sqlMs ?? '-'}ms nudge=${nudgeMs}ms timedOut=${recallTimedOut}`)
+                  if (hookMs > 1500) console.log(`[hook-timing] recall=${recallMs}ms embed=${recallTiming.embedMs ?? '-'}ms sql=${recallTiming.sqlMs ?? '-'}ms nudge=${nudgeMs}ms loop=${loopDelay ? Math.round(loopDelay.max / 1e6) : '-'}ms timedOut=${recallTimedOut}`)
                 }
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [counters reset; speak-cadence ${SPEAK_CADENCE_N}]`)
                 return {
