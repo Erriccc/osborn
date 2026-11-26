@@ -15,7 +15,8 @@ The issue is the ledger. State is a label; a claim is the label plus a comment, 
 ## Not enforced yet
 
 - Of the `q:*` and `src:*` labels only `q:claimed` exists in the repo; the sweep reads `q:claimed` only.
-- The 24-hour cloud-claim window is a process rule. The sweep only lists "claimable by cloud agents": open issues with no `q:claimed` label and no open PR, created over 24 hours ago.
+- A network claim by branch has no expiry of its own: the sweep ignores branches whose PR is closed or merged, but a branch pushed with no PR holds its issue until the branch is deleted.
+- The 24-hour window (hourly loop and Muse only) is a process rule. The sweep only lists "claimable by the hourly loop and Muse": open issues with no `q:claimed` label and no open PR, created over 24 hours ago.
 - Unclaimed means no `q:claimed` label and no OPEN PR mentioning the issue (a merged PR that mentioned it is not a claim: it shows under close candidates instead). Comment counts are not a claim signal.
 - A claim with an expiry that is not a full ISO time with `Z` or an offset counts as expired ("bad expiry").
 - Duplicates are pairs sharing at least 2 title terms with Jaccard similarity of 0.5 or more.
