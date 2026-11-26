@@ -6388,8 +6388,8 @@ async function main() {
           type: ev.type,
           isInterruption: ev.isInterruption,
           interruptedAt: ev.interruptedAt,
-          agentSpeakingForMs: speakingSince > 0 ? Date.now() - speakingSince : undefined,
-          aecWarmupRemaining: (sess as any)._aecWarmupRemaining,
+          agentSpeakingForMs: agentState === 'speaking' && speakingSince > 0 ? Date.now() - speakingSince : undefined,
+          aecWarmupRemaining: (sess as any)._aecWarmupRemaining,  // not a countdown: the full warm-up until the SDK's one-shot timer fires, then 0
           // Whatever else SDK provides — dump it all for now
           fields: Object.keys(ev),
         }))

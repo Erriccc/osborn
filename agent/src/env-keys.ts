@@ -120,12 +120,12 @@ export const envFlagOn = (value: string | undefined): boolean => /^(on|1|true)$/
 export const envFlagUnlessOff = (value: string | undefined): boolean => !/^(off|0|false|no)$/i.test(String(value ?? '').trim())
 
 /** Largest accepted AEC warm-up override in ms; anything above is treated as invalid. */
-export const AEC_WARMUP_MAX_MS = 60_000
+const AEC_WARMUP_MAX_MS = 60_000
 
 /** OSBORN_AEC_WARMUP_MS: a whole number of ms in 0..AEC_WARMUP_MAX_MS, else undefined (leave the SDK default). */
 export function parseAecWarmupMs(value: string | undefined): number | undefined {
   const v = String(value ?? '').trim()
-  if (!/^\d{1,6}$/.test(v)) return undefined
+  if (!/^\d+$/.test(v)) return undefined
   const n = Number(v)
   return n <= AEC_WARMUP_MAX_MS ? n : undefined
 }
