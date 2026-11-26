@@ -437,10 +437,10 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'No sandbox found' }, { status: 404 })
       }
 
+      const roomCodeSyncToken = await getSyncToken()
       // If sandbox isn't running (warm/cold/stopped/error), start it first
       if (sb.status !== 'running') {
         console.log(`[sandbox] room-code: sandbox is ${sb.status}, starting...`)
-        const roomCodeSyncToken = await getSyncToken()
         const woken = await startSandbox(sb.id, user.id, roomCodeSyncToken)
         if (!woken || woken.status !== 'running') {
           return NextResponse.json({ error: 'Failed to wake sandbox' }, { status: 503 })
@@ -460,11 +460,10 @@ export async function POST(request: Request) {
       // Fetch room-code from the sprite (server-side — no CORS issues)
       // Retry up to 5 times in case the sprite just woke and needs a moment
       let roomCode: string | null = null
-      const rcToken = await getSyncToken()
       for (let i = 0; i < 5; i++) {
         try {
           const r = await fetch(`${sb.previewUrl}/room-code`, {
-            headers: rcToken ? { Authorization: `Bearer ${rcToken}` } : {},
+            headers: roomCodeSyncToken ? { Authorization: `Bearer ${roomCodeSyncToken}` } : {},
             signal: AbortSignal.timeout(5000),
           })
           if (r.ok) {
