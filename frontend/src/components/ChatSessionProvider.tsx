@@ -537,7 +537,7 @@ export function ChatSessionProvider({ children }: { children: React.ReactNode })
       while (ticking && isCurrent()) {
         if (stage === 'agent' && canProbe) {
           const h = await readHealth()
-          probe = h === undefined ? null : { reachable: !!h, livekitStatus: h?.livekit?.status ?? null }
+          probe = h === undefined ? null : { reachable: !!h, livekitStatus: h?.livekit?.status ?? null, livekitErrorCode: h?.livekit?.errorCode ?? null }
         }
         if (!ticking) break
         showProgress()

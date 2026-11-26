@@ -217,6 +217,16 @@ t('progress text names the step', () => {
   eq(connectProgressText('agent', { reachable: true, livekitStatus: 'retrying' }, 0), 'Your agent is still reaching the voice service…', 'livekit retrying')
   eq(connectProgressText('agent', { reachable: true, livekitStatus: 'failed' }, 0), 'Your agent is still reaching the voice service…', 'livekit failed')
   eq(connectProgressText('agent', { reachable: true }, 0), 'Connecting to your agent…', 'old agent without livekit field')
+  const lk = (livekitStatus: string, livekitErrorCode?: string | null) => connectProgressText('agent', { reachable: true, livekitStatus, livekitErrorCode }, 0)
+  for (const st of ['failed', 'retrying']) {
+    eq(lk(st, 'quota_exceeded'), 'The voice service has hit its connection limit. Check the LiveKit plan, then try again.', `quota ${st}`)
+    eq(lk(st, 'auth'), 'The voice service keys on your agent look wrong. The agent needs fresh keys.', `auth ${st}`)
+    eq(lk(st, 'network'), 'Your agent cannot reach the voice service right now. It keeps retrying.', `network ${st}`)
+    for (const c of ['unknown', 'disconnected', 'bogus', null, undefined]) eq(lk(st, c), 'Your agent is still reaching the voice service…', `${c} ${st}`)
+  }
+  eq(lk('connecting', 'quota_exceeded'), 'Connecting to your agent…', 'code ignored when not failed')
+  eq(lk('connected', 'auth'), 'Connecting to your agent…', 'stale code ignored when connected')
+  ok(/first start/.test(connectProgressText('agent', { reachable: true, livekitStatus: 'failed', livekitErrorCode: 'auth' }, 60_000)), 'hint kept with a reason')
   eq(connectProgressText('joining', null, 0), 'Joining your agent…', 'joining')
 })
 

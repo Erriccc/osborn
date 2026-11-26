@@ -143,10 +143,18 @@ export interface AgentHealthProbe {
   reachable: boolean
   /** /health `livekit.status` ('connecting' | 'connected' | 'failed' | 'retrying' | 'idle'), when reported. */
   livekitStatus?: string | null
+  /** /health `livekit.errorCode` ('quota_exceeded' | 'auth' | 'network' | …), when reported. Never the raw error text. */
+  livekitErrorCode?: string | null
 }
 
 /** After this long on a machine/agent step, say that a first start is slow. */
 export const SLOW_START_HINT_MS = 20_000
+
+const LIVEKIT_REASON_TEXT: Record<string, string> = {
+  quota_exceeded: 'The voice service has hit its connection limit. Check the LiveKit plan, then try again.',
+  auth: 'The voice service keys on your agent look wrong. The agent needs fresh keys.',
+  network: 'Your agent cannot reach the voice service right now. It keeps retrying.',
+}
 
 export function connectProgressText(stage: ConnectStage, health: AgentHealthProbe | null, elapsedMs: number): string {
   let text: string
@@ -154,7 +162,7 @@ export function connectProgressText(stage: ConnectStage, health: AgentHealthProb
   if (stage === 'starting') text = 'Starting your machine…'
   else if (stage === 'resuming') text = 'Waking your machine…'
   else if (health && !health.reachable) text = 'Starting your agent…'
-  else if (health?.livekitStatus === 'failed' || health?.livekitStatus === 'retrying') text = 'Your agent is still reaching the voice service…'
+  else if (health?.livekitStatus === 'failed' || health?.livekitStatus === 'retrying') text = LIVEKIT_REASON_TEXT[health.livekitErrorCode ?? ''] ?? 'Your agent is still reaching the voice service…'
   else text = 'Connecting to your agent…'
   return elapsedMs >= SLOW_START_HINT_MS ? `${text} The first start can take a minute or two.` : text
 }
