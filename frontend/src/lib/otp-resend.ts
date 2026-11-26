@@ -3,10 +3,10 @@
 const RESEND_COOLDOWN_MS = 60_000
 
 export const OTP_NEWEST_NOTE = 'Only the newest code works.'
-export const CODE_REJECTED_MESSAGE = 'That code did not work. Codes expire, and a new request replaces the old one.'
-export const VERIFY_FAILED_MESSAGE = 'Could not check the code. Try again.'
-export const CODE_LIMIT_MESSAGE = 'Too many codes requested. Try again later.'
-export const NETWORK_MESSAGE = 'Could not reach the server. Check your connection and try again.'
+const CODE_REJECTED_MESSAGE = 'That code did not work. Codes expire, and a new request replaces the old one.'
+const VERIFY_FAILED_MESSAGE = 'Could not check the code. Try again.'
+const CODE_LIMIT_MESSAGE = 'Too many codes requested. Try again later.'
+const NETWORK_MESSAGE = 'Could not reach the server. Check your connection and try again.'
 
 type AuthErr = { status?: number; code?: string; name?: string; message?: string } | null | undefined
 
@@ -38,10 +38,7 @@ export function otpSendError(err: AuthErr, kind: 'first' | 'resend'): { message:
     const n = Number(secs[1])
     return { message: `Please wait ${n} seconds before asking for another code.`, waitSeconds: n }
   }
-  if (err.code === 'over_email_send_rate_limit' || text.includes('email rate limit exceeded')) {
-    return { message: CODE_LIMIT_MESSAGE, waitSeconds: null }
-  }
-  if (err.status === 429 || err.code === 'over_request_rate_limit' || /rate limit|rate_limit|too many/.test(text)) {
+  if (err.status === 429 || err.code === 'over_email_send_rate_limit' || err.code === 'over_request_rate_limit' || /rate limit|rate_limit|too many/.test(text)) {
     return { message: CODE_LIMIT_MESSAGE, waitSeconds: null }
   }
   if (isNetwork(err)) return { message: NETWORK_MESSAGE, waitSeconds: null }
@@ -51,7 +48,7 @@ export function otpSendError(err: AuthErr, kind: 'first' | 'resend'): { message:
 /** Plain-words message for a failed code check. */
 export function otpVerifyError(err: AuthErr): string {
   if (!err) return VERIFY_FAILED_MESSAGE
-  if (err.code === 'otp_expired' || /expired or is invalid|expired|invalid/i.test(err.message ?? '')) return CODE_REJECTED_MESSAGE
+  if (err.code === 'otp_expired' || /expired|invalid/i.test(err.message ?? '')) return CODE_REJECTED_MESSAGE
   if (isNetwork(err)) return NETWORK_MESSAGE
   return VERIFY_FAILED_MESSAGE
 }

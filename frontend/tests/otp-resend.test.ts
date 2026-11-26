@@ -2,10 +2,12 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import {
-  CODE_LIMIT_MESSAGE, CODE_REJECTED_MESSAGE, NETWORK_MESSAGE, OTP_NEWEST_NOTE, VERIFY_FAILED_MESSAGE,
-  cooldownSecondsLeft, otpSendError, otpVerifyError, resendLabel, sentAtForWait,
-} from '../src/lib/otp-resend'
+import { OTP_NEWEST_NOTE, cooldownSecondsLeft, otpSendError, otpVerifyError, resendLabel, sentAtForWait } from '../src/lib/otp-resend'
+
+const CODE_LIMIT_MESSAGE = 'Too many codes requested. Try again later.'
+const CODE_REJECTED_MESSAGE = 'That code did not work. Codes expire, and a new request replaces the old one.'
+const NETWORK_MESSAGE = 'Could not reach the server. Check your connection and try again.'
+const VERIFY_FAILED_MESSAGE = 'Could not check the code. Try again.'
 
 assert.equal(cooldownSecondsLeft(null, 1000), 0)
 assert.equal(cooldownSecondsLeft(1000, 1000), 60)
@@ -44,12 +46,16 @@ assert.equal(OTP_NEWEST_NOTE, 'Only the newest code works.')
 
 // Wiring (source-level)
 const src = readFileSync(join(__dirname, '..', 'src', 'components', 'EmailOtpLogin.tsx'), 'utf8')
-assert.ok(/busy === 'verify' \? 'Verifying…'/.test(src), 'Verify label depends on verify only')
+assert.ok(/verifying \? 'Verifying…'/.test(src), 'Verify label depends on verify only')
+assert.ok(/disabled=\{verifying \|\| code\.length < 6\}/.test(src), 'Verify stays disabled while a verify runs, even during a resend')
+assert.ok(/if \(value\.length < 6 \|\| verifying\) return/.test(src), 'no second verify of the same code while one is in flight')
+assert.ok(/if \(busy \|\| verifying \|\| secondsLeft > 0\) return/.test(src), 'no resend while a code is being checked')
 assert.ok(!/resending/.test(src), 'no separate resending flag')
 assert.ok(/otpSendError\(error, 'first'\)/.test(src), 'email step uses the shared mapper')
 assert.ok(!/setError\(error\.message\)/.test(src), 'no raw provider error shown')
 assert.ok(/disabled=\{busy === 'resend'\}[^>]*onClick=\{\(\) => \{ setStep\('email'\)/.test(src), 'change-email disabled while resending')
 assert.ok(/ref=\{codeRef\}/.test(src) && /codeRef\.current\?\.focus\(\)/.test(src), 'code input focused after resend')
 assert.ok(/<p role="status"[^>]*>\{notice\}<\/p>/.test(src) && /<p role="alert"/.test(src), 'status and alert containers always mounted')
+assert.ok(!/empty:hidden/.test(src), 'empty live regions stay in the accessibility tree (display:none would drop their announcements)')
 assert.ok(!/<input[^>]*disabled/.test(src.slice(src.indexOf('aria-label="6-digit code"'), src.indexOf('aria-label="6-digit code"') + 700)), 'code input stays editable')
 console.log('otp-resend: ok')
