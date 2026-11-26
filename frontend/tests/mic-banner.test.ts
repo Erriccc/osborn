@@ -7,7 +7,7 @@
 // Safari / Firefox, iOS, Android) and never say "iPhone" on a desktop.
 import {
   micErrorKind, shouldShowMicBanner, noteMicBannerShown, isMicDenied, setMicDenied,
-  shouldAutoEnableMic, micPlatform, micHelp, MIC_BANNER_KEY_PREFIX, MIC_DENIED_KEY,
+  shouldAutoEnableMic, micPlatform, canShowScreenShare, micHelp, MIC_BANNER_KEY_PREFIX, MIC_DENIED_KEY,
   micDeniedAfterCheck, reconcileMicDenied, micShownMuted,
   type KV,
 } from '../src/lib/mic-permission'
@@ -35,6 +35,20 @@ const UA = {
   iphoneChrome: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/130.0 Mobile/15E148 Safari/604.1',
   android: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
 }
+
+t('screen share matrix (#623)', () => {
+  const ipadSafari = UA.safariMac, ipadChrome = 'Mozilla/5.0 (iPad; CPU OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/130.0 Mobile/15E148 Safari/604.1'
+  const s = (ua: string, has: boolean, maxTouchPoints = 0) => canShowScreenShare({ ua, maxTouchPoints, hasGetDisplayMedia: has })
+  ok(s(UA.chromeMac, true), 'desktop chrome shows')
+  ok(!s(UA.chromeMac, false), 'no getDisplayMedia hides')
+  ok(s(ipadSafari, true, 5), 'iPad Safari (Mac UA + touch) shows')
+  ok(s(ipadChrome, true, 5), 'iPad CriOS shows')
+  ok(s(ipadChrome.replace('CriOS/130.0', 'EdgiOS/130.0'), true, 5), 'any iPad browser shows (all WebKit)')
+  ok(!s(ipadSafari, false, 5), 'older iPadOS hides')
+  ok(!s(UA.iphone, true, 5) && !s(UA.iphoneChrome, true, 5), 'iPhone hides')
+  ok(!s(UA.android, true, 5), 'android hides')
+  ok(!s(UA.edge, true) && !s(UA.firefox, true) && !s(UA.safariMac, true), 'edge/firefox/desktop safari unchanged')
+})
 
 t('DOMException names map to kinds', () => {
   eq(micErrorKind('NotAllowedError'), 'denied', 'denied')

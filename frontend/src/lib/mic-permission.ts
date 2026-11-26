@@ -124,6 +124,14 @@ export function micPlatform(env: { ua: string; maxTouchPoints?: number }): MicPl
   return 'other'
 }
 
+/** Screen share (#472, #623): desktop Chrome, and any iPad browser (all WebKit) when getDisplayMedia exists.
+ *  Phones (iPhone, iPod, Android) and desktop Edge, Firefox and Safari stay hidden. */
+export function canShowScreenShare(env: { ua: string; maxTouchPoints?: number; hasGetDisplayMedia: boolean }): boolean {
+  if (!env.hasGetDisplayMedia || /iPhone|iPod/.test(env.ua || '')) return false
+  const p = micPlatform(env)
+  return p === 'chrome' || p === 'ios'
+}
+
 function iosAppName(ua: string): string {
   if (/CriOS\//.test(ua)) return 'Chrome'
   if (/FxiOS\//.test(ua)) return 'Firefox'
