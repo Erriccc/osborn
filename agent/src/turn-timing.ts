@@ -9,6 +9,9 @@ export type TurnMarks = {
   deferredMs?: number // wait for an in-flight interrupt before the push
   hookMs?: number // UserPromptSubmit hook duration (recall + nudge)
   replayAt?: number // last REPLAY start
+  recallMs?: number // recall injection part of the hook
+  nudgeMs?: number // machine-load nudge part of the hook
+  recallTimedOut?: boolean // recall hit the hook's 6000 ms backstop
 }
 
 const d = (a?: number, b?: number): number | null => (a == null || b == null ? null : Math.max(0, b - a))
@@ -25,6 +28,9 @@ export function formatTurnTiming(m: TurnMarks, turn: number): string {
     hook: m.hookMs ?? null,
     speechToPush: d(m.speechAt, m.pushAt),
     replayBeforeChat: replayNear,
+    ...(m.recallMs != null ? { recall: m.recallMs } : {}),
+    ...(m.nudgeMs != null ? { nudge: m.nudgeMs } : {}),
+    ...(m.recallTimedOut ? { recallTimedOut: true } : {}),
   })}`
 }
 
@@ -35,10 +41,11 @@ export const markTranscript = (isFinal: boolean, now = Date.now()) => { if (isFi
 export const markReplay = (now = Date.now()) => { marks.replayAt = now }
 export const markChat = (now = Date.now()) => { marks.chatAt = now; marks.pushAt = undefined; marks.deferredMs = undefined; marks.hookMs = undefined }
 export const markPush = (deferredMs = 0, now = Date.now()) => { marks.pushAt = now; marks.deferredMs = deferredMs }
-/** Hook is the last stage: log the line and start the next turn's marks (speech/replay carry over only if newer than the chat). */
-export function markHookDone(ms: number): void {
+/** Hook is the last stage: log the line and start the next turn's marks (speech/replay carry over only if newer than the chat). The optional breakdown is left out of the line when not given. */
+export function markHookDone(ms: number, extra?: Pick<TurnMarks, 'recallMs' | 'nudgeMs' | 'recallTimedOut'>): void {
   if (marks.chatAt == null) return
   marks.hookMs = ms
+  Object.assign(marks, extra)
   console.log(formatTurnTiming(marks, ++turn))
   marks = { speechAt: marks.speechAt && marks.speechAt > marks.chatAt ? marks.speechAt : undefined, replayAt: marks.replayAt && marks.replayAt > marks.chatAt ? marks.replayAt : undefined }
 }
