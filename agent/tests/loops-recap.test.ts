@@ -233,5 +233,42 @@ t('stale work rows never recap, flag unset or on', () => {
   } finally { if (prev === undefined) delete process.env.OSBORN_WORK_LEDGER; else process.env.OSBORN_WORK_LEDGER = prev }
 })
 
+const lens = await import('../src/content/lens-paths.js')
+const { dirname: dn } = await import('node:path')
+const osb = dn(dn(L.getLoopsPath('_', cwd)))
+
+t('#532 B4: a filed backlog leaves one line for the most urgent unfiled item', () => {
+  L.appendQueuedLoop('b4-q', cwd, 'urgent queued job', 'proj')
+  fileItems('b4-f', 4)
+  const r = L.takeLoopsRecap(cwd, 3)
+  assert.equal(r.length, 3)
+  assert.ok(r.some((x) => /urgent queued job/.test(x.text) && !x.filed))
+  assert.equal(r.filter((x) => x.filed).length, 2)
+})
+
+t('#532 B8: equal timestamps order by id', () => {
+  const at = '2026-11-25T00:00:00.000Z'
+  for (const id of ['ask:b8z', 'ask:b8a']) {
+    L.appendLoopRecord('b8-s', cwd, { kind: 'ask', id, text: id, source: 'explicit', origin: 'user_mic', fg: true, at })
+    L.appendLoopRecord('b8-s', cwd, { kind: 'filed', id, url: 'https://github.com/o/r/issues/800', at })
+  }
+  const r = L.takeLoopsRecap(cwd, 10, 'x')
+  const names = r.map((x) => x.text).filter((x) => x.startsWith('ask:b8'))
+  assert.deepEqual(names, ['ask:b8a', 'ask:b8z'])
+})
+
+t('#532 B9: soft hyphen, variation selectors and specials are stripped from recap text', () => {
+  const out = getFollowThroughRecap([{ text: 'a\u00adb\u061cc\u180ed\ufe0fe\ufff9f\ufffbg' }])
+  assert.match(out, /"abcdefg"/)
+})
+
+t('#532 B6: a held recap lock yields no recap and consumes nothing', () => {
+  L.appendLoopRecord('b6-s', cwd, { kind: 'open_loop', id: 'open_loop:b6', text: 'b6 loop', origin: 'tool', fg: true })
+  const { acquireLock, releaseLock } = lens
+  assert.ok(acquireLock(osb, Date.now(), 'loops.recap.lock', 90000))
+  try { assert.deepEqual(L.takeLoopsRecap(cwd, 10, 'x'), []) } finally { releaseLock(osb, 'loops.recap.lock') }
+  assert.ok(L.takeLoopsRecap(cwd, 10, 'x').some((x) => x.text === 'b6 loop'))
+})
+
 rmSync(home, { recursive: true, force: true })
 console.log(`\n${pass} passed`)

@@ -20,7 +20,7 @@ import { dirname, join } from 'node:path'
 import { getSidecarPath } from './session-store.js'
 import { envFlagOn } from './env-keys.js'
 import { appendJsonlLine, readJsonlLines } from './jsonl-sidecar.js'
-import { claudeDir } from './content/lens-paths.js'
+import { acquireLock, claudeDir, releaseLock } from './content/lens-paths.js'
 import { clip } from './content/lens-ingest.js'
 import { terms } from './stopwords.js'
 import { githubIssueBase } from './steward-verdict.js'
@@ -30,6 +30,8 @@ export const LOOPS_LOCK = 'loops.flush.lock'
 // Shorter than the startup drain's delay (index.ts, 120s after boot): a worker killed with the
 // machine (Fly stop) leaves a lock that the next boot's drain can already replace.
 export const LOOPS_LOCK_TTL_MS = 90_000
+/** Held in the project's `osb` folder while a recap picks and marks items, so two session starts cannot announce the same ones. */
+const RECAP_LOCK = 'loops.recap.lock'
 /** One appendFileSync under this size is a single O_APPEND write. */
 export const MAX_LINE_BYTES = 4000
 /** Raw prompts are kept as evidence up to this many bytes. */
@@ -518,6 +520,8 @@ export interface RecapItem { text: string; url?: string; filed?: true }
  * item returned, so each is recapped once. Ledger text is untrusted: the caller quotes it as data.
  */
 export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?: string): RecapItem[] {
+  const lockDir = projectOsbDir(workingDir)
+  if (!acquireLock(lockDir, Date.now(), RECAP_LOCK, LOOPS_LOCK_TTL_MS)) return []
   try {
     const filed: Array<{ sessionId: string; item: LoopItem }> = []
     const unfiled: Array<{ sessionId: string; item: LoopItem }> = []
@@ -536,10 +540,12 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
         else if (item.open && sessionId !== skipSession) unfiled.push({ sessionId, item })
       }
     }
-    filed.sort((a, b) => (b.item.filedAt ?? '').localeCompare(a.item.filedAt ?? ''))
+    // Equal timestamps fall back to the id so the order does not depend on directory listing order.
+    filed.sort((a, b) => (b.item.filedAt ?? '').localeCompare(a.item.filedAt ?? '') || a.item.id.localeCompare(b.item.id))
     const rank = (k: LoopKind) => UNFILED_RANK[k] ?? 2
-    unfiled.sort((a, b) => rank(a.item.kind) - rank(b.item.kind) || b.item.at.localeCompare(a.item.at))
-    const picked = [...filed, ...unfiled].slice(0, max)
+    unfiled.sort((a, b) => rank(a.item.kind) - rank(b.item.kind) || b.item.at.localeCompare(a.item.at) || a.item.id.localeCompare(b.item.id))
+    // A filed backlog keeps one line for the most urgent unfiled item.
+    const picked = [...filed.slice(0, unfiled.length ? Math.max(max - 1, 0) : max), ...unfiled].slice(0, max)
     for (const p of picked) appendLoopRecord(p.sessionId, workingDir, { kind: 'recapped', id: p.item.id })
     const repo = picked.some((p) => p.item.filedUrl) ? repoFromCwd(workingDir)?.toLowerCase() : undefined
     const own = (u: string) => !!repo && new RegExp(`^https://github\\.com/${repo.replace(/[.]/g, '\\.')}/issues/\\d+$`, 'i').test(u)
@@ -548,5 +554,7 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
       : { text: p.item.text })
   } catch {
     return []
+  } finally {
+    releaseLock(lockDir, RECAP_LOCK)
   }
 }
