@@ -126,7 +126,7 @@ once per meeting, always with the same driver id (`x-driver-id: meeting`).
 Tab 0 (the voice room) cannot be cast (409 `room_tab`), nor can other drivers'
 tabs (409 `not_your_tab`). Needs `OSBORN_ENGINE_TOKEN` env.
 ```bash
-E=https://osborn-voice-e2e-n.fly.dev:8781
+E=https://osborn-voice-e2e-k.fly.dev:8781
 H=(-H "x-engine-token: $OSBORN_ENGINE_TOKEN" -H 'Content-Type: application/json' -H 'x-driver-id: meeting')
 # 1. Open your own tab. The reply's activeTab.i is its index.
 curl -sS -X POST "$E/tab" "${H[@]}" -d '{"op":"open","url":"https://example.com","reuse":false}'
@@ -134,7 +134,7 @@ curl -sS -X POST "$E/tab" "${H[@]}" -d '{"op":"open","url":"https://example.com"
 curl -sS -X POST "$E/tab" "${H[@]}" -d '{"op":"cast","i":<activeTab.i>}'
 # 3. Put the canvas in stream mode (once).
 curl -sS -X POST http://localhost:8741/canvas -H 'Content-Type: application/json' \
-  -d '{"kind":"show","mode":"stream","url":"https://osborn-voice-e2e-n.fly.dev"}'
+  -d '{"kind":"show","mode":"stream","url":"https://osborn-voice-e2e-k.fly.dev"}'
 ```
 **Drive the cast tab** with the same headers, in one Bash call:
 ```bash
