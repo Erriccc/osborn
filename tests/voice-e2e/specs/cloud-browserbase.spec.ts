@@ -67,7 +67,7 @@ test('CLOUD BROWSER: Browserbase-hosted Chrome runs the voice conversation', asy
   const stagehand = new Stagehand({
     env: 'LOCAL',
     localBrowserLaunchOptions: { cdpUrl: session.connectUrl },
-    model: 'google/gemini-2.5-flash',
+    model: 'google/gemini-3.5-flash-lite',
     modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') },
     verbose: 0,
   })

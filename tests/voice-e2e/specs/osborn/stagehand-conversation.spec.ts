@@ -15,7 +15,7 @@ import { fileURLToPath } from 'url'
  * BRAIN + EARS + MOUTH: the full agent-attachable stack.
  *
  *  - We launch Chrome ourselves (audio flags intact) with a CDP port.
- *  - Stagehand (google/gemini-2.5-flash) attaches over CDP as the BRAIN:
+ *  - Stagehand (google/gemini-3.5-flash-lite) attaches over CDP as the BRAIN:
  *    it looks at the page and decides how to get into a fresh voice room —
  *    no hand-written gate selectors. If the UI changes tomorrow, this
  *    still works.
@@ -96,7 +96,7 @@ test('STAGEHAND CONVERSATION: agent brain navigates, reactive mic converses', as
   const stagehand = new Stagehand({
     env: 'LOCAL',
     localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-2.5-flash',
+    model: 'google/gemini-3.5-flash-lite',
     modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') },
     verbose: 1,
   })

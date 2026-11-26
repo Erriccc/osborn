@@ -34,7 +34,7 @@
 `journey list` → known recipes for this site. `journey start {name, goal}` → run steps → `journey end` (closes extra tabs, resets viewport, SAVES the step sequence to `knowledge/<site>/journeys/<name>.yaml`). Site knowledge: `knowledge/<hostname>/{actions.json,rules.md,site.md,journeys/}` — rules.md is BINDING, read before operating on a site.
 
 ## Key environment
-- `GOOGLE_API_KEY` — REQUIRED (Stagehand brain). `OPENAI_API_KEY` (TTS mouth), `DEEPGRAM_API_KEY` (transcription ears) recommended.
+- `GOOGLE_API_KEY` — REQUIRED (Stagehand brain). `OSBORN_ENGINE_GEMINI_MODEL` — its Gemini model (default `gemini-3.5-flash-lite`); on a 404 the engine tries `gemini-3.1-flash-lite`, then `gemini-3.8-flash`, and `brainError` names the failing model (`gemini 404 (<model>)`). `OPENAI_API_KEY` (TTS mouth), `DEEPGRAM_API_KEY` (transcription ears) recommended.
 - `OSBORN_APP_URL` — the target site. `OSBORN_ENTRY=none` — just load the page, skip the voice-native room flow (ANY website).
 - `OSBORN_AGENT_URL` — the Voice Native agent machine the auto-joined chat talks to. **No default (#49)**: unset (or unreachable at boot) → the engine skips the room join, opens `OSBORN_APP_URL` for plain browsing, and marks `agentUnreachable` on `/status` + the live view instead of spinning on "Connecting…".
 - `OSBORN_ENGINE_TOKEN` — control-API auth (REQUIRED on public deployments: with `FLY_APP_NAME` or `OSBORN_ENGINE_PUBLIC_URL` set and no token, every control route answers 503 `engine_token_missing`; a local run without either stays open and warns at boot).

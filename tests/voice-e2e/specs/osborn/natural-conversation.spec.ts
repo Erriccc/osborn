@@ -77,7 +77,7 @@ test('NATURAL CONVERSATION: LLM tester improvises a multi-turn voice chat', asyn
   const stagehand = new Stagehand({
     env: 'LOCAL',
     localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-2.5-flash',
+    model: 'google/gemini-3.5-flash-lite',
     modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') },
     verbose: 0,
   })

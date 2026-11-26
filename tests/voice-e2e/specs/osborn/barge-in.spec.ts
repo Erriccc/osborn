@@ -76,7 +76,7 @@ test('BARGE-IN: interrupt mid-story, TTS stops fast, agent pivots to new questio
   const stagehand = new Stagehand({
     env: 'LOCAL',
     localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-2.5-flash',
+    model: 'google/gemini-3.5-flash-lite',
     modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') },
     verbose: 0,
   })

@@ -59,7 +59,7 @@ test('SESSION TOUR: skills explorer then meeting join, one continuous room sessi
   process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
   const stagehand = new Stagehand({
     env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-2.5-flash', modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
+    model: 'google/gemini-3.5-flash-lite', modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
   })
   await stagehand.init()
   const brain = (i: string) => actWithCache(stagehand, page, i)
