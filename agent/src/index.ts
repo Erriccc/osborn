@@ -849,6 +849,10 @@ function startApiServer(workingDir: string, port: number): void {
       return !!refusal
     }
 
+    // /room-code and /leave-room: the owner's Bearer token; with no token set, only this machine's own
+    // pages and curl (storeWriteRefusal). /events stays open: an EventSource cannot send a header and it carries no data.
+    const ownerRouteRefused = (): boolean => unauthorized() || (!syncToken && storeRefused(true))
+
     if (req.method === 'GET' && url.pathname === '/view-token') {
       // Owner-only: the token gate, and with no token (local) the store's who-may-ask rules,
       // since a hidden listener hears every broadcast. `?status=1` reads the snapshot without a token.
@@ -1063,6 +1067,7 @@ function startApiServer(workingDir: string, port: number): void {
     // keep working during rollout. New frontends should instead call
     // POST /connect-room and use the returned { roomName }. Kept as a fallback.
     if (req.method === 'GET' && url.pathname === '/room-code') {
+      if (ownerRouteRefused()) return
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ roomCode: currentRoomCode }))
       return
@@ -1131,6 +1136,7 @@ function startApiServer(workingDir: string, port: number): void {
     // user is done (no waiting for the agent-side alone timer). Sets
     // intentionalLeave so the Disconnected handler does NOT auto-rejoin.
     if (req.method === 'POST' && url.pathname === '/leave-room') {
+      if (ownerRouteRefused()) return
       res.writeHead(200, { 'Content-Type': 'application/json' })
       res.end(JSON.stringify({ ok: true }))
       if (leaveRoomHook) {

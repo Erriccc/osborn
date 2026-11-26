@@ -460,9 +460,11 @@ export async function POST(request: Request) {
       // Fetch room-code from the sprite (server-side — no CORS issues)
       // Retry up to 5 times in case the sprite just woke and needs a moment
       let roomCode: string | null = null
+      const rcToken = await getSyncToken()
       for (let i = 0; i < 5; i++) {
         try {
           const r = await fetch(`${sb.previewUrl}/room-code`, {
+            headers: rcToken ? { Authorization: `Bearer ${rcToken}` } : {},
             signal: AbortSignal.timeout(5000),
           })
           if (r.ok) {
@@ -514,8 +516,10 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true })
       }
       try {
+        const lrToken = await getSyncToken()
         const r = await fetch(`${sbLR.previewUrl}/leave-room`, {
           method: 'POST',
+          headers: lrToken ? { Authorization: `Bearer ${lrToken}` } : {},
           signal: AbortSignal.timeout(5000),
         })
         return NextResponse.json({ success: r.ok })

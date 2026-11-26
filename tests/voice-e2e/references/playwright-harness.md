@@ -65,7 +65,7 @@ Compose from steps: `ensureAgentInRoom` → launch Chrome with a CDP port → at
 Stagehand → `enterFreshRoom(page, act, url, { earsOn: true })` → speak/listen/assert
 → `logResult(scenario, metrics)` → attach replays. Copy
 `specs/osborn/barge-in.spec.ts` as the template. Every spec has `test.afterEach` →
-`POST /leave-room`: an abandoned empty room breeds the alone-timer/watchdog wedge.
+`POST /leave-room`: an abandoned empty room breeds the alone-timer/watchdog wedge. (`/leave-room` and `/room-code` need the owner's Bearer token, or with no sync token a request from the agent's own machine; a spec aimed at a remote agent sends the token.)
 
 ## Site knowledge — the per-site profile
 The layout of `knowledge/<hostname>/` and journey framing are in `harness-api.md`
