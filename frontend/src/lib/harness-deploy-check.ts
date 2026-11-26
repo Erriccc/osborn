@@ -28,6 +28,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, mkdtempSync } from 
 import { execSync, spawn, spawnSync } from 'child_process'
 import { homedir, tmpdir } from 'os'
 import { join, dirname } from 'path'
+import { DEFAULT_ENGINE_APP } from './browser-engine'
 
 const FLY_REGISTRY = 'https://registry.fly.io'
 const FLYCTL_INSTALL_URL = 'https://fly.io/install.sh'
@@ -109,7 +110,7 @@ async function imageTagExists(tag: string, token: string, app: string): Promise<
 export async function checkHarnessDeploy(): Promise<void> {
   try {
     const FLY_API_TOKEN = process.env.FLY_API_TOKEN?.trim()
-    const APP = (process.env.FLY_HARNESS_APP ?? 'osborn-voice-e2e-k').trim()
+    const APP = (process.env.FLY_HARNESS_APP ?? DEFAULT_ENGINE_APP).trim()
     if (!FLY_API_TOKEN) { log('FLY_API_TOKEN not set — skipping'); writeStatus('skipped: no FLY_API_TOKEN'); return }
     if (!APP) { log('FLY_HARNESS_APP empty — disabled'); writeStatus('disabled'); return }
 

@@ -7,10 +7,10 @@
 // The frontend proxies the control API so the panel never touches the raw Fly URL
 // and the engine token stays server-side. NEVER import this from a client component.
 
-const DEFAULT_APP = 'osborn-voice-e2e-k'
+export const DEFAULT_ENGINE_APP = 'osborn-voice-e2e-k'
 
 export function engineApp(): string {
-  return (process.env.FLY_HARNESS_APP || DEFAULT_APP).trim()
+  return (process.env.FLY_HARNESS_APP || DEFAULT_ENGINE_APP).trim()
 }
 
 function engineHost(): string {
