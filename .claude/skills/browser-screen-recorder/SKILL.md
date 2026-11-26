@@ -318,7 +318,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - A `/say` clip that fails after the reply now says why: `/clip?n=N` and its public evidence link return 404 with `clipError` (the encoder's message) instead of a bare "not found". Retry the say, or use `/audio` for the voice.
 
 ## What's new in v44
-- `drive.sh` works against the deployed engine with no setup beyond the token: its default is the public control URL (`https://osborn-voice-e2e-k.fly.dev/control`), and any `BSR_ENGINE` URL with a path or port is parsed correctly. It no longer pins a fixed IP (set `BSR_IP` only if DNS fails).
+- `drive.sh` works against the deployed engine with no setup beyond the token: its default is the public control URL (`https://osborn-voice-e2e-n.fly.dev/control`), and any `BSR_ENGINE` URL with a path or port is parsed correctly. It no longer pins a fixed IP (set `BSR_IP` only if DNS fails).
 - `/shot` returns `task` and public `evidence` links, so a desk review can attach a screenshot without a fake `/act`. `/act` returns `task` at the top level.
 - Opening a clip through its public evidence link counts as reviewing it (the "clip was never fetched" nag clears).
 - The tab label in screenshots is small and sits bottom-left, so it no longer covers page headers.

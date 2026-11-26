@@ -56,7 +56,7 @@ export function sweep({ issues, prs, openPrs = [] as any[], branches = [] as str
     const last = [...(comments[i.number] ?? [])].reverse().map((c) => parseClaim(c.body)).find(Boolean)
     if (!last) { if (!inFlight.has(i.number)) expiredClaims.push({ number: i.number, reason: 'no claim comment' }) }
     else if (Number.isNaN(last.ms)) expiredClaims.push({ number: i.number, agent: last.agent, reason: 'bad expiry' })
-    else if (last.ms < now) expiredClaims.push({ number: i.number, agent: last.agent, expiry: last.expiry })
+    else if (last.ms < now && !inFlight.has(i.number)) expiredClaims.push({ number: i.number, agent: last.agent, expiry: last.expiry })
   }
   const tt = open.map((i) => ({ n: i.number, t: terms(i.title) }))
   const duplicates = []
@@ -84,7 +84,7 @@ export function render(r) {
     `## Open but mentioned by a merged PR (candidates to close, not closed)\n${r.closeCandidates.length ? r.closeCandidates.map((c) => `- #${c.number} (PR #${c.pr})`).join('\n') : 'none'}`,
     `## Likely duplicates\n${r.duplicates.length ? r.duplicates.map((g) => `- ${list(g)}`).join('\n') : 'none'}`,
     `## Unclaimed (no q:claimed label, no open PR mentions it)\n${list(r.unclaimed)}`,
-    `## Claimable by cloud agents (no q:claimed label, open over 24h)\n${list(r.claimable)}`,
+    `## Claimable by the hourly loop and Muse (no q:claimed label, open over 24h)\n${list(r.claimable)}`,
     `## Stale 7d+\n${list(r.stale7d)}`,
     `## No label\n${list(r.unlabelled)}`,
     `## By age\n${Object.entries(r.buckets).map(([k, v]) => `- ${k}: ${v}`).join('\n')}`,
@@ -99,9 +99,12 @@ const gh = (path) => {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const config = JSON.parse(readFileSync(new URL('../docs/issue-sweep-config.json', import.meta.url), 'utf8'))
   const issues = gh(`repos/${REPO}/issues?state=open&per_page=100`).filter((i) => !i.pull_request)
-  const prs = gh(`repos/${REPO}/pulls?state=closed&per_page=100`).filter((p) => p.merged_at)
+  const closedPrs = gh(`repos/${REPO}/pulls?state=closed&per_page=100`)
+  const prs = closedPrs.filter((p) => p.merged_at)
   const openPrs = gh(`repos/${REPO}/pulls?state=open&per_page=100`)
-  const branches = gh(`repos/${REPO}/branches?per_page=100`).map((b) => b.name)
+  // A branch whose PR is closed or merged is no longer a claim (the repo does not delete branches on merge).
+  const done = new Set(closedPrs.map((p) => p.head?.ref))
+  const branches = gh(`repos/${REPO}/branches?per_page=100`).map((b) => b.name).filter((n) => !done.has(n))
   const comments = {}
   for (const i of issues.filter((x) => x.comments && claimed(x)))
     comments[i.number] = gh(`repos/${REPO}/issues/${i.number}/comments?per_page=100`)

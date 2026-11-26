@@ -41,6 +41,8 @@ assert.deepEqual(bad.unclaimed, [])
 assert.deepEqual(bad.stale7d, [])
 const net = [issue(20, 'a', 3, { labels: [{ name: 'q:claimed' }] }), issue(21, 'b', 3, { labels: [{ name: 'q:claimed' }] }), issue(22, 'c', 3, { labels: [{ name: 'q:claimed' }] })]
 assert.deepEqual(sweep({ issues: net, prs: [], openPrs: [{ number: 98, title: 'fix #21', body: '' }], branches: ['auto/20-x', 'auto/2-y', 'main'], now }).expiredClaims, [{ number: 22, reason: 'no claim comment' }])
+const old = sweep({ issues: [issue(40, 'e', 3, { labels: [{ name: 'q:claimed' }] }), issue(41, 'f', 3, { labels: [{ name: 'q:claimed' }] })], prs: [], openPrs: [{ number: 97, title: 'fix #41', body: '' }], branches: ['auto/40-fix'], comments: { 40: [{ body: 'claim: local s 2026-11-20T00:00:00Z' }], 41: [{ body: 'claim: local s 2026-11-20T00:00:00Z' }] }, now })
+assert.deepEqual(old.expiredClaims, [], 'an expired comment claim is not listed while a network branch or open PR holds the issue')
 const dup = sweep({ issues: [issue(11, 'alpha beta gamma', 1), issue(12, 'beta gamma delta', 1), issue(13, 'gamma delta epsilon', 1), issue(14, 'Voice', 1), issue(15, 'Voice', 1)], prs: [], now, dupThreshold: 0.3 })
 assert.deepEqual(dup.duplicates, [[11, 12], [12, 13]])
 console.log('issue-sweep ok')
