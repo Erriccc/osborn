@@ -204,7 +204,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v71
-- The engine moved to a new Fly org: its app is `osborn-voice-e2e-k` (`https://osborn-voice-e2e-k.fly.dev`); `osborn-voice-e2e-k` is retired.
+- The engine moved to a new Fly org: its app is `osborn-voice-e2e-k` (`https://osborn-voice-e2e-k.fly.dev`); `osborn-voice-e2e-n` is retired.
 
 ## What's new in v70
 - The engine's Gemini brain no longer uses the retired `gemini-2.5-flash` (a 404, so a Gemini-only key left the brain dead). It uses `gemini-3.5-flash-lite`, set `OSBORN_ENGINE_GEMINI_MODEL` to change it, and on a 404 it tries the default, then `gemini-3.1-flash-lite`, then `gemini-3.8-flash`; the engine log names each model that failed, and `/status` `brainError` does when no provider works. The composer (`lib/converse.ts`) uses the same model and no longer sends `temperature`. Refresh the harness (INSTALLATION step 2) to get it.
