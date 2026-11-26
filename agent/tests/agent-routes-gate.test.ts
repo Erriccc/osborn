@@ -17,7 +17,9 @@ assert.ok(ev > 0 && !src.slice(ev, ev + 140).includes('Refused('), '/events stay
 // The cloud proxy sends the Bearer to both routes.
 const sb = readFileSync(new URL('../../frontend/src/app/api/sandbox/route.ts', import.meta.url), 'utf8')
 for (const p of ['/room-code', '/leave-room']) {
-  const i = sb.indexOf('}' + p + '`')
-  assert.ok(i > 0 && sb.slice(i, i + 200).includes('Authorization: `Bearer'), `${p} from the sandbox route carries the token`)
+  const call = '}' + p + '`, {'
+  assert.equal(sb.split(call).length - 1, 1, `${p}: one call from the sandbox route`)
+  const m = sb.slice(sb.indexOf(call) + call.length).match(/^\s*(?:method: 'POST',\s*)?headers: (\w+) \? \{ Authorization: `Bearer \$\{\1\}` \} : \{\},/)
+  assert.ok(m && sb.includes(`const ${m[1]} = await getSyncToken()`), `${p} from the sandbox route carries the token`)
 }
 console.log('agent-routes-gate: ok')
