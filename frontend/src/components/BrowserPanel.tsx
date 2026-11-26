@@ -21,7 +21,7 @@ type EngineState = {
   configured: boolean
   state: string | null
   machineId: string | null
-  // The HOSTNAME the proxy targets (e.g. osborn-voice-e2e-n.fly.dev — not a Fly
+  // The HOSTNAME the proxy targets (e.g. osborn-voice-e2e-k.fly.dev — not a Fly
   // app name), so an engine failure can name the host it hit (#62/#49).
   host?: string | null
   // Set by the server when the Fly Machines API itself couldn't be reached, so

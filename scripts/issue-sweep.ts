@@ -31,8 +31,8 @@ const jaccard = (a, b) => {
 const labelNames = (i) => (i.labels ?? []).map((l) => (typeof l === 'string' ? l : l.name))
 const claimed = (i) => labelNames(i).includes('q:claimed')
 
-/** issues: open issues (no PRs); prs: merged PRs {number,title,body}; comments: {[issue#]: [{body,created_at}]} */
-export function sweep({ issues, prs, openPrs = [] as any[], comments = {}, config = {} as { parked?: number[]; founderDecision?: number[] }, now = Date.now(), dupThreshold = 0.5 }) {
+/** issues: open issues (no PRs); prs: merged PRs {number,title,body}; comments: {[issue#]: [{body,created_at}]}; branches: branch names */
+export function sweep({ issues, prs, openPrs = [] as any[], branches = [] as string[], comments = {}, config = {} as { parked?: number[]; founderDecision?: number[] }, now = Date.now(), dupThreshold = 0.5 }) {
   const skip = new Set([...(config.parked ?? []), ...(config.founderDecision ?? [])])
   const open = issues.filter((i) => !skip.has(i.number))
   const age = (i) => (now - Date.parse(i.created_at)) / DAY
@@ -48,10 +48,13 @@ export function sweep({ issues, prs, openPrs = [] as any[], comments = {}, confi
   const openRef = new Set<number>()
   for (const p of openPrs) for (const n of refs(`${p.title} ${p.body ?? ''}`)) if (n !== p.number) openRef.add(n)
   const note = (i) => labelNames(i).includes(FOLLOW_THROUGH_LABEL)
+  // The autopilot network claims with the label plus an auto/<n>-* branch or an open PR, no comment.
+  const inFlight = new Set(openRef)
+  for (const b of branches) { const m = /^auto\/(\d+)-/.exec(b); if (m) inFlight.add(+m[1]) }
   const expiredClaims = []
   for (const i of open.filter(claimed)) {
     const last = [...(comments[i.number] ?? [])].reverse().map((c) => parseClaim(c.body)).find(Boolean)
-    if (!last) expiredClaims.push({ number: i.number, reason: 'no claim comment' })
+    if (!last) { if (!inFlight.has(i.number)) expiredClaims.push({ number: i.number, reason: 'no claim comment' }) }
     else if (Number.isNaN(last.ms)) expiredClaims.push({ number: i.number, agent: last.agent, reason: 'bad expiry' })
     else if (last.ms < now) expiredClaims.push({ number: i.number, agent: last.agent, expiry: last.expiry })
   }
@@ -98,9 +101,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const issues = gh(`repos/${REPO}/issues?state=open&per_page=100`).filter((i) => !i.pull_request)
   const prs = gh(`repos/${REPO}/pulls?state=closed&per_page=100`).filter((p) => p.merged_at)
   const openPrs = gh(`repos/${REPO}/pulls?state=open&per_page=100`)
+  const branches = gh(`repos/${REPO}/branches?per_page=100`).map((b) => b.name)
   const comments = {}
   for (const i of issues.filter((x) => x.comments && claimed(x)))
     comments[i.number] = gh(`repos/${REPO}/issues/${i.number}/comments?per_page=100`)
-  const r = sweep({ issues, prs, openPrs, comments, config })
+  const r = sweep({ issues, prs, openPrs, branches, comments, config })
   console.log(process.argv.includes('--json') ? JSON.stringify(r, null, 2) : render(r))
 }

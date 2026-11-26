@@ -1,5 +1,5 @@
 // Server-only config + helpers for proxying the browser-screen-recorder engine
-// (issue #51). The engine is a Fly app (default `osborn-voice-e2e-n`) exposing a
+// (issue #51). The engine is a Fly app (default `osborn-voice-e2e-k`) exposing a
 // token-protected control API at https://<app>.fly.dev:8781 (/status, /act, …,
 // and /stream: the MJPEG of the caller's own tab). Its public live view shows only
 // a tab a driver has cast, so the panel never uses it.
@@ -7,7 +7,7 @@
 // The frontend proxies the control API so the panel never touches the raw Fly URL
 // and the engine token stays server-side. NEVER import this from a client component.
 
-const DEFAULT_APP = 'osborn-voice-e2e-n'
+const DEFAULT_APP = 'osborn-voice-e2e-k'
 
 export function engineApp(): string {
   return (process.env.FLY_HARNESS_APP || DEFAULT_APP).trim()

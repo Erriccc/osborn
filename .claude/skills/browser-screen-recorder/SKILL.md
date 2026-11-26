@@ -204,7 +204,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
 
 ## What's new in v71
-- The engine moved to a new Fly org: its app is `osborn-voice-e2e-k` (`https://osborn-voice-e2e-k.fly.dev`); `osborn-voice-e2e-n` is retired.
+- The engine moved to a new Fly org: its app is `osborn-voice-e2e-k` (`https://osborn-voice-e2e-k.fly.dev`), and `drive.sh` defaults to it. `osborn-voice-e2e-n` gets no more updates; do not drive it. Refresh the harness (INSTALLATION step 2) for the new `drive.sh`.
 
 ## What's new in v70
 - The engine's Gemini brain no longer uses the retired `gemini-2.5-flash` (a 404, so a Gemini-only key left the brain dead). It uses `gemini-3.5-flash-lite`, set `OSBORN_ENGINE_GEMINI_MODEL` to change it, and on a 404 it tries the default, then `gemini-3.1-flash-lite`, then `gemini-3.8-flash`; the engine log names each model that failed, and `/status` `brainError` does when no provider works. The composer (`lib/converse.ts`) uses the same model and no longer sends `temperature`. Refresh the harness (INSTALLATION step 2) to get it.
@@ -318,7 +318,7 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - A `/say` clip that fails after the reply now says why: `/clip?n=N` and its public evidence link return 404 with `clipError` (the encoder's message) instead of a bare "not found". Retry the say, or use `/audio` for the voice.
 
 ## What's new in v44
-- `drive.sh` works against the deployed engine with no setup beyond the token: set `BSR_ENGINE=https://osborn-voice-e2e-k.fly.dev/control` (the script's built-in default still names the retired `-n` app), and any `BSR_ENGINE` URL with a path or port is parsed correctly. It no longer pins a fixed IP (set `BSR_IP` only if DNS fails).
+- `drive.sh` works against the deployed engine with no setup beyond the token: its default is the public control URL (`https://osborn-voice-e2e-k.fly.dev/control`), and any `BSR_ENGINE` URL with a path or port is parsed correctly. It no longer pins a fixed IP (set `BSR_IP` only if DNS fails).
 - `/shot` returns `task` and public `evidence` links, so a desk review can attach a screenshot without a fake `/act`. `/act` returns `task` at the top level.
 - Opening a clip through its public evidence link counts as reviewing it (the "clip was never fetched" nag clears).
 - The tab label in screenshots is small and sits bottom-left, so it no longer covers page headers.

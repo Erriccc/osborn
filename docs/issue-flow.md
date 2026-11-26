@@ -1,10 +1,10 @@
 # Issue flow
 
-The issue is the ledger. State is a label; a claim is one comment.
+The issue is the ledger. State is a label; a claim is the label plus a comment, branch or PR.
 
 - States: `q:open` (the issue template sets it), `q:claimed`, `q:done` (PR merged, not yet verified), `q:delivered` (verified on the deployed build, issue closed).
 - Source: every filer adds one of `src:muse`, `src:loop`, `src:osborn`, `src:founder` (the author field is always the founder's login, so it cannot tell sources apart). The issue template asks for it; Osborn's own filers (`frontend/src/lib/github-issue-mirror.ts`) do not add it yet.
-- Claim: for the autopilot network, the `q:claimed` label plus an `auto/<n>-*` branch or an open PR naming the issue (cloud sessions post no comments, so there is no claim comment). Other agents use a claim comment `claim: <agent> <session> <expiry-iso>` (exactly three tokens after `claim:`, the shape `scripts/issue-sweep.ts` parses), refreshed every 4 hours; the sweep reads the latest one.
+- Claim: for the autopilot network, the `q:claimed` label plus an `auto/<n>-*` branch or an open PR naming the issue (cloud sessions post no comments, so there is no claim comment; the sweep does not list it as expired while the branch or PR exists). Other agents use a claim comment `claim: <agent> <session> <expiry-iso>` (exactly three tokens after `claim:`, the shape `scripts/issue-sweep.ts` parses), refreshed every 4 hours; the sweep reads the latest one.
 - Claim order: the main agent and local specialists claim first. Other cloud agents (the hourly loop, Muse) claim only items `q:open` for over 24 hours, or `q:claimed` with an expired claim. The network hub claims immediately unless a live claim, branch or open PR exists.
 - Parked and founder-decision issues are the JSON lists in `docs/issue-sweep-config.json` (`parked`, `founderDecision`); labels for them do not exist yet. They are left out of the sweep's action lists, as are issues labelled `follow-through` (notes, not work orders) in Unclaimed, Claimable and Stale.
 
@@ -14,7 +14,7 @@ The issue is the ledger. State is a label; a claim is one comment.
 
 ## Not enforced yet
 
-- The `q:*` and `src:*` labels are not created in the repo, so nothing carries them yet; the sweep reads `q:claimed` only.
+- Of the `q:*` and `src:*` labels only `q:claimed` exists in the repo; the sweep reads `q:claimed` only.
 - The 24-hour cloud-claim window is a process rule. The sweep only lists "claimable by cloud agents": open issues with no `q:claimed` label and no open PR, created over 24 hours ago.
 - Unclaimed means no `q:claimed` label and no OPEN PR mentioning the issue (a merged PR that mentioned it is not a claim: it shows under close candidates instead). Comment counts are not a claim signal.
 - A claim with an expiry that is not a full ISO time with `Z` or an offset counts as expired ("bad expiry").

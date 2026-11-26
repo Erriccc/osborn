@@ -39,6 +39,8 @@ const bad = sweep({ issues: [issue(7, 'x', 3, { labels: [{ name: 'q:claimed' }] 
 assert.deepEqual(bad.expiredClaims, [{ number: 7, agent: 'a', reason: 'bad expiry' }])
 assert.deepEqual(bad.unclaimed, [])
 assert.deepEqual(bad.stale7d, [])
+const net = [issue(20, 'a', 3, { labels: [{ name: 'q:claimed' }] }), issue(21, 'b', 3, { labels: [{ name: 'q:claimed' }] }), issue(22, 'c', 3, { labels: [{ name: 'q:claimed' }] })]
+assert.deepEqual(sweep({ issues: net, prs: [], openPrs: [{ number: 98, title: 'fix #21', body: '' }], branches: ['auto/20-x', 'auto/2-y', 'main'], now }).expiredClaims, [{ number: 22, reason: 'no claim comment' }])
 const dup = sweep({ issues: [issue(11, 'alpha beta gamma', 1), issue(12, 'beta gamma delta', 1), issue(13, 'gamma delta epsilon', 1), issue(14, 'Voice', 1), issue(15, 'Voice', 1)], prs: [], now, dupThreshold: 0.3 })
 assert.deepEqual(dup.duplicates, [[11, 12], [12, 13]])
 console.log('issue-sweep ok')
