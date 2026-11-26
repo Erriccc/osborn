@@ -43,6 +43,7 @@ t('screen share matrix (#623)', () => {
   ok(!s(UA.chromeMac, false), 'no getDisplayMedia hides')
   ok(s(ipadSafari, true, 5), 'iPad Safari (Mac UA + touch) shows')
   ok(s(ipadChrome, true, 5), 'iPad CriOS shows')
+  ok(s(ipadChrome.replace('CriOS/130.0', 'EdgiOS/130.0'), true, 5), 'any iPad browser shows (all WebKit)')
   ok(!s(ipadSafari, false, 5), 'older iPadOS hides')
   ok(!s(UA.iphone, true, 5) && !s(UA.iphoneChrome, true, 5), 'iPhone hides')
   ok(!s(UA.android, true, 5), 'android hides')
