@@ -237,6 +237,14 @@ const lens = await import('../src/content/lens-paths.js')
 const { dirname: dn } = await import('node:path')
 const osb = dn(dn(L.getLoopsPath('_', cwd)))
 
+t('#532 B4: an inferred point does not take a slot from a filed backlog', () => {
+  L.appendLoopRecord('b4p', cwd, { kind: 'point', id: L.loopIds.ask('b4p point'), text: 'inferred point', source: 'inferred', origin: 'user_mic', fg: true })
+  fileItems('b4p-f', 4)
+  const r = L.takeLoopsRecap(cwd, 3)
+  assert.equal(r.filter((x) => x.filed).length, 3)
+  assert.ok(!r.some((x) => /inferred point/.test(x.text)))
+})
+
 t('#532 B4: a filed backlog leaves one line for the most urgent unfiled item', () => {
   L.appendQueuedLoop('b4-q', cwd, 'urgent queued job', 'proj')
   fileItems('b4-f', 4)
