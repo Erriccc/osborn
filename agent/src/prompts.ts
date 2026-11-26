@@ -1809,7 +1809,7 @@ export function getUndeliveredNote(rows: Array<{ text: string; result?: string; 
     `Tell the user the outcome in a sentence or two. Do not call tools.`)
 }
 
-const HIDDEN_CHARS = new RegExp(`(?:${CONTROL_OR_BIDI.source})|[\\u00ad\\u061c\\u180e\\u200b-\\u200d\\u2060\\ufe00-\\ufe0f\\ufeff\\ufff9-\\ufffb\\u{E0000}-\\u{E007F}]`, 'gu')
+const HIDDEN_CHARS = new RegExp(`(?:${CONTROL_OR_BIDI.source})|[\\u00ad\\u061c\\u180e\\u200b-\\u200d\\u2060\\ufe00-\\ufe0f\\ufeff\\ufff9-\\ufffb\\u{E0000}-\\u{E007F}\\u{E0100}-\\u{E01EF}]`, 'gu')
 /** Ledger text is agent-writable: no control, bidi, zero-width or tag characters, one line, secrets redacted, short, quoted. */
 const recapText = (t: unknown, max = 120): string =>
   JSON.stringify(redactSecrets(String(t || '').replace(HIDDEN_CHARS, '').replace(/\s+/g, ' ').trim()).slice(0, max))

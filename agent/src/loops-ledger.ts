@@ -520,12 +520,12 @@ export interface RecapItem { text: string; url?: string; filed?: true }
  * item returned, so each is recapped once. Ledger text is untrusted: the caller quotes it as data.
  */
 export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?: string): RecapItem[] {
-  const lockDir = projectOsbDir(workingDir)
-  if (!acquireLock(lockDir, Date.now(), RECAP_LOCK, LOOPS_LOCK_TTL_MS)) return []
+  const osbDir = projectOsbDir(workingDir)
+  if (!acquireLock(osbDir, Date.now(), RECAP_LOCK, LOOPS_LOCK_TTL_MS)) return []
   try {
     const filed: Array<{ sessionId: string; item: LoopItem }> = []
     const unfiled: Array<{ sessionId: string; item: LoopItem }> = []
-    for (const { sessionId, path } of ledgersIn(projectOsbDir(workingDir))) {
+    for (const { sessionId, path } of ledgersIn(osbDir)) {
       const folded = foldLoops(readLoopRecordsAt(path))
       for (const item of folded.values()) {
         // One line per delegation: an open dispatch:<id> row ("Unfinished … run", "cut off") already says its work:<id>.
@@ -545,7 +545,7 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
     const rank = (k: LoopKind) => UNFILED_RANK[k] ?? 2
     unfiled.sort((a, b) => rank(a.item.kind) - rank(b.item.kind) || b.item.at.localeCompare(a.item.at) || a.item.id.localeCompare(b.item.id))
     // A filed backlog keeps one line for the most urgent unfiled item.
-    const picked = [...filed.slice(0, unfiled.length ? Math.max(max - 1, 0) : max), ...unfiled].slice(0, max)
+    const picked = [...filed.slice(0, unfiled.length ? max - 1 : max), ...unfiled].slice(0, max)
     for (const p of picked) appendLoopRecord(p.sessionId, workingDir, { kind: 'recapped', id: p.item.id })
     const repo = picked.some((p) => p.item.filedUrl) ? repoFromCwd(workingDir)?.toLowerCase() : undefined
     const own = (u: string) => !!repo && new RegExp(`^https://github\\.com/${repo.replace(/[.]/g, '\\.')}/issues/\\d+$`, 'i').test(u)
@@ -555,6 +555,6 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
   } catch {
     return []
   } finally {
-    releaseLock(lockDir, RECAP_LOCK)
+    releaseLock(osbDir, RECAP_LOCK)
   }
 }
