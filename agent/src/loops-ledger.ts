@@ -544,8 +544,9 @@ export function takeLoopsRecap(workingDir: string, max = RECAP_MAX, skipSession?
     filed.sort((a, b) => (b.item.filedAt ?? '').localeCompare(a.item.filedAt ?? '') || a.item.id.localeCompare(b.item.id))
     const rank = (k: LoopKind) => UNFILED_RANK[k] ?? 2
     unfiled.sort((a, b) => rank(a.item.kind) - rank(b.item.kind) || b.item.at.localeCompare(a.item.at) || a.item.id.localeCompare(b.item.id))
-    // A filed backlog keeps one line for the most urgent unfiled item.
-    const picked = [...filed.slice(0, unfiled.length ? max - 1 : max), ...unfiled].slice(0, max)
+    // A filed backlog keeps one line for the most urgent unfiled item, unless that is only an inferred point or work row (rank 3).
+    const reserve = unfiled.length > 0 && rank(unfiled[0].item.kind) < 3
+    const picked = [...filed.slice(0, reserve ? max - 1 : max), ...unfiled].slice(0, max)
     for (const p of picked) appendLoopRecord(p.sessionId, workingDir, { kind: 'recapped', id: p.item.id })
     const repo = picked.some((p) => p.item.filedUrl) ? repoFromCwd(workingDir)?.toLowerCase() : undefined
     const own = (u: string) => !!repo && new RegExp(`^https://github\\.com/${repo.replace(/[.]/g, '\\.')}/issues/\\d+$`, 'i').test(u)
