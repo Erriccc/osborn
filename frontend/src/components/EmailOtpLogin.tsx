@@ -1,9 +1,9 @@
 'use client'
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { SIGN_IN_BUTTON_STYLE } from '@/components/SignInCard'
-import { OTP_EXPIRY_NOTE, cooldownSecondsLeft, resendLabel, sendErrorMessage, sentNotice } from '@/lib/otp-resend'
+import { OTP_NEWEST_NOTE, cooldownSecondsLeft, otpSendError, otpVerifyError, resendLabel, sentAtForWait } from '@/lib/otp-resend'
 
 /**
  * Email OTP (6-digit code) login — app-wide auth that needs no OAuth provider,
@@ -17,9 +17,9 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
   const [step, setStep] = useState<'email' | 'code'>('email')
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [busy, setBusy] = useState<null | 'send' | 'verify' | 'resend'>(null)
+  const codeRef = useRef<HTMLInputElement>(null)
   const [error, setError] = useState<string | null>(null)
-  const [resending, setResending] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
   const [sentAt, setSentAt] = useState<number | null>(null)
   const [now, setNow] = useState(() => Date.now())
@@ -31,7 +31,6 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
     return () => clearInterval(id)
   }, [secondsLeft > 0])
 
-  // The one OTP request, used by the email step and by Resend.
   function requestCode() {
     return supabase.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: true } })
   }
@@ -39,29 +38,36 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
   async function send(e: React.FormEvent) {
     e.preventDefault()
     if (!email.includes('@')) { setError('Enter a valid email'); return }
-    setBusy(true); setError(null)
+    setBusy('send'); setError(null)
     const { error } = await requestCode()
-    setBusy(false)
-    if (error) setError(error.message)
+    setBusy(null)
+    if (error) setError(otpSendError(error, 'first').message)
     else { setSentAt(Date.now()); setNow(Date.now()); setNotice(null); setStep('code') }
   }
 
   async function resend() {
     if (busy || secondsLeft > 0) return
-    setBusy(true); setResending(true); setError(null); setNotice(null)
+    setBusy('resend'); setError(null); setNotice(null)
     const { error } = await requestCode()
-    setBusy(false); setResending(false)
-    setNow(Date.now())
-    if (error) { setError(sendErrorMessage(error)); return }
-    setSentAt(Date.now()); setCode(''); setNotice(sentNotice(email.trim()))
+    setBusy(b => (b === 'resend' ? null : b))
+    const t = Date.now()
+    setNow(t)
+    if (error) {
+      const { message, waitSeconds } = otpSendError(error, 'resend')
+      setError(message)
+      if (waitSeconds != null) setSentAt(sentAtForWait(waitSeconds, t))
+      return
+    }
+    setSentAt(t); setCode(''); setNotice(`Sent a new code to ${email.trim()}.`)
+    codeRef.current?.focus()
   }
 
   async function verify(value: string) {
-    if (value.length < 6 || busy) return
-    setBusy(true); setError(null)
+    if (value.length < 6 || busy === 'verify' || busy === 'send') return
+    setBusy(b => (b === 'resend' ? b : 'verify')); setError(null)
     const { error } = await supabase.auth.verifyOtp({ email: email.trim(), token: value.trim(), type: 'email' })
-    setBusy(false)
-    if (error) setError(error.message)
+    setBusy(b => (b === 'verify' ? null : b))
+    if (error) setError(otpVerifyError(error))
     // success → parent onAuthStateChange sends to /dashboard
   }
 
@@ -80,11 +86,11 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
         />
         <button
           type="submit"
-          disabled={busy}
+          disabled={busy === 'send'}
           className="w-full h-11 rounded-lg font-semibold text-[15px] transition-all active:scale-[0.98] disabled:opacity-50"
           style={SIGN_IN_BUTTON_STYLE}
         >
-          {busy ? 'Sending…' : 'Email me a code'}
+          {busy === 'send' ? 'Sending…' : 'Email me a code'}
         </button>
         {error ? <p className="text-red-400 text-[13px] text-center">{error}</p> : null}
       </form>
@@ -102,6 +108,7 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
         aria-label="6-digit code"
         autoComplete="one-time-code"
         placeholder="______"
+        ref={codeRef}
         value={code}
         autoFocus
         onChange={(e) => {
@@ -111,23 +118,23 @@ export default function EmailOtpLogin({ supabase }: { supabase: SupabaseClient }
         }}
         className="w-full h-14 bg-[var(--background)] border border-[var(--border)] rounded-lg text-[var(--text-primary)] text-[26px] font-bold tracking-[0.4em] text-center px-3 outline-none focus:border-[var(--accent)]"
       />
-      <p className="text-[var(--text-muted)] text-[12px] text-center">{OTP_EXPIRY_NOTE}</p>
+      <p className="text-[var(--text-muted)] text-[12px] text-center">{OTP_NEWEST_NOTE}</p>
       <button
         type="submit"
-        disabled={busy || code.length < 6}
+        disabled={busy === 'verify' || code.length < 6}
         className="w-full h-11 rounded-lg font-semibold text-[15px] transition-all active:scale-[0.98] disabled:opacity-50"
         style={SIGN_IN_BUTTON_STYLE}
       >
-        {busy ? 'Verifying…' : 'Verify'}
+        {busy === 'verify' ? 'Verifying…' : 'Verify'}
       </button>
-      <button type="button" onClick={resend} disabled={busy || secondsLeft > 0} className="text-[var(--text-muted)] text-[13px] hover:text-[var(--text-primary)] disabled:opacity-50 disabled:hover:text-[var(--text-muted)]">
-        {resendLabel(secondsLeft, resending)}
+      <button type="button" onClick={resend} disabled={busy !== null || secondsLeft > 0} className="text-[var(--text-muted)] text-[13px] hover:text-[var(--text-primary)] disabled:opacity-50 disabled:hover:text-[var(--text-muted)]">
+        {resendLabel(secondsLeft, busy === 'resend')}
       </button>
-      <button type="button" onClick={() => { setStep('email'); setCode(''); setError(null); setNotice(null); setSentAt(null) }} className="text-[var(--text-muted)] text-[13px] hover:text-[var(--text-primary)]">
+      <button type="button" disabled={busy === 'resend'} onClick={() => { setStep('email'); setCode(''); setError(null); setNotice(null); setSentAt(null) }} className="text-[var(--text-muted)] text-[13px] hover:text-[var(--text-primary)] disabled:opacity-50">
         Use a different email
       </button>
-      {notice && !error ? <p role="status" className="text-[var(--text-muted)] text-[13px] text-center">{notice}</p> : null}
-      {error ? <p className="text-red-400 text-[13px] text-center">{error}</p> : null}
+      <p role="status" className="text-[var(--text-muted)] text-[13px] text-center empty:hidden">{notice}</p>
+      <p role="alert" className="text-red-400 text-[13px] text-center empty:hidden">{error}</p>
     </form>
   )
 }
