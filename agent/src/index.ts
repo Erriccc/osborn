@@ -75,7 +75,7 @@ import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, Cli
 import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
-import { missingRequiredEnv } from './env-keys.js'
+import { missingRequiredEnv, parseAecWarmupMs } from './env-keys.js'
 import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl, notifyPhone, isWatchBridgeEnabled, phonePushPending, settlePermissionPush } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate, isShhCue } from './noise-gate.js'
@@ -5524,8 +5524,10 @@ async function main() {
       const eotLive = await detector.probe()
       if (eotLive) turnDetection = detector
     }
+    const aecWarmupOverrideMs = parseAecWarmupMs(process.env.OSBORN_AEC_WARMUP_MS)
     const session = new voice.AgentSession({
       turnDetection,
+      ...(aecWarmupOverrideMs !== undefined ? { aecWarmupDuration: aecWarmupOverrideMs } : {}),
       preemptiveGeneration: false,  // Only fire LLM on final committed transcript, not partial preemptives
       // Commented out — kept for reference. These were added across 0.9.60/0.9.61
       // to try to harden interrupt + TTS handling, but evidence (osbornojure
@@ -5536,7 +5538,7 @@ async function main() {
       // SDK 1.4.6 (matching what silently ran via caret-resolved 1.4.5 throughout
       // the user's last-working month) are restored by leaving these unset.
       //
-      // aecWarmupDuration: 5000,                    // default 3000 (left at default)
+      // aecWarmupDuration: 5000,                    // default 3000 (left at default; OSBORN_AEC_WARMUP_MS overrides)
       // 0.9.64 evidence (0.9.63 osbornojure logs): the ONE stall in a long
       // session fired AFTER session.say DONE during a ~73s silent gap before
       // the next agent response — the forwarder's 10s idle timer fired during
@@ -5581,6 +5583,7 @@ async function main() {
         maxToolSteps: so.maxToolSteps,
         userAwayTimeout: so.userAwayTimeout,
         aecWarmupDuration: so.aecWarmupDuration,
+        aecWarmupOverrideMs: aecWarmupOverrideMs ?? null,
         ttsReadIdleTimeout: so.ttsReadIdleTimeout,
         forwardAudioIdleTimeout: so.forwardAudioIdleTimeout,
         useTtsAlignedTranscript: so.useTtsAlignedTranscript,
@@ -6282,7 +6285,10 @@ async function main() {
       sess.on('user_state_changed' as any, (ev: any) => {
         const prev = userState
         userState = ev.newState
-        console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})`)
+        // On a user onset over the agent's speech, log how far into its speech that landed and whether the AEC warm-up still applied
+        // (the VAD path never emits overlapping_speech, so this is the barge-in timing line on a default machine).
+        const overAgent = ev.newState === 'speaking' && agentState === 'speaking' && speakingSince > 0
+        console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})` + (overAgent ? ` [agentSpeakingForMs ${Date.now() - speakingSince}, aecWarmupRemaining ${(sess as any)._aecWarmupRemaining}]` : ''))
 
         // Native duck: drop agent TTS to DUCK_LEVEL while the user talks over it;
         // restore 250ms after they go quiet (cancelled if they speak again).
@@ -6385,6 +6391,8 @@ async function main() {
           type: ev.type,
           isInterruption: ev.isInterruption,
           interruptedAt: ev.interruptedAt,
+          agentSpeakingForMs: agentState === 'speaking' && speakingSince > 0 ? Date.now() - speakingSince : undefined,
+          aecWarmupRemaining: (sess as any)._aecWarmupRemaining,  // not a countdown: the full warm-up until the SDK's one-shot timer fires, then 0
           // Whatever else SDK provides — dump it all for now
           fields: Object.keys(ev),
         }))
