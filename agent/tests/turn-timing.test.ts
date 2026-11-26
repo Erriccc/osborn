@@ -31,6 +31,22 @@ assert.strictEqual(seq.speechToChat, 600)
 assert.strictEqual(seq.chatToPush, 100)
 assert.strictEqual(seq.deferredWait, 40)
 assert.strictEqual(seq.hook, 15)
+// Hook breakdown: new fields appear only when given; the 6000 ms backstop is flagged.
+{
+  const ex = JSON.parse(formatTurnTiming({ chatAt: 1, hookMs: 5000, recallMs: 4800, nudgeMs: 201, recallTimedOut: false }, 1).slice(14))
+  assert.strictEqual(ex.recall, 4800); assert.strictEqual(ex.nudge, 201); assert.strictEqual(ex.hook, 5000)
+  assert.strictEqual('recallTimedOut' in ex, false)
+  const to = JSON.parse(formatTurnTiming({ chatAt: 1, hookMs: 6200, recallMs: 6000, nudgeMs: 200, recallTimedOut: true }, 1).slice(14))
+  assert.strictEqual(to.recallTimedOut, true)
+  const plain = JSON.parse(formatTurnTiming({ chatAt: 1, hookMs: 5 }, 1).slice(14))
+  assert.ok(!('recall' in plain) && !('nudge' in plain))
+  const out: string[] = []; const o = console.log
+  console.log = (...a: unknown[]) => { out.push(a.join(' ')) }
+  try { markChat(10); markHookDone(7, { recallMs: 3, nudgeMs: 4, recallTimedOut: true }); markChat(20); markHookDone(8) } finally { console.log = o }
+  const a = JSON.parse(out[0].slice(14)), b = JSON.parse(out[1].slice(14))
+  assert.deepStrictEqual([a.recall, a.nudge, a.recallTimedOut], [3, 4, true])
+  assert.ok(!('recall' in b) && !('recallTimedOut' in b)) // extras do not leak to the next turn
+}
 console.log('turn-timing ok')
 
 // Behaviour through the real pushMessage (fake SDK query): only a ClaudeLLM built with turnTiming

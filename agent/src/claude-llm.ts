@@ -62,7 +62,7 @@ const RECALL_ENABLED = () => process.env.OSBORN_RECALL_INJECT !== '0'
 const QUERY_EMBED_TIMEOUT_MS = Number(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS || 2500)
 
 /** Build the recalled-context block to inject alongside the turn-shape reminder. '' on any miss. */
-async function buildRecallInjection(sessionId: string | null, workingDir: string | undefined, prompt: string): Promise<string> {
+async function buildRecallInjection(sessionId: string | null, workingDir: string | undefined, prompt: string, timing?: { embedMs?: number; sqlMs?: number }): Promise<string> {
   try {
     if (!RECALL_ENABLED() || !sessionId || !workingDir) return ''
     // CAP the recall query length (defense-in-depth). A pasted or echoed giant prompt — e.g. a
@@ -77,7 +77,9 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
     // embedder is unavailable or the query embed exceeds its short budget. Acquire the
     // embedder every turn with a tight query timeout — no warm-up needed (it's a cloud
     // fetch, not a local model load). If embed is null, recall() runs keyword-only.
+    const embedT0 = Date.now()
     const embed = process.env.OSBORN_EMBED !== '0' ? (await getEmbedder(QUERY_EMBED_TIMEOUT_MS)) ?? undefined : undefined
+    if (timing) timing.embedMs = Date.now() - embedT0
 
     const { getStorePath } = await import('./session-store.js')
     // READ-ONLY open (regression fix): the writable branch runs synchronous
@@ -86,12 +88,14 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
     // 5s busy_timeout per statement and blowing the UserPromptSubmit hook past 30s.
     // A readonly connection takes only SHARED locks and never blocks. storeExists()
     // above guarantees the DB is present, so readonly can't fail on a missing file.
+    const sqlT0 = Date.now()
     const db = openStore(getStorePath(sessionId, workingDir), { readonly: true })
     let hits: RecallHit[]
     try {
       hits = await recall(db, q, { mode: embed ? 'hybrid' : 'keyword', topK: RECALL_TOP_K, embed })
     } finally {
       db.close()
+      if (timing) timing.sqlMs = Date.now() - sqlT0
     }
     if (!hits.length) return ''
 
@@ -3158,16 +3162,21 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // store), set well above the embed budget so a slow embed degrades to keyword
                 // rather than being cut to nothing.
                 const hookT0 = Date.now()
+                const recallTiming: { embedMs?: number; sqlMs?: number } = {}
+                let recallTimedOut = false
                 const recalled = fromSubagent
                   ? ''
                   : await Promise.race([
-                      buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || '')),
-                      new Promise<string>((res) => setTimeout(() => res(''), 6000)),
+                      buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || ''), recallTiming),
+                      new Promise<string>((res) => setTimeout(() => { recallTimedOut = true; res('') }, 6000)),
                     ])
+                const recallMs = Date.now() - hookT0
                 // Lightweight machine-load nudge (main agent only). Cheap synchronous
                 // snapshot, prepended so it's present even when recall degrades under load.
                 // Advisory only — never caps/refuses a dispatch.
+                const nudgeT0 = Date.now()
                 const machineNudge = fromSubagent ? '' : await buildMachineNudge()
+                const nudgeMs = Date.now() - nudgeT0
                 // PREFIX-STABILITY order (cache-friendly): STATIC first (turn-shape
                 // reminder — byte-stable across the session), then recall (deterministic
                 // given the DB state), then the volatile machine-load nudge LAST. The
@@ -3175,7 +3184,11 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // prefix, but ordering volatile content last keeps any future
                 // cache_control breakpoint inside this block useful too.
                 const additionalContext = [reminder, recalled, loopRecap, machineNudge].filter(Boolean).join('\n\n')
-                if (!fromSubagent && this.#opts.turnTiming) markHookDone(Date.now() - hookT0)
+                if (!fromSubagent && this.#opts.turnTiming) {
+                  const hookMs = Date.now() - hookT0
+                  markHookDone(hookMs, { recallMs, nudgeMs, recallTimedOut })
+                  if (hookMs > 1500) console.log(`[hook-timing] recall=${recallMs}ms embed=${recallTiming.embedMs ?? '-'}ms sql=${recallTiming.sqlMs ?? '-'}ms nudge=${nudgeMs}ms timedOut=${recallTimedOut}`)
+                }
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [counters reset; speak-cadence ${SPEAK_CADENCE_N}]`)
                 return {
                   hookSpecificOutput: {
