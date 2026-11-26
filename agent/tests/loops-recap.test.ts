@@ -254,6 +254,14 @@ t('#532 B4: a filed backlog leaves one line for the most urgent unfiled item', (
   assert.equal(r.filter((x) => x.filed).length, 2)
 })
 
+t('#532 B4: an open loop (rank 2, not only queued or questions) keeps the reserved line', () => {
+  L.appendLoopRecord('b4o', cwd, { kind: 'open_loop', id: 'open_loop:b4o', text: 'open b4 loop', origin: 'tool', fg: true })
+  fileItems('b4o-f', 4)
+  const r = L.takeLoopsRecap(cwd, 3)
+  assert.ok(r.some((x) => x.text === 'open b4 loop' && !x.filed))
+  assert.equal(r.filter((x) => x.filed).length, 2)
+})
+
 t('#532 B8: equal timestamps order by id', () => {
   const at = '2026-11-25T00:00:00.000Z'
   for (const id of ['ask:b8z', 'ask:b8a']) {
