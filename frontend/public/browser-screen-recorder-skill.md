@@ -19,7 +19,7 @@ description: >
 
 ## SKILL IDENTITY
 Name: browser-screen-recorder
-Version: 69
+Version: 70
 Install path: ~/.claude/skills/browser-screen-recorder/SKILL.md
 Harness path: ~/browser-screen-recorder-harness/
 Served from: https://www.voice-native.com/api/browser-screen-recorder
@@ -202,6 +202,9 @@ cd ~/browser-screen-recorder-harness && npm install && npx playwright install ch
 - `references/tester-mode.md` — delegated tester: ledger + inbox + step budget, brief template, supervisor takeover, dual view (backend ground truth), a spec's flight-log/assist loop
 - `references/playwright-harness.md` — short mode: mouth/ears/brain/steps, running specs, reviewing media, scenarios, site knowledge, portability
 - `references/gotchas.md` — hard-won failure modes; read BEFORE debugging the harness itself or trusting a surprising result
+
+## What's new in v70
+- The engine's Gemini brain no longer uses the retired `gemini-2.5-flash` (a 404, so a Gemini-only key left the brain dead). It uses `gemini-3.5-flash-lite`, set `OSBORN_ENGINE_GEMINI_MODEL` to change it, and on a 404 it tries `gemini-3.1-flash-lite`, then `gemini-3.8-flash`; `/status` `brainError` names the model that failed. Refresh the harness (INSTALLATION step 2) to get it.
 
 ## What's new in v69
 - With no `BSR_DRIVER`, `drive.sh` now names the driver after `BSR_PROFILE` (`profile-<name>`), so parallel passes with different profiles get their own tabs, task numbers and journey instead of sharing your username's. Set `BSR_DRIVER` to keep one id across profiles; with neither set the driver is still your username. To finish tabs or a journey you started before v69 with `BSR_PROFILE` set, run once with `BSR_DRIVER=$(whoami)` so you drive as the same id as before.
