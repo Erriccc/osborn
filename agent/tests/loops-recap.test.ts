@@ -255,10 +255,12 @@ t('#532 B8: equal timestamps order by id', () => {
   const r = L.takeLoopsRecap(cwd, 10, 'x')
   const names = r.map((x) => x.text).filter((x) => x.startsWith('ask:b8'))
   assert.deepEqual(names, ['ask:b8a', 'ask:b8z'])
+  for (const id of ['question:b8z', 'question:b8a']) L.appendLoopRecord('b8-s', cwd, { kind: 'question', id, text: id, origin: 'tool', fg: true, at })
+  assert.deepEqual(L.takeLoopsRecap(cwd, 10, 'x').map((x) => x.text), ['question:b8a', 'question:b8z'])
 })
 
 t('#532 B9: soft hyphen, variation selectors and specials are stripped from recap text', () => {
-  const out = getFollowThroughRecap([{ text: 'a\u00adb\u061cc\u180ed\ufe0fe\ufff9f\ufffbg' }])
+  const out = getFollowThroughRecap([{ text: 'a\u00adb\u061cc\u180ed\ufe0fe\ufff9f\ufffbg\u{E0100}\u{E01EF}' }])
   assert.match(out, /"abcdefg"/)
 })
 
