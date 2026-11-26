@@ -38,3 +38,29 @@ import { bargeInTiming, shouldBuildAnalyser, trackSwapped } from '../src/lib/ech
   eq(shouldBuildAnalyser(A, null, 6100, 5000), true, 'failed build: retried after 1s')
   console.log('PASS duck timing + track handling')
 }
+
+import { afterAnalyserBuild, planAgentTrack, type AgentTrackState } from '../src/lib/echo-floor'
+{
+  const A = {}, B = {}
+  let st: AgentTrackState = { seen: null, analysed: null, failedFor: null, triedAt: 0 }
+  // One frame as VoiceRoom's agentLevel runs it: plan, carry the plan's state, then the build outcome.
+  const frame = (t: unknown, now: number, ok: boolean) => {
+    const p = planAgentTrack(t, st, now); st = p.next
+    const r = p.build ? afterAnalyserBuild(st, t, ok, now) : null
+    if (r) st = r.next
+    return { reapply: p.reapplyVolume, build: p.build, log: !!r?.logFailure }
+  }
+  const eq = (a: unknown, b: unknown, m?: string) => assert.deepStrictEqual(a, b, m)
+  eq(frame(A, 5000, false), { reapply: true, build: true, log: true }, 'first track: duck level re-applied at once; failure logged')
+  eq(st.analysed, null, 'a failed build is not marked analysed')
+  eq(frame(A, 5500, true), { reapply: false, build: false, log: false }, 'repeated frame: no re-apply, retry waits for the gap')
+  eq(frame(A, 6100, false), { reapply: false, build: true, log: false }, 'retried after 1s; same track failing again logs nothing')
+  eq(frame(A, 7200, true), { reapply: false, build: true, log: false })
+  eq(st.analysed, A)
+  eq(frame(A, 9000, true), { reapply: false, build: false, log: false }, 'built: no rebuild')
+  eq(frame(B, 9100, true), { reapply: true, build: true, log: false }, 'swap mid-duck: the new track gets the duck level')
+  eq(frame(null, 10200, false), { reapply: false, build: true, log: false }, 'track dropped: analyser released, nothing re-applied, no failure logged')
+  eq(st.failedFor, A, 'a dropped track does not reset the once-per-track log')
+  eq(frame(null, 11300, false), { reapply: false, build: false, log: false }, 'still dropped: nothing to do')
+  console.log('PASS agent track wiring')
+}
