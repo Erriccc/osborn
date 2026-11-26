@@ -39,7 +39,7 @@ import { isRedundantFinal } from '@/lib/claude-output'
 import { isAgentIdentity, isAuthGateTerminal } from '@/lib/connect-gate'
 import { newClientMsgId, rememberTyped, takeTypedEcho, isRapidDoubleSend, userBubbleText, fastBrainQuote, type PendingTyped } from '@/lib/chat-echo'
 import { historyTurns, isControlNotice } from '@/lib/control-text'
-import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micPlatform, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
+import { MIC_DENIED_EVENT, isMicDenied, micErrorKind, micShownMuted, noteMicBannerShown, setMicDenied, shouldAutoEnableMic, shouldShowMicBanner, type KV, type MicErrorKind } from '@/lib/mic-permission'
 import { InstancesPanel } from './voice/InstancesPanel'
 import { AudioControls } from './voice/AudioControls'
 import { RoomsSidebar, RoomsBar, type Room } from './voice/RoomsRail'
@@ -1031,12 +1031,12 @@ function VoiceRoomInner({
     }
   }, [localParticipant, shownMuted])
 
-  // Screen share (#472): desktop Chrome only (micPlatform 'chrome' is not Edge, iOS/iPadOS or Android).
+  // Screen share (#472, #623): desktop Chrome and iPad when getDisplayMedia exists (canShowScreenShare); not phones.
   // setScreenShareEnabled opens the browser's picker; a cancelled picker rejects and is ignored.
   // Stopping it, or the browser's "Stop sharing" bar, unpublishes the track (LiveKit LocalParticipant).
   const [canShareScreen, setCanShareScreen] = useState(false)
   useEffect(() => {
-    setCanShareScreen(!!navigator.mediaDevices?.getDisplayMedia && micPlatform({ ua: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints }) === 'chrome')
+    setCanShareScreen(canShowScreenShare({ ua: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, hasGetDisplayMedia: !!navigator.mediaDevices?.getDisplayMedia }))
   }, [])
   const toggleScreenShare = async () => {
     if (!localParticipant) return

@@ -124,6 +124,18 @@ export function micPlatform(env: { ua: string; maxTouchPoints?: number }): MicPl
   return 'other'
 }
 
+/** Screen share (#472, #623): show Share where the browser can do it. Capability first; phones stay hidden
+ *  (iPhone, Android), iPad shows it whenever getDisplayMedia exists (Safari and CriOS alike), Edge/Firefox keep
+ *  their earlier exclusion. */
+export function canShowScreenShare(env: { ua: string; maxTouchPoints?: number; hasGetDisplayMedia: boolean }): boolean {
+  if (!env.hasGetDisplayMedia) return false
+  const ua = env.ua || ''
+  if (/iPhone|iPod/.test(ua)) return false
+  const p = micPlatform(env)
+  if (p === 'chrome') return true
+  return p === 'ios' && (/iPad/.test(ua) || /Macintosh/.test(ua))
+}
+
 function iosAppName(ua: string): string {
   if (/CriOS\//.test(ua)) return 'Chrome'
   if (/FxiOS\//.test(ua)) return 'Firefox'
