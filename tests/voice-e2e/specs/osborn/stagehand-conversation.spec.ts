@@ -5,6 +5,7 @@ import { installActionVisualizer } from '../../lib/action-visualizer'
 import { saveCapture } from '../../lib/audio-capture'
 import { enterFreshRoom, drainSpeechEvents, waitForSpeechEvent } from '../../lib/steps'
 import { envKey } from '../../lib/env'
+import { DEFAULT_GEMINI_MODEL } from '../../lib/brain-model'
 import { actWithCache } from '../../lib/step-cache'
 import { readFileSync } from 'fs'
 import { execSync } from 'child_process'
@@ -15,7 +16,7 @@ import { fileURLToPath } from 'url'
  * BRAIN + EARS + MOUTH: the full agent-attachable stack.
  *
  *  - We launch Chrome ourselves (audio flags intact) with a CDP port.
- *  - Stagehand (google/gemini-2.5-flash) attaches over CDP as the BRAIN:
+ *  - Stagehand (Gemini, DEFAULT_GEMINI_MODEL) attaches over CDP as the BRAIN:
  *    it looks at the page and decides how to get into a fresh voice room —
  *    no hand-written gate selectors. If the UI changes tomorrow, this
  *    still works.
@@ -96,7 +97,7 @@ test('STAGEHAND CONVERSATION: agent brain navigates, reactive mic converses', as
   const stagehand = new Stagehand({
     env: 'LOCAL',
     localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-2.5-flash',
+    model: `google/${DEFAULT_GEMINI_MODEL}`,
     modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') },
     verbose: 1,
   })

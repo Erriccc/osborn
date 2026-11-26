@@ -16,6 +16,7 @@ primary_region = "ord"
   # WIPED on every deploy — the flag must live here. For a one-shot spec run,
   # start a machine with OSBORN_ENGINE="" + OSBORN_TEST_SPEC=<spec> instead.
   OSBORN_ENGINE = "1"
+  # OSBORN_ENGINE_GEMINI_MODEL overrides the Gemini brain model (default and 404 fallbacks: lib/brain-model.ts).
 
 [build]
   dockerfile = "Dockerfile"

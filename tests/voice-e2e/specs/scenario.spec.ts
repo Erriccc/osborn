@@ -7,6 +7,7 @@ import { enterFreshRoom, ensureSessionLive, drainSpeechEvents, waitForSpeechEven
 import { startElementCapture } from '../lib/audio-capture'
 import { nextUtterance, screenTail, type Turn } from '../lib/converse'
 import { envKey } from '../lib/env'
+import { DEFAULT_GEMINI_MODEL } from '../lib/brain-model'
 import { actWithCache } from '../lib/step-cache'
 import { attachDevtools } from '../lib/devtools'
 import { flight } from '../lib/flightlog'
@@ -146,7 +147,7 @@ for (const file of files) {
     const stagehand = new Stagehand({
       env: 'LOCAL',
       localBrowserLaunchOptions: { cdpUrl: stagehandCdpUrl },
-      model: 'google/gemini-2.5-flash',
+      model: `google/${DEFAULT_GEMINI_MODEL}`,
       modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') },
       verbose: 0,
     })

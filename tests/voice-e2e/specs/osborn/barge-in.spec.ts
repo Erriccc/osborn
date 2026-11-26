@@ -5,6 +5,7 @@ import { installActionVisualizer } from '../../lib/action-visualizer'
 import { startElementCapture, saveCapture } from '../../lib/audio-capture'
 import { ensureAgentInRoom, enterFreshRoom, drainSpeechEvents, waitForSpeechEvent, logResult } from '../../lib/steps'
 import { envKey } from '../../lib/env'
+import { DEFAULT_GEMINI_MODEL } from '../../lib/brain-model'
 import { actWithCache } from '../../lib/step-cache'
 import { readFileSync } from 'fs'
 import { execSync } from 'child_process'
@@ -76,7 +77,7 @@ test('BARGE-IN: interrupt mid-story, TTS stops fast, agent pivots to new questio
   const stagehand = new Stagehand({
     env: 'LOCAL',
     localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-2.5-flash',
+    model: `google/${DEFAULT_GEMINI_MODEL}`,
     modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') },
     verbose: 0,
   })

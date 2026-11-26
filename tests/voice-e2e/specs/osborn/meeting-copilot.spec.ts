@@ -7,6 +7,7 @@ import { enterFreshRoom, ensureSessionLive, waitForSpeechEvent, drainSpeechEvent
 import { attachDevtools } from '../../lib/devtools'
 import { flight } from '../../lib/flightlog'
 import { envKey } from '../../lib/env'
+import { DEFAULT_GEMINI_MODEL } from '../../lib/brain-model'
 import { actWithCache } from '../../lib/step-cache'
 
 /**
@@ -50,7 +51,7 @@ test('MEETING COPILOT: agent joins a live meeting, tester summons it privately',
   process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
   const stagehand = new Stagehand({
     env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-2.5-flash', modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
+    model: `google/${DEFAULT_GEMINI_MODEL}`, modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
   })
   await stagehand.init()
   const brain = (i: string) => actWithCache(stagehand, page, i)

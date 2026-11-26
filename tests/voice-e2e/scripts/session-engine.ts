@@ -66,6 +66,7 @@ import { freemem } from 'os'
 import { installReactiveMic, speakText, warmUpSpeech, isNoMic } from '../lib/reactive-mic'
 import { installActionVisualizer } from '../lib/action-visualizer'
 import { startLiveStream } from '../lib/live-stream'
+import { pickGeminiModel } from '../lib/brain-model'
 import { artifactMissing } from '../lib/artifact-missing'
 import { saveCapture, peekCapture, startElementCapture, installPageAudioTap, recordingMsAt, AUDIO_DECODE_CAP_MS, decodeBudgetMs, recordingAge, type AudioClock } from '../lib/audio-capture'
 import { enterFreshRoom, ensureSessionLive } from '../lib/steps'
@@ -368,8 +369,10 @@ async function main() {
   let brainModel = ''
   const pickBrainModel = async (): Promise<{ model: string; opts: Record<string, string> }> => {
     const tried: string[] = []
+    const post = (url: string, headers: Record<string, string>, body: unknown) =>
+      fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) }).catch(() => null)
     const probe = async (name: string, url: string, headers: Record<string, string>, body: unknown): Promise<boolean> => {
-      const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body), signal: AbortSignal.timeout(15000) }).catch(() => null)
+      const r = await post(url, headers, body)
       if (r?.ok) return true
       tried.push(`${name} ${r ? r.status : 'network'}`)
       mark(`brain: ${name} probe failed (${r ? r.status : 'network'}) — trying next provider`)
@@ -377,8 +380,20 @@ async function main() {
     }
     const anthropicBody = (model: string) => ({ model, max_tokens: 1, messages: [{ role: 'user', content: 'ok' }] })
     const g = optionalEnvKey('GOOGLE_API_KEY') || optionalEnvKey('GEMINI_API_KEY')
-    if (g && await probe('gemini', 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent', { 'x-goog-api-key': g },
-      { contents: [{ parts: [{ text: 'ok' }] }], generationConfig: { maxOutputTokens: 1 } })) return { model: 'google/gemini-2.5-flash', opts: { apiKey: g } }
+    if (g) {
+      // A retired model answers 404 (named in brainError so /status shows it); 401/402/429 go to the next provider.
+      const picked = await pickGeminiModel(async (m) => {
+        const r = await post(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`, { 'x-goog-api-key': g },
+          { contents: [{ parts: [{ text: 'ok' }] }], generationConfig: { maxOutputTokens: 1 } })
+        return r ? r.status : null
+      })
+      if (picked.model) {
+        if (picked.tried.length) mark(`brain: ${picked.tried.join(', ')} — using ${picked.model}`)
+        return { model: `google/${picked.model}`, opts: { apiKey: g } }
+      }
+      tried.push(...picked.tried)
+      mark(`brain: ${picked.tried.join(', ')} — trying next provider`)
+    }
     const a = optionalEnvKey('ANTHROPIC_API_KEY')
     if (a && await probe('anthropic', 'https://api.anthropic.com/v1/messages', { 'x-api-key': a, 'anthropic-version': '2023-06-01' }, anthropicBody('claude-haiku-5-5')))
       return { model: 'anthropic/claude-haiku-5-5', opts: { apiKey: a } }

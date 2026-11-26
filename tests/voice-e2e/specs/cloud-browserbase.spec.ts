@@ -5,6 +5,7 @@ import { installActionVisualizer } from '../lib/action-visualizer'
 import { saveCapture } from '../lib/audio-capture'
 import { enterFreshRoom, drainSpeechEvents, waitForSpeechEvent, logResult } from '../lib/steps'
 import { envKey } from '../lib/env'
+import { DEFAULT_GEMINI_MODEL } from '../lib/brain-model'
 import { actWithCache } from '../lib/step-cache'
 import { readFileSync } from 'fs'
 
@@ -67,7 +68,7 @@ test('CLOUD BROWSER: Browserbase-hosted Chrome runs the voice conversation', asy
   const stagehand = new Stagehand({
     env: 'LOCAL',
     localBrowserLaunchOptions: { cdpUrl: session.connectUrl },
-    model: 'google/gemini-2.5-flash',
+    model: `google/${DEFAULT_GEMINI_MODEL}`,
     modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') },
     verbose: 0,
   })

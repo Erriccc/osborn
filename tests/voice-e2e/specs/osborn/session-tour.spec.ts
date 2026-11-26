@@ -7,6 +7,7 @@ import { enterFreshRoom, ensureSessionLive } from '../../lib/steps'
 import { attachDevtools } from '../../lib/devtools'
 import { flight } from '../../lib/flightlog'
 import { envKey } from '../../lib/env'
+import { DEFAULT_GEMINI_MODEL } from '../../lib/brain-model'
 import { actWithCache } from '../../lib/step-cache'
 import { startLiveStream } from '../../lib/live-stream'
 import { writeFileSync } from 'fs'
@@ -59,7 +60,7 @@ test('SESSION TOUR: skills explorer then meeting join, one continuous room sessi
   process.env.GOOGLE_GENERATIVE_AI_API_KEY = envKey('GOOGLE_API_KEY')
   const stagehand = new Stagehand({
     env: 'LOCAL', localBrowserLaunchOptions: { cdpUrl: version.webSocketDebuggerUrl },
-    model: 'google/gemini-2.5-flash', modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
+    model: `google/${DEFAULT_GEMINI_MODEL}`, modelClientOptions: { apiKey: envKey('GOOGLE_API_KEY') }, verbose: 0,
   })
   await stagehand.init()
   const brain = (i: string) => actWithCache(stagehand, page, i)
