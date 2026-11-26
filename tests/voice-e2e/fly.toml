@@ -2,7 +2,7 @@
 # API) boots it, it runs OSBORN_TEST_SPEC, stores artifacts on the volume at
 # /data/runs/<timestamp>/, then exits and the machine stops — billing only
 # while a test is actually running.
-app = "osborn-voice-e2e-n"
+app = "osborn-voice-e2e-k"
 primary_region = "ord"
 
 [env]

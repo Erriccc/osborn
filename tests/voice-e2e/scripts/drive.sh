@@ -15,7 +15,7 @@
 #   drive.sh tab  '{"op":"open","url":"https://x.com","viewport":"mobile"}'
 #   drive.sh status | drive.sh eval "document.title" | drive.sh journey '{"op":"start","name":"x"}'
 #
-# Config (env): BSR_ENGINE (default https://osborn-voice-e2e-n.fly.dev/control — the
+# Config (env): BSR_ENGINE (default https://osborn-voice-e2e-k.fly.dev/control — the
 #   control API on the public port; https://<engine>:8781 works too), BSR_TOKEN (or
 #   ~/osborn-backups/voice-e2e-engine-token.txt), BSR_DRIVER, BSR_PROFILE, BSR_IP (pin
 #   the engine's IP with --resolve, only when DNS is unreliable), BSR_OUT (default /tmp/bsr).
@@ -25,7 +25,7 @@ TOKEN="${BSR_TOKEN:-$(cat ~/osborn-backups/voice-e2e-engine-token.txt 2>/dev/nul
 # Parse the engine URL once with a real parser: scheme and host lowercased, query, fragment and
 # every trailing slash dropped, IPv6 brackets understood; no scheme means http://. A URL with
 # user:pass@ or a scheme other than http(s) is refused. PIN=1 only for a DNS name that is not loopback.
-PARSED=$(python3 - "${BSR_ENGINE:-https://osborn-voice-e2e-n.fly.dev/control}" <<'PY'
+PARSED=$(python3 - "${BSR_ENGINE:-https://osborn-voice-e2e-k.fly.dev/control}" <<'PY'
 import ipaddress, sys, urllib.parse
 raw = sys.argv[1].strip()
 u = urllib.parse.urlsplit(raw if '://' in raw else 'http://' + raw)
