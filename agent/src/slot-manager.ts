@@ -15,6 +15,7 @@
  */
 
 import type { EventEmitter } from 'node:events'
+import { envWholeNumber } from './env-keys.js'
 
 // ── Slot env ────────────────────────────────────────────────────────────────
 
@@ -80,9 +81,8 @@ export const MAX_BG_SLOTS_CEILING = 8
 
 /** The slot cap: OSBORN_MAX_BG_SLOTS when it is a whole number >= 0 (at most MAX_BG_SLOTS_CEILING), else DEFAULT_MAX_BG_SLOTS. */
 export function maxBgSlots(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): number {
-  const raw = (env.OSBORN_MAX_BG_SLOTS ?? '').trim()
-  if (!/^\d+$/.test(raw)) return DEFAULT_MAX_BG_SLOTS
-  return Math.min(Number(raw), MAX_BG_SLOTS_CEILING)
+  const n = envWholeNumber(env.OSBORN_MAX_BG_SLOTS)
+  return n === undefined ? DEFAULT_MAX_BG_SLOTS : Math.min(n, MAX_BG_SLOTS_CEILING)
 }
 
 /** The cap-reached error, or null when another slot fits. Same text the agent has always sent. */

@@ -119,15 +119,19 @@ export const envFlagOn = (value: string | undefined): boolean => /^(on|1|true)$/
 /** An on-by-default feature flag: off only for off, 0, false or no (any case). */
 export const envFlagUnlessOff = (value: string | undefined): boolean => !/^(off|0|false|no)$/i.test(String(value ?? '').trim())
 
+/** A whole-number setting (digits only, surrounding spaces ignored), else undefined. */
+export function envWholeNumber(value: string | undefined): number | undefined {
+  const v = String(value ?? '').trim()
+  return /^\d+$/.test(v) ? Number(v) : undefined
+}
+
 /** Largest accepted AEC warm-up override in ms; anything above is treated as invalid. */
 const AEC_WARMUP_MAX_MS = 60_000
 
 /** OSBORN_AEC_WARMUP_MS: a whole number of ms in 0..AEC_WARMUP_MAX_MS, else undefined (leave the SDK default). */
 export function parseAecWarmupMs(value: string | undefined): number | undefined {
-  const v = String(value ?? '').trim()
-  if (!/^\d+$/.test(v)) return undefined
-  const n = Number(v)
-  return n <= AEC_WARMUP_MAX_MS ? n : undefined
+  const n = envWholeNumber(value)
+  return n !== undefined && n <= AEC_WARMUP_MAX_MS ? n : undefined
 }
 
 /** True if `key` is a user-manageable secret (allowlisted for /secrets writes). */
