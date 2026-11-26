@@ -5538,7 +5538,7 @@ async function main() {
       // SDK 1.4.6 (matching what silently ran via caret-resolved 1.4.5 throughout
       // the user's last-working month) are restored by leaving these unset.
       //
-      // aecWarmupDuration: 5000,                    // default 3000 (left at default)
+      // aecWarmupDuration: 5000,                    // default 3000 (left at default; OSBORN_AEC_WARMUP_MS overrides)
       // 0.9.64 evidence (0.9.63 osbornojure logs): the ONE stall in a long
       // session fired AFTER session.say DONE during a ~73s silent gap before
       // the next agent response — the forwarder's 10s idle timer fired during
@@ -6285,7 +6285,10 @@ async function main() {
       sess.on('user_state_changed' as any, (ev: any) => {
         const prev = userState
         userState = ev.newState
-        console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})`)
+        // On a user onset over the agent's speech, log how far into its speech that landed and whether the AEC warm-up still applied
+        // (the VAD path never emits overlapping_speech, so this is the barge-in timing line on a default machine).
+        const overAgent = ev.newState === 'speaking' && agentState === 'speaking' && speakingSince > 0
+        console.log(`👤 User state: ${prev} → ${ev.newState} (agent: ${agentState})` + (overAgent ? ` [agentSpeakingForMs ${Date.now() - speakingSince}, aecWarmupRemaining ${(sess as any)._aecWarmupRemaining}]` : ''))
 
         // Native duck: drop agent TTS to DUCK_LEVEL while the user talks over it;
         // restore 250ms after they go quiet (cancelled if they speak again).
