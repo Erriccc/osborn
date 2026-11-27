@@ -26,12 +26,23 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
-      # To start the PR checks on the agent's branch (last step).
-      actions: write
+    outputs:
+      before_sha: ${{ steps.before.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # Head of the agent's open PR before this run ("none" if there is none),
+      # so ci-dispatch starts checks only when this run pushed something new.
+      - id: before
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          sha=$(gh pr list --state open --limit 200 --json headRefName,headRefOid,isCrossRepository \
+            --jq "map(select((.isCrossRepository | not) and (.headRefName | startswith(\"auto/${ISSUE_NUMBER}-\")))) | first | .headRefOid // empty")
+          echo "sha=${sha:-none}" >> "$GITHUB_OUTPUT"
       - id: claude
         uses: anthropics/claude-code-action@v1
         with:
@@ -102,32 +113,59 @@ jobs:
               f.write(body)
           PY
           gh issue comment "$ISSUE_NUMBER" --body-file "$RUNNER_TEMP/issue-agent-result.md"
-      # The pull_request runs of a PR opened with GITHUB_TOKEN wait for an
-      # "Approve workflows to run" click; workflow_dispatch runs start without one:
-      # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow
-      # So dispatch, on the agent's own branch, every workflow that runs on
-      # pull_request and whose paths filter matches the PR's files. A PR that
-      # edits a workflow keeps the click, so its new workflow code runs only once
-      # approved.
+
+  # The pull_request runs of a PR opened with GITHUB_TOKEN wait for an
+  # "Approve workflows to run" click; workflow_dispatch runs start without one:
+  # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow
+  # So dispatch, on the agent's own branch, every workflow that runs on
+  # pull_request and whose paths filter matches the PR's files. A PR that
+  # edits a workflow keeps the click, so its new workflow code runs only once
+  # approved. This is its own job so only this token has actions: write.
+  ci-dispatch:
+    needs: agent
+    if: >-
+      always() && github.event.sender.login == 'Erriccc' && (
+        (github.event_name == 'issues' && github.event.action == 'opened' &&
+         github.event.issue.user.login == 'Erriccc') ||
+        (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+         startsWith(github.event.comment.body, '/agent')))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+      pull-requests: read
+    steps:
+      # Workflow list and paths filters come from the default branch, not the
+      # agent's working tree.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
       - name: Run PR checks on the agent's PR
-        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
+          BEFORE_SHA: ${{ needs.agent.outputs.before_sha }}
         run: |
-          pr=$(gh pr list --state open --limit 200 --json number,headRefName,isCrossRepository \
-            --jq "map(select((.isCrossRepository | not) and (.headRefName | startswith(\"auto/${ISSUE_NUMBER}-\")))) | first // empty | \"\(.number) \(.headRefName)\"")
+          pr=$(gh pr list --state open --limit 200 --json number,headRefName,headRefOid,isCrossRepository \
+            --jq "map(select((.isCrossRepository | not) and (.headRefName | startswith(\"auto/${ISSUE_NUMBER}-\")))) | first // empty | \"\(.number) \(.headRefOid) \(.headRefName)\"")
           if [ -z "$pr" ]; then
             echo "No open PR on an auto/${ISSUE_NUMBER}- branch, so no checks to start."
             exit 0
           fi
-          number=${pr%% *} branch=${pr#* }
-          files=$(gh pr diff "$number" --name-only)
+          read -r number sha branch <<< "$pr"
+          if [ "$sha" = "${BEFORE_SHA:-none}" ]; then
+            echo "PR #$number: nothing new to check."
+            exit 0
+          fi
+          files=$(gh api "repos/${{ github.repository }}/pulls/$number/files" --paginate --jq '.[].filename')
           if grep -q '^\.github/workflows/' <<< "$files"; then
             echo "PR #$number edits a workflow: approve its held runs on the PR."
             exit 0
           fi
+          # paths-ignore and "!" negation patterns are not handled, so checks only ever err toward running.
           # GitHub's "**/" also matches no folder and a case "*" crosses "/", so
           # "**/" is read as "*": this can only run a check more often, never less.
           matches() {
