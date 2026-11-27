@@ -3206,7 +3206,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                   if (hookMs > 1000) console.log(`[hook-timing] recall=${recallMs}ms embed=${recallTiming.embedMs ?? '-'}ms sql=${recallTiming.sqlMs ?? '-'}ms nudge=${nudgeMs}ms loop=${loopDelay ? Math.round(loopDelay.max / 1e6) : '-'}ms timedOut=${recallTimedOut}`)
                   loopDelay?.disable() // read only here; left on it wakes the loop every 20 ms for the process lifetime
                 }
-                console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [counters reset; speak-cadence ${SPEAK_CADENCE_N}]`)
+                console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''}${longWork ? ' + long-local-write' : ''} for prompt="${promptPreview}..." [counters reset; speak-cadence ${SPEAK_CADENCE_N}]`)
                 return {
                   hookSpecificOutput: {
                     hookEventName: 'UserPromptSubmit',
