@@ -5402,19 +5402,16 @@ async function main() {
                 spokenText = heardSlice(data.text, elapsedSec * CHARS_PER_SEC)
                 method = 'wall-clock'
               } else {
-                // Fallback: interrupt fired before first frame — pass full block
-                spokenText = heardSlice(data.text, 0)  // nothing played yet: the opening word at most (#675)
-                method = 'full-block-fallback'
+                // Fallback: interrupt fired before first frame — nothing played yet: the opening word at most (#675)
+                spokenText = heardSlice(data.text, 0)
+                method = 'before-first-frame'
               }
-              const syncLost = sdkTranscript ? null
-                : !audioOutput?.lastPlaybackEvent ? 'no lastPlaybackEvent on the audio output'
-                : 'lastPlaybackEvent had no synchronizedTranscript (TTS gave no aligned transcript)'
 
               console.log('🔇 Interruption estimate:', JSON.stringify({
                 method,
                 sdkPlaybackSec,
                 isSynced: !!sdkTranscript,
-                ...(syncLost ? { syncLost } : {}),
+                syncLost: sdkTranscript ? undefined : audioOutput?.lastPlaybackEvent ? 'lastPlaybackEvent had no synchronizedTranscript (TTS gave no aligned transcript)' : 'no lastPlaybackEvent on the audio output',
                 spokenChars: spokenText.length,
                 fullChars: data.text.length,
                 heard: spokenText.slice(0, 80) + (spokenText.length > 80 ? '...' : '')
