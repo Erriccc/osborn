@@ -9,10 +9,6 @@ on:
   issue_comment:
     types: [created]
 
-concurrency:
-  group: issue-agent-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   agent:
     if: >-
@@ -22,6 +18,9 @@ jobs:
         (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
          startsWith(github.event.comment.body, '/agent')))
     runs-on: ubuntu-latest
+    concurrency:
+      group: issue-agent-${{ github.event.issue.number }}
+      cancel-in-progress: false
     timeout-minutes: 60
     permissions:
       contents: write
