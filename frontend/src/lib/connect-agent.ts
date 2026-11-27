@@ -20,14 +20,18 @@ export type ConnectAgentResult =
  *  (findUserSandbox threw), which is never "no sandbox". */
 export const lookupSandbox = (userId: string, id?: string) => findUserSandbox(userId, id).catch(() => undefined)
 
-export async function connectUserAgent(
+/**
+ * The wake half of connectUserAgent, shared by every channel (browser, phone
+ * call, WhatsApp message): find the machine, start it when it is not running,
+ * restart the service when it does not answer /health. Resolves to the agent URL.
+ */
+export async function wakeUserAgent(
   userId: string,
   sandboxId: string | undefined,
   getSyncToken: () => Promise<string | undefined>,
-  roomName?: string,
   /** Called once when the agent is not already up (machine asleep or service unhealthy). */
   onWaking?: () => void,
-): Promise<ConnectAgentResult> {
+): Promise<{ ok: true; agentUrl: string } | { ok: false; reason: 'no-sandbox' | 'wake-failed' | 'unreachable' }> {
   const sb = await lookupSandbox(userId, sandboxId)
   if (sb === undefined) return { ok: false, reason: 'unreachable' }
   if (!sb?.previewUrl) return { ok: false, reason: 'no-sandbox' }
@@ -52,6 +56,20 @@ export async function connectUserAgent(
     await restartService(sb.id)
     await waitForHealth(agentUrl, 15)
   }
+  return { ok: true, agentUrl }
+}
+
+export async function connectUserAgent(
+  userId: string,
+  sandboxId: string | undefined,
+  getSyncToken: () => Promise<string | undefined>,
+  roomName?: string,
+  /** Called once when the agent is not already up (machine asleep or service unhealthy). */
+  onWaking?: () => void,
+): Promise<ConnectAgentResult> {
+  const woke = await wakeUserAgent(userId, sandboxId, getSyncToken, onWaking)
+  if (!woke.ok) return woke
+  const { agentUrl } = woke
 
   const headers: Record<string, string> = {}
   let body: string | undefined
