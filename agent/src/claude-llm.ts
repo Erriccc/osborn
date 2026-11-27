@@ -36,6 +36,7 @@ import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFront
 import { isOwnApiCurl } from './canvas-key.js'
 import { currentIdOnPush } from './stale-turn.js'
 import { markPush, markHookDone } from './turn-timing.js'
+import { envWholeNumber } from './env-keys.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., compact-learnings instruction).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -60,9 +61,9 @@ const RECALL_ENABLED = () => process.env.OSBORN_RECALL_INJECT !== '0'
 // Query-side embed budget. Vector/hybrid is the PREFERRED recall path; keyword is only
 // the fallback. This tight timeout means a slow network degrades to keyword FAST rather
 // than stalling the turn — the read path never waits the full write-path (20s) budget.
-const QUERY_EMBED_TIMEOUT_MS = Number(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS || 1200)
+const QUERY_EMBED_TIMEOUT_MS = envWholeNumber(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS) ?? 1200
 /** Catastrophic-hang backstop for the whole recall step; above the embed budget so a slow embed degrades to keyword first. */
-const RECALL_BACKSTOP_MS = Number(process.env.OSBORN_RECALL_BACKSTOP_MS || 2000)
+const RECALL_BACKSTOP_MS = QUERY_EMBED_TIMEOUT_MS + 800
 
 /** embedMs: the query embed fetch inside recall() (unset when none ran); sqlMs: store open + recall() without that fetch. */
 type RecallTiming = { embedMs?: number; sqlMs?: number }
@@ -3156,13 +3157,9 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const fromSubagent = Boolean((input as any)?.agent_id)
                 const sid = (input as any)?.session_id || this.#sessionId
 
-                // Consolidated WRITE trigger: on every real user submission (main thread only),
-                // sweep main + ALL sub-agent JSONLs into session.db. Naturally debounced to the
-                // user's speech cadence (one submission = one sweep); guarded + fire-and-forget
-                // on the long-lived ClaudeLLM so injection below never waits on it. This is the
-                // single canonical write path — mirrors the flat index's sub-agent sweep, but
-                // stores FULL untruncated text + FTS5 + sqlite-vec instead of truncated summaries.
-                // Started after recall below, so its synchronous parse/compress never runs ahead of the recall reads.
+                // Consolidated WRITE trigger (main thread only): one sweep per user submission of main + ALL
+                // sub-agent JSONLs into session.db, guarded and fire-and-forget. Called after recall below so
+                // its synchronous parse/compress never runs ahead of the recall reads.
                 const sweepStore = () => { if (!fromSubagent && sid && this.#opts.workingDirectory) this.#llmRef.triggerStoreUpdate(sid, this.#opts.workingDirectory) }
                 // Follow-through ledger (#378): raw prompt + the user's own asks; recap once. The returned text is the recap plus any points checklist.
                 const loopRecap = fromSubagent ? '' : this.#llmRef.noteUserTurn(String(input?.prompt || ''), sid)
@@ -3170,9 +3167,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // Recall is best-effort and must never approach the SDK's 30s hook budget.
                 // buildRecallInjection is already self-bounding — the query embed has a tight
                 // timeout (falls back to keyword INSIDE recall) and the SQL is local/ms. This
-                // outer race is only a catastrophic-hang backstop (e.g. a momentarily locked
-                // store), set well above the embed budget so a slow embed degrades to keyword
-                // rather than being cut to nothing.
+                // outer race is a hang backstop at the embed budget + 800 ms: a slow embed degrades
+                // to keyword, and a store slower than that margin gets no recall this turn.
                 const hookT0 = Date.now()
                 // Longest event-loop stall during this hook (about 20 ms when idle): tells a blocked loop from slow I/O. Only with turn timing on.
                 const loopDelay = !fromSubagent && this.#opts.turnTiming ? (hookLoopDelay ??= monitorEventLoopDelay({ resolution: 20 })) : null
