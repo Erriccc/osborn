@@ -1,10 +1,11 @@
 # Issue flow
 
-The issue is the ledger. State is a label; a claim is the label plus a comment, branch or PR.
+The issue is the ledger. State is a label; a claim is the label plus a comment, branch or PR (the GitHub Actions issue agent is the exception: see "Claim (issue agent)").
 
 - States: `q:open` (the issue template sets it), `q:claimed`, `q:done` (PR merged, not yet verified), `q:delivered` (verified on the deployed build, issue closed).
 - Source: every filer adds one of `src:muse`, `src:loop`, `src:osborn`, `src:founder` (the author field is always the founder's login, so it cannot tell sources apart). The issue template asks for it; Osborn's own filers (`frontend/src/lib/github-issue-mirror.ts`) do not add it yet.
 - Claim: for the autopilot network, the `q:claimed` label plus an `auto/<n>-*` branch or an open PR naming the issue (it runs as Claude Code cloud sessions, which post no GitHub text (CLAUDE.md), so there is no claim comment; the sweep does not list it as expired while the branch or PR exists). Agents that post as the owner (local agents, and the hourly loop and Muse, a separate worker that posts through an owner-identity gateway, not a Claude Code session) use a claim comment `claim: <agent> <session> <expiry-iso>` (exactly three tokens after `claim:`, the shape `scripts/issue-sweep.ts` parses), refreshed every 4 hours; the sweep reads the latest one.
+- Claim (issue agent): the GitHub Actions issue agent (`.github/issue-agent-prompt.md`, which owns its stop rule) claims with its `auto/<n>-*` branch or open PR only: no `q:claimed` label, no claim comment. The sweep's Unclaimed and Claimable lists check open PRs only, so a branch with no PR does not keep an issue out of them.
 - Claim order: the main agent and local specialists claim first. The hourly loop and Muse claim only items `q:open` for over 24 hours, or `q:claimed` with an expired claim. The network hub claims immediately unless a live claim, branch or open PR exists.
 - Parked and founder-decision issues are the JSON lists in `docs/issue-sweep-config.json` (`parked`, `founderDecision`); labels for them do not exist yet. They are left out of the sweep's action lists, as are issues labelled `follow-through` (notes, not work orders) in Unclaimed, Claimable and Stale.
 
