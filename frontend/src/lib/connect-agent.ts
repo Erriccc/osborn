@@ -33,6 +33,8 @@ export async function wakeUserAgent(
   getSyncToken: () => Promise<string | undefined>,
   /** Called once when the agent is not already up (machine asleep or service unhealthy). */
   onWaking?: () => void,
+  /** false: start a stopped machine but never restart a running one (a text must not cut a live session). */
+  restartIfUnhealthy = true,
 ): Promise<{ ok: true; agentUrl: string } | { ok: false; reason: WakeFailure }> {
   const sb = await lookupSandbox(userId, sandboxId)
   if (sb === undefined) return { ok: false, reason: 'unreachable' }
@@ -52,7 +54,7 @@ export async function wakeUserAgent(
   // Ensure osborn is actually answering before we ask it to join (a just-woken
   // or frozen agent won't). Restart the service only if it's unhealthy.
   const agentUrl = sb.previewUrl
-  if (!(await checkOsbornHealth(agentUrl))) {
+  if (restartIfUnhealthy && !(await checkOsbornHealth(agentUrl))) {
     wake()
     console.log(`[connect-agent] osborn health check failed, restarting service...`)
     await restartService(sb.id)
