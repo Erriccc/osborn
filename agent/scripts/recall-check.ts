@@ -1,5 +1,6 @@
-// Recall regression check (#681). Run: npx tsx scripts/recall-check.ts [--update-baseline] [--hybrid]
-// Builds a store from the synthetic fixture in recall-golden/, asks the golden questions in each mode,
+// Recall regression check (#681). Run: npx tsx scripts/recall-check.ts [--update-baseline]
+// Builds a store from the synthetic fixture in recall-golden/, asks the golden questions in keyword mode,
+// and in hybrid and vector mode when an embedder is available (an embedding key set, OSBORN_EMBED not 0),
 // prints hit@5 and latency, and exits 1 when hit@5 falls past the tolerance from recall-golden/baseline.json
 // or a row outside the active project shows up while cross-project recall is off.
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
@@ -43,8 +44,6 @@ for (const msg of CORPUS) {
     : { ...base, type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: msg.text }] } }))
   lineOf.set(msg.key, `${msg.source === 'main' ? 'main' : `agent-${agentId.slice(0, 8)}`}#${lines.length}`)
 }
-files.main.push(JSON.stringify({ type: 'user', uuid: 'tur', timestamp: '2026-11-20T11:00:00.000Z', sessionId: sid, cwd: A,
-  toolUseResult: { agentId, status: 'completed' }, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't1', content: 'done' }] } }))
 writeFileSync(join(dir, `${sid}.jsonl`), files.main.join('\n') + '\n')
 writeFileSync(join(dir, sid, 'subagents', `agent-${agentId}.jsonl`), files.agent.join('\n') + '\n')
 await updateSessionStore(sid, A)
@@ -80,15 +79,13 @@ async function run(mode: Mode, embed?: any): Promise<Result> {
 }
 
 const results: Record<string, Result> = { keyword: await run('keyword') }
-if (args.has('--hybrid') || process.env.OPENROUTER_API_KEY) {
-  const { getEmbedder } = await import('../src/embedder.js')
-  const embed = await getEmbedder()
-  if (embed) {
-    await updateSessionStore(sid, A, { embed })
-    results.hybrid = await run('hybrid', embed)
-    results.vector = await run('vector', embed)
-  } else console.log('hybrid/vector skipped: no embedder available')
-}
+const { getEmbedder } = await import('../src/embedder.js')
+const embed = await getEmbedder()
+if (embed) {
+  await updateSessionStore(sid, A, { embed })
+  results.hybrid = await run('hybrid', embed)
+  results.vector = await run('vector', embed)
+} else console.log('hybrid/vector skipped: no embedder available')
 
 const baselinePath = join(GOLDEN, 'baseline.json')
 const baseline = existsSync(baselinePath) ? JSON.parse(readFileSync(baselinePath, 'utf8')) : {}
