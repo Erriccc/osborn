@@ -181,6 +181,13 @@ await t('an ask the repo held (security-sounding) is not re-sent to that repo', 
   assert.equal(sent[1].repo, 'o/private')
 })
 
+await t('a git checkout without a github origin never uses the default repo', async () => {
+  const gitCwd = join(home, 'gl'); mkdirSync(join(gitCwd, '.git'), { recursive: true })
+  L.appendLoopRecord('s-gl', gitCwd, { kind: 'ask', id: L.loopIds.ask('remind me gl'), text: 'remind me gl', source: 'explicit', origin: 'user_mic', fg: true })
+  const r = await flushSession('s-gl', gitCwd, deps({ repoFor: () => undefined, defaultRepo: 'o/default' }))
+  assert.equal(r.status, 'no-repo')
+})
+
 await t('a refused post reports why', async () => {
   seed('s-why')
   const fetchFn = (async () => new Response(JSON.stringify({ error: 'not allowed' }), { status: 403 })) as unknown as typeof fetch

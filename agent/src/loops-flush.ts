@@ -7,7 +7,8 @@
  * frontend confirms (created, or already on GitHub). Any failure writes
  * nothing, so the items stay open for the next flush or the next-start drain.
  */
-import { dirname } from 'node:path'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { acquireLock, releaseLock } from './content/lens-paths.js'
 import { postFollowThrough, type FollowThroughItem } from './follow-through-client.js'
 import {
@@ -41,7 +42,9 @@ export async function flushSession(sessionId: string, cwd: string, deps: FlushDe
     // The cwd's own origin wins; a multi-project folder with none falls back to the configured default
     // (validated by the route, whose refusal the worker logs).
     const origin = (deps.repoFor ?? repoFromCwd)(cwd)
-    const repo = origin ?? deps.defaultRepo ?? (process.env.OSBORN_FOLLOW_THROUGH_DEFAULT_REPO?.trim() || undefined)
+    // Only a folder that is not a git checkout at all: a repo with a non-GitHub origin never files elsewhere.
+    const fallback = existsSync(join(cwd, '.git')) ? undefined : deps.defaultRepo ?? (process.env.OSBORN_FOLLOW_THROUGH_DEFAULT_REPO?.trim() || undefined)
+    const repo = origin ?? fallback
     const via = origin ? 'origin' as const : 'default' as const
     if (!repo) return { status: 'no-repo', filed: 0 }
     // Once this repo has held an item back it is known public: inferred items, and any ask it held
