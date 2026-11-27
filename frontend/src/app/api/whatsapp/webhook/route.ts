@@ -40,7 +40,7 @@ export async function POST(request: Request) {
   let parsed: unknown
   try { parsed = JSON.parse(body) } catch { return NextResponse.json({ error: 'invalid payload' }, { status: 400 }) }
   // Meta retries anything but a fast 200, so wake in the background.
-  const senders = [...new Set(textMessages(parsed).map((m) => m.from))]
+  const senders = Array.from(new Set(textMessages(parsed).map((m) => m.from)))
   for (const from of senders) {
     void wakeFor(from).catch((e) => console.error(`[whatsapp] wake failed: ${(e as Error).message}`))
   }
