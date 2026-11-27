@@ -60,7 +60,9 @@ const RECALL_ENABLED = () => process.env.OSBORN_RECALL_INJECT !== '0'
 // Query-side embed budget. Vector/hybrid is the PREFERRED recall path; keyword is only
 // the fallback. This tight timeout means a slow network degrades to keyword FAST rather
 // than stalling the turn — the read path never waits the full write-path (20s) budget.
-const QUERY_EMBED_TIMEOUT_MS = Number(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS || 2500)
+const QUERY_EMBED_TIMEOUT_MS = Number(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS || 1200)
+/** Catastrophic-hang backstop for the whole recall step; above the embed budget so a slow embed degrades to keyword first. */
+const RECALL_BACKSTOP_MS = Number(process.env.OSBORN_RECALL_BACKSTOP_MS || 2000)
 
 /** embedMs: the query embed fetch inside recall() (unset when none ran); sqlMs: store open + recall() without that fetch. */
 type RecallTiming = { embedMs?: number; sqlMs?: number }
@@ -3160,9 +3162,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // on the long-lived ClaudeLLM so injection below never waits on it. This is the
                 // single canonical write path — mirrors the flat index's sub-agent sweep, but
                 // stores FULL untruncated text + FTS5 + sqlite-vec instead of truncated summaries.
-                if (!fromSubagent && sid && this.#opts.workingDirectory) {
-                  this.#llmRef.triggerStoreUpdate(sid, this.#opts.workingDirectory)
-                }
+                // Started after recall below, so its synchronous parse/compress never runs ahead of the recall reads.
+                const sweepStore = () => { if (!fromSubagent && sid && this.#opts.workingDirectory) this.#llmRef.triggerStoreUpdate(sid, this.#opts.workingDirectory) }
                 // Follow-through ledger (#378): raw prompt + the user's own asks; recap once. The returned text is the recap plus any points checklist.
                 const loopRecap = fromSubagent ? '' : this.#llmRef.noteUserTurn(String(input?.prompt || ''), sid)
 
@@ -3182,9 +3183,10 @@ class ClaudeLLMStream extends llm.LLMStream {
                   ? ''
                   : await Promise.race([
                       buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || ''), this.#opts.turnTiming ? recallTiming : undefined),
-                      new Promise<string>((res) => setTimeout(() => { backstopFired = true; res('') }, 6000)),
+                      new Promise<string>((res) => setTimeout(() => { backstopFired = true; res('') }, RECALL_BACKSTOP_MS)),
                     ])
                 const recallMs = Date.now() - hookT0
+                sweepStore()
                 const recallTimedOut = backstopFired // read now: the timer still fires after recall wins, during the nudge's wait
                 // Lightweight machine-load nudge (main agent only). Cheap synchronous
                 // snapshot, prepended so it's present even when recall degrades under load.
@@ -3202,7 +3204,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 if (!fromSubagent && this.#opts.turnTiming) {
                   const hookMs = Date.now() - hookT0
                   markHookDone(hookMs, { recallMs, nudgeMs, recallTimedOut })
-                  if (hookMs > 1500) console.log(`[hook-timing] recall=${recallMs}ms embed=${recallTiming.embedMs ?? '-'}ms sql=${recallTiming.sqlMs ?? '-'}ms nudge=${nudgeMs}ms loop=${loopDelay ? Math.round(loopDelay.max / 1e6) : '-'}ms timedOut=${recallTimedOut}`)
+                  if (hookMs > 1000) console.log(`[hook-timing] recall=${recallMs}ms embed=${recallTiming.embedMs ?? '-'}ms sql=${recallTiming.sqlMs ?? '-'}ms nudge=${nudgeMs}ms loop=${loopDelay ? Math.round(loopDelay.max / 1e6) : '-'}ms timedOut=${recallTimedOut}`)
                   loopDelay?.disable() // read only here; left on it wakes the loop every 20 ms for the process lifetime
                 }
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''} for prompt="${promptPreview}..." [counters reset; speak-cadence ${SPEAK_CADENCE_N}]`)

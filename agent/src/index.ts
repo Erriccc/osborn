@@ -5559,7 +5559,9 @@ async function main() {
       turnHandling: {
         endpointing: {
           mode: 'fixed' as any,
-          minDelay: 500,    // Wait 500ms after STT commits before generating reply
+          // Wait after STT commits before generating a reply. This is the whole flat `finalToChat` wait (#674) and the
+          // mid-thought guard: lowering it cuts people off sooner. OSBORN_ENDPOINT_MIN_DELAY_MS tunes it (0-2000).
+          minDelay: (() => { const v = Number(process.env.OSBORN_ENDPOINT_MIN_DELAY_MS); return Number.isInteger(v) && v >= 0 && v <= 2000 && process.env.OSBORN_ENDPOINT_MIN_DELAY_MS ? v : 500 })(),
           maxDelay: 2000,   // Force end-of-turn after 2s to prevent hangs
         },
         // Tightened gates: only commit to the pause path when the STT layer is

@@ -175,7 +175,7 @@
  * ═══════════════════════════════════════════════════════════════════════════════
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, watch } from 'fs'
+import { closeSync, existsSync, openSync, readFileSync, readSync, readdirSync, statSync, watch } from 'fs'
 import { homedir } from 'os'
 import { join, basename } from 'path'
 
@@ -354,6 +354,9 @@ export interface SubAgentInfo {
  * Sub-agent files live at: ~/.claude/projects/{slug}/agent-{id}.jsonl
  * (NOT inside the session subdirectory — that's only for the Osborn agent SDK path)
  */
+/** Per main-JSONL scan state: bytes already parsed and the agents found, so a turn only reads what was appended. */
+const subAgentScan = new Map<string, { offset: number; agents: SubAgentInfo[]; seen: Set<string> }>()
+
 export function getSessionSubAgents(sessionId: string, projectDir: string, opts?: SessionAccessOptions): SubAgentInfo[] {
   const claudeDir = resolveClaudeDir(opts)
   const slug = projectPathToSlug(projectDir)
@@ -362,38 +365,49 @@ export function getSessionSubAgents(sessionId: string, projectDir: string, opts?
 
   if (!existsSync(conversationPath)) return []
 
-  const agents: SubAgentInfo[] = []
-  const seenIds = new Set<string>()
-
   try {
-    const content = readFileSync(conversationPath, 'utf-8')
-    for (const line of content.split('\n')) {
-      if (!line.trim()) continue
-      try {
-        const obj = JSON.parse(line)
-        const tur = obj.toolUseResult
-        if (tur && typeof tur === 'object' && tur.agentId) {
-          const id = tur.agentId as string
-          if (seenIds.has(id)) continue
-          seenIds.add(id)
-
-          const agentFile = join(projectsDir, `agent-${id}.jsonl`)
-          agents.push({
-            agentId: id,
-            description: (tur.prompt || '').substring(0, 200),
-            status: tur.status || '',
-            agentFile,
-            agentFileExists: existsSync(agentFile),
-            totalTokens: tur.totalTokens || 0,
-            totalToolUseCount: tur.totalToolUseCount || 0,
-            durationMs: tur.totalDurationMs || 0,
-          })
-        }
-      } catch {}
+    const size = statSync(conversationPath).size
+    let st = subAgentScan.get(conversationPath)
+    if (!st || size < st.offset) {
+      st = { offset: 0, agents: [], seen: new Set() }
+      subAgentScan.set(conversationPath, st)
     }
-  } catch {}
-
-  return agents
+    if (size > st.offset) {
+      const buf = Buffer.alloc(size - st.offset)
+      const fd = openSync(conversationPath, 'r')
+      try { readSync(fd, buf, 0, buf.length, st.offset) } finally { closeSync(fd) }
+      // Only whole lines: a record still being written is picked up next call.
+      const lastNl = buf.lastIndexOf(10)
+      if (lastNl >= 0) {
+        for (const line of buf.subarray(0, lastNl + 1).toString('utf-8').split('\n')) {
+          if (!line.includes('"agentId"')) continue // cheap prefilter: most lines are not sub-agent results
+          try {
+            const tur = JSON.parse(line).toolUseResult
+            if (tur && typeof tur === 'object' && tur.agentId) {
+              const id = tur.agentId as string
+              if (st.seen.has(id)) continue
+              st.seen.add(id)
+              st.agents.push({
+                agentId: id,
+                description: (tur.prompt || '').substring(0, 200),
+                status: tur.status || '',
+                agentFile: join(projectsDir, `agent-${id}.jsonl`),
+                agentFileExists: false,
+                totalTokens: tur.totalTokens || 0,
+                totalToolUseCount: tur.totalToolUseCount || 0,
+                durationMs: tur.totalDurationMs || 0,
+              })
+            }
+          } catch {}
+        }
+        st.offset += lastNl + 1
+      }
+    }
+    // The agent file can appear after its result line, so existence is checked on every call.
+    return st.agents.map(a => ({ ...a, agentFileExists: existsSync(a.agentFile) }))
+  } catch {
+    return []
+  }
 }
 
 /**
