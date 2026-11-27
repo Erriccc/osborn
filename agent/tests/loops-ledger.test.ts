@@ -195,7 +195,7 @@ t('queued: appendQueuedLoop writes into the target project ledger (not the hub),
     const body = JSON.parse(init.body); posts.push(body)
     return { status: 200, json: async () => ({ results: body.items.map((i: any) => ({ key: i.key, action: 'created', url: 'https://github.com/me/audos/issues/1' })) }) }
   }) as any
-  const flushed = await flushSession('aud-1', '/work/audos', { fetchFn, syncToken: 'x', frontendUrl: 'http://127.0.0.1:9', repoFor: (c) => (c === '/work/audos' ? 'me/audos' : 'me/hub') })
+  const flushed = await flushSession('aud-1', '/work/audos', { publicSince: () => '2000-01-01T00:00:00.000Z', fetchFn, syncToken: 'x', frontendUrl: 'http://127.0.0.1:9', repoFor: (c) => (c === '/work/audos' ? 'me/audos' : 'me/hub') })
   t('spoken path: flush files it to the target project repo as inferred, once', () => {
     assert.equal(flushed.status, 'done'); assert.equal(flushed.filed, 1)
     assert.equal(posts.length, 1); assert.equal(posts[0].repo, 'me/audos')

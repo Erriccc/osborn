@@ -11,6 +11,7 @@
  * Self-contained: never throws, always exits.
  */
 import { flushSession } from '../loops-flush.js'
+import { readPublicSince } from '../config.js'
 import { fileableLoops, listLedgers, readLoopRecordsAt } from '../loops-ledger.js'
 import { readLastSession } from './lens-paths.js'
 import { isFollowThroughEnabled } from './lens-launch.js'
@@ -26,7 +27,7 @@ async function main(): Promise<number> {
   const targets: Array<{ id: string; cwd: string }> = []
   if (process.argv.includes('--drain')) {
     for (const l of listLedgers()) {
-      if (l.cwd && fileableLoops(readLoopRecordsAt(l.path)).length) targets.push({ id: l.sessionId, cwd: l.cwd })
+      if (l.cwd && readPublicSince(l.cwd) && fileableLoops(readLoopRecordsAt(l.path)).length) targets.push({ id: l.sessionId, cwd: l.cwd })
     }
   } else if (process.argv.includes('--last')) {
     const last = readLastSession()
