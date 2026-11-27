@@ -46,7 +46,9 @@ for (const msg of CORPUS) {
 }
 writeFileSync(join(dir, `${sid}.jsonl`), files.main.join('\n') + '\n')
 writeFileSync(join(dir, sid, 'subagents', `agent-${agentId}.jsonl`), files.agent.join('\n') + '\n')
-await updateSessionStore(sid, A)
+const { getEmbedder } = await import('../src/embedder.js')
+const embed = await getEmbedder()
+await updateSessionStore(sid, A, { embed: embed ?? undefined })
 
 const keyOfHit = (h: { source: string; lineNum: number }) => `${h.source}#${h.lineNum}`
 const expected = (k: string) => lineOf.get(k)!
@@ -64,7 +66,7 @@ async function run(mode: Mode, embed?: any): Promise<Result> {
       const t0 = performance.now()
       const scoped = await recall(db, q.q, { mode, topK: 5, embed, scopeCwd: A })
       ms += performance.now() - t0
-      for (const h of scoped) if (!rowInScope(h.cwd, A)) leaks.push(`${q.q} -> ${h.cwd}`)
+      for (const h of scoped) if (h.cwd === B || !rowInScope(h.cwd, A)) leaks.push(`${q.q} -> ${h.cwd}`)
       if (q.kind === 'other-project') {
         // Must miss while scoped (leaks above) and hit once cross-project recall is on.
         process.env.OSBORN_CROSS_PROJECT_RECALL = 'on'
@@ -79,10 +81,7 @@ async function run(mode: Mode, embed?: any): Promise<Result> {
 }
 
 const results: Record<string, Result> = { keyword: await run('keyword') }
-const { getEmbedder } = await import('../src/embedder.js')
-const embed = await getEmbedder()
 if (embed) {
-  await updateSessionStore(sid, A, { embed })
   results.hybrid = await run('hybrid', embed)
   results.vector = await run('vector', embed)
 } else console.log('hybrid/vector skipped: no embedder available')
