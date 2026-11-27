@@ -1,8 +1,8 @@
 name: issue-agent
 
 # Runs the issue agent on one issue when the owner opens it, or when the owner
-# adds the "agent:go" label (for anyone else's issue). Issues filed as notes
-# (label osborn:noted) do not start a run on open.
+# adds the "agent:go" label (for anyone else's issue). Issues filed from
+# Osborn voice sessions open as the owner, so they run too.
 on:
   issues:
     types: [opened, labeled]
@@ -16,8 +16,7 @@ jobs:
     if: >-
       github.event.sender.login == 'Erriccc' && (
         (github.event.action == 'labeled' && github.event.label.name == 'agent:go') ||
-        (github.event.action == 'opened' && github.event.issue.user.login == 'Erriccc' &&
-         !contains(github.event.issue.labels.*.name, 'osborn:noted')))
+        (github.event.action == 'opened' && github.event.issue.user.login == 'Erriccc'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
