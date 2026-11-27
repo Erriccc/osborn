@@ -11,8 +11,7 @@ process.env.OSBORN_EMBED = '0'
 delete process.env.OSBORN_CROSS_PROJECT_RECALL
 
 const { getSessionDir } = await import('../src/config.js')
-const { openStore, recall, updateSessionStore, getStorePath } = await import('../src/session-store.js')
-const { rowInScope } = await import('../src/recall-scope.js')
+const { openStore, recall, updateSessionStore, getStorePath, rowInScope } = await import('../src/session-store.js')
 
 const A = join(process.env.HOME, 'projA'), B = join(process.env.HOME, 'projB')
 mkdirSync(A, { recursive: true }); mkdirSync(B, { recursive: true })

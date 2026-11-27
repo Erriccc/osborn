@@ -18,9 +18,8 @@
 import { existsSync, statSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { openStore, recall, getStorePath, type RecallHit } from './session-store.js'
+import { openStore, recall, getStorePath, crossProjectRecallEnabled, rowInScope, type RecallHit } from './session-store.js'
 import { getEmbedder } from './embedder.js'
-import { crossProjectRecallEnabled, rowInScope } from './recall-scope.js'
 import { isWithin } from './lib/safe-artifact-path.js'
 
 function projectSlug(dir: string): string {
@@ -83,9 +82,10 @@ function fmtHit(h: RecallHit, maxChars: number): string {
 
 export async function main(argv: string[]): Promise<number> {
   const { opts, positional } = parseArgs(argv)
-  const cwd = (typeof opts.cwd === 'string' ? opts.cwd : '') || process.env.OSBORN_CWD || process.cwd()
   // Active project = OSBORN_CWD, which the agent sets to the session's working dir for its Claude subprocess; another project's store is opt-in (#657).
-  const scopeCwd = crossProjectRecallEnabled() ? undefined : process.env.OSBORN_CWD || process.cwd()
+  const active = process.env.OSBORN_CWD || process.cwd()
+  const cwd = (typeof opts.cwd === 'string' ? opts.cwd : '') || active
+  const scopeCwd = crossProjectRecallEnabled() ? undefined : active
   const refused = (dbPath?: string) => !!scopeCwd && (!rowInScope(cwd, scopeCwd) || (!!dbPath && !isWithin(dbPath, osbRoot(cwd))))
   const REFUSED = 'Cross-project recall is off: this store belongs to another project. Set OSBORN_CROSS_PROJECT_RECALL=on to allow it.'
   if (refused()) { console.error(REFUSED); return 1 }

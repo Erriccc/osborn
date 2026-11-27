@@ -34,7 +34,8 @@ import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } 
 import { existsSync, statSync, openSync, readSync, closeSync, mkdirSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
-import { rowInScope } from './recall-scope.js'
+import { envFlagOn } from './env-keys.js'
+import { isWithin } from './lib/safe-artifact-path.js'
 import { getSessionPaths, getSessionSubAgents, projectPathToSlug } from './session-access.js'
 
 // ============================================================
@@ -590,6 +591,14 @@ export interface RecallOpts {
   embed?: Embedder
   /** Active project dir: rows recorded outside it are dropped unless cross-project recall is on (#657). */
   scopeCwd?: string
+}
+
+/** OSBORN_CROSS_PROJECT_RECALL=on|1|true lets recall reach other projects; default off (#657). */
+export const crossProjectRecallEnabled = (): boolean => envFlagOn(process.env.OSBORN_CROSS_PROJECT_RECALL)
+
+/** True when a row recorded at `rowCwd` may be shown for `activeCwd` (that dir or inside it); a row with no cwd is this store's own. */
+export function rowInScope(rowCwd: string | null | undefined, activeCwd: string | undefined): boolean {
+  return !rowCwd || !activeCwd || crossProjectRecallEnabled() || isWithin(rowCwd, activeCwd)
 }
 
 /**
