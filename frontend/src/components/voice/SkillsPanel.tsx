@@ -5,9 +5,8 @@ import { PANEL_ANCHORED, PANEL_BOTTOM_SHEET, usePanelExclusive, useViewportClamp
 import { SkillStore } from '../AgentStore'
 import type { SkillStoreApi } from '@/lib/skill-store'
 
-// Shared skills panel — the single source of truth for the skills UI. Mounted
-// in TWO places: the first-class header SkillsPopover (primary, high-visibility)
-// and the ControlMenu Tools tab (kept for muscle memory).
+// Shared skills panel — the single source of truth for the skills UI, mounted
+// in the header SkillsPopover and the mobile menu sheet.
 interface SkillsPanelProps {
   /** The machine's skills and actions (lib/skill-store.ts), shared with Settings. */
   store: SkillStoreApi

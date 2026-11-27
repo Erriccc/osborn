@@ -50,7 +50,6 @@ import { SkillViewer, rolesData, type NamedAgent, type RolesData } from './Agent
 import { useSkillStore, type SkillTransport } from '../lib/skill-store'
 import { useUserAgents } from '../lib/user-agents'
 import { SkillsPopover } from './voice/SkillsPanel'
-import { ControlMenu } from './voice/ControlMenu'
 import { ChatPanel } from './voice/ChatPanel'
 import { CallPill } from './voice/CallPill'
 import { MeetingMuteControl, type MeetingMuteState } from './voice/MeetingMuteControl'
@@ -3017,8 +3016,8 @@ function VoiceRoomInner({
     handleLoadSessions()
   }, [sendToAgent, handleLoadSessions])
 
-  // INITIAL resume-on-connect only (the `showResumePrompt` gate + ControlMenu's
-  // Continue). This sends `resume_session`, which merely STORES the target id for
+  // INITIAL resume-on-connect only (the `showResumePrompt` gate).
+  // This sends `resume_session`, which merely STORES the target id for
   // the connect/`session_selected` flow to apply — it does NOT tear down a live
   // session, so it must never be used to switch an already-running session.
   const handleResumeSession = useCallback((sessionId: string) => {
@@ -3054,15 +3053,6 @@ function VoiceRoomInner({
   }, [sendToAgent])
   const handleCancelSwitch = useCallback(() => {
     sendToAgent(new TextEncoder().encode(JSON.stringify({ type: 'cancel_session_switch' })), { reliable: true })
-  }, [sendToAgent])
-
-  const handleContinueSession = useCallback(() => {
-    const encoder = new TextEncoder()
-    const payload = encoder.encode(JSON.stringify({
-      type: 'continue_session',
-    }))
-    sendToAgent(payload, { reliable: true })
-    dispatchResumeChip({ type: 'start', label: resumeChipLabel(null, 'continue'), now: Date.now() })
   }, [sendToAgent])
 
   // ── Rooms (§14 first cut) ────────────────────────────────────────────────
@@ -4226,24 +4216,6 @@ function VoiceRoomInner({
                 )}
               </div>
             )}
-
-            {/* Control Menu (Mode + History + Tools) — hidden on mobile */}
-            <div className="hidden sm:block"><ControlMenu
-              sessions={sessionsByActivity}
-              currentSessionId={currentSessionId}
-              onLoadSessions={handleLoadSessions}
-              onResumeSession={handleSwitchSession}
-              onContinueSession={handleContinueSession}
-              isLoadingSessions={isLoadingSessions}
-              disabled={!agentConnected}
-              skillStore={skillStore}
-              showAddSkill={showAddSkill}
-              setShowAddSkill={setShowAddSkill}
-              newSkillName={newSkillName}
-              setNewSkillName={setNewSkillName}
-              newSkillContent={newSkillContent}
-              setNewSkillContent={setNewSkillContent}
-            /></div>
 
             {/* Skill viewer — mobile bottom-sheet / desktop centered dialog.
                 Close is a real 44px icon button (the old bare "×" was a tiny,
