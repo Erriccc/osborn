@@ -6289,7 +6289,7 @@ async function main() {
       sess.on('user_state_changed' as any, (ev: any) => {
         const prev = userState
         userState = ev.newState
-        markUserState(ev.newState === 'speaking')
+        if (ev.newState !== 'away') markUserState(ev.newState === 'speaking') // away is the idle timeout, not a stop
         // On a user onset over the agent's speech, log how far into its speech that landed and whether the AEC warm-up still applied
         // (the VAD path never emits overlapping_speech, so this is the barge-in timing line on a default machine).
         const overAgent = ev.newState === 'speaking' && agentState === 'speaking' && speakingSince > 0

@@ -40,7 +40,7 @@ const DROP_PREFIXES: RegExp[] = [
   /^<system-reminder>/,
 ]
 
-// Markers of the agent's interruption templates (pipeline-direct-llm.ts). Any of
+// Markers of the agent's interruption templates (agent prompts.ts). Any of
 // these means the text is a wrapper, never the user's own words.
 const HARNESS_MARKERS = [
   'CONTEXT PRESERVATION (READ THIS):',
