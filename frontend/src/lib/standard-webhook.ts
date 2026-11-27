@@ -4,6 +4,9 @@
  */
 import { createHmac, timingSafeEqual } from 'node:crypto'
 
+/** Constant-time equality for signatures and tokens (false on a length mismatch). */
+export const sameBytes = (a: Buffer, b: Buffer) => a.length === b.length && timingSafeEqual(a, b)
+
 /**
  * Standard Webhooks signature check (what Supabase auth hooks send):
  * `webhook-signature` holds space-separated `v1,<base64 HMAC-SHA256>` entries
@@ -25,7 +28,6 @@ export function verifyStandardWebhook(
   return headers.signature.split(' ').some((entry) => {
     const [version, sig] = entry.split(',')
     if (version !== 'v1' || !sig) return false
-    const got = Buffer.from(sig)
-    return got.length === expected.length && timingSafeEqual(got, expected)
+    return sameBytes(Buffer.from(sig), expected)
   })
 }

@@ -10,11 +10,13 @@
  */
 import { findUserSandbox, startSandbox, checkOsbornHealth, restartService, waitForHealth } from '@/lib/cloud'
 
+type WakeFailure = 'no-sandbox' | 'wake-failed' | 'unreachable'
+
 export type ConnectAgentResult =
   /** `callCode`: the agent waits for the emailed code before it takes the call (#362). */
   | { ok: true; roomName: string | null; agentUrl: string; callCode?: boolean }
   /** `busy`: a user is in another room with the agent (phone calls only). */
-  | { ok: false; reason: 'no-sandbox' | 'wake-failed' | 'busy' | 'unreachable'; agentUrl?: string }
+  | { ok: false; reason: WakeFailure | 'busy'; agentUrl?: string }
 
 /** The user's sandbox; null is a confirmed 404, undefined a lookup that failed
  *  (findUserSandbox threw), which is never "no sandbox". */
@@ -31,7 +33,7 @@ export async function wakeUserAgent(
   getSyncToken: () => Promise<string | undefined>,
   /** Called once when the agent is not already up (machine asleep or service unhealthy). */
   onWaking?: () => void,
-): Promise<{ ok: true; agentUrl: string } | { ok: false; reason: 'no-sandbox' | 'wake-failed' | 'unreachable' }> {
+): Promise<{ ok: true; agentUrl: string } | { ok: false; reason: WakeFailure }> {
   const sb = await lookupSandbox(userId, sandboxId)
   if (sb === undefined) return { ok: false, reason: 'unreachable' }
   if (!sb?.previewUrl) return { ok: false, reason: 'no-sandbox' }

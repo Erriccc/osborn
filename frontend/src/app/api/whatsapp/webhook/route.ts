@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { machineForPhone, serviceClient } from '@/lib/sandbox-claims'
 import { wakeUserAgent } from '@/lib/connect-agent'
 import { touchLastSeen } from '@/lib/last-seen'
+import { toUsE164 } from '@/lib/phone'
 import { textMessages, verifyChallenge, verifyMetaSignature } from '@/lib/whatsapp-inbound'
 
 /**
@@ -21,10 +22,10 @@ export async function GET(request: Request) {
   return challenge === null ? new NextResponse('forbidden', { status: 403 }) : new NextResponse(challenge)
 }
 
-async function wakeFor(from: string): Promise<void> {
+async function wakeFor(e164: string): Promise<void> {
   const admin = serviceClient()
   if (!admin) return
-  const owner = await machineForPhone(admin, `+${from}`)
+  const owner = await machineForPhone(admin, e164)
   if (!owner) return
   const { userId, sandboxId, syncToken } = owner
   const r = await wakeUserAgent(userId, sandboxId, async () => syncToken)
@@ -40,7 +41,8 @@ export async function POST(request: Request) {
   let parsed: unknown
   try { parsed = JSON.parse(body) } catch { return NextResponse.json({ error: 'invalid payload' }, { status: 400 }) }
   // Meta retries anything but a fast 200, so wake in the background.
-  const senders = Array.from(new Set(textMessages(parsed).map((m) => m.from)))
+  // Verified numbers are US-only (toUsE164, as phone calls and Settings).
+  const senders = Array.from(new Set(textMessages(parsed).map((m) => toUsE164(m.from)).filter((n): n is string => !!n)))
   for (const from of senders) {
     void wakeFor(from).catch((e) => console.error(`[whatsapp] wake failed: ${(e as Error).message}`))
   }
