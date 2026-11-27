@@ -12,7 +12,7 @@ import { query, type Options, type McpServerConfig, type SDKMessage, type SDKUse
 import { EventEmitter } from 'events'
 import { saveSessionMetadata, getSessionWorkspace } from './config.js'
 import { statusManager } from './status-manager.js'
-import { getResearchSystemPrompt, getDirectModeResearchPrompt, getTurnShapeReminder, SPEAK_CADENCE_N, getSpeakCadenceNudge, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, getPointsChecklist, PHONE_TOOLS_DENIED } from './prompts.js'
+import { getResearchSystemPrompt, getDirectModeResearchPrompt, getTurnShapeReminder, SPEAK_CADENCE_N, getSpeakCadenceNudge, getStewardPrompt, getChainReminder, getGroundingBlock, getRecalledContextBlock, getFollowThroughRecap, getPointsChecklist, getLongLocalWriteNote, PHONE_TOOLS_DENIED } from './prompts.js'
 import { dispatchCallRefusal, DISPATCH_TOOL } from './dispatch.js'
 import { steersTurn } from './content/transcript-sanitizer.js'
 import { phoneToolPolicy } from './data-sender-auth.js'
@@ -30,7 +30,6 @@ import { stewardGate } from './steward-gate.js'
 import { addressedPoints, turnPoints } from './points.js'
 import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, workLedgerEnabled, type LoopRecordInput, type SpokenLine } from './loops-ledger.js'
 import { outboundText } from './follow-through-client.js'
-import { overdueWriterNote } from './long-work.js'
 import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
@@ -3197,7 +3196,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // whole block already lands after the cached tools→system→history
                 // prefix, but ordering volatile content last keeps any future
                 // cache_control breakpoint inside this block useful too.
-                const longWork = fromSubagent ? null : overdueWriterNote(this.#llmRef.getRunningTasks(), Date.now())
+                const longWork = fromSubagent ? null : getLongLocalWriteNote(this.#llmRef.getRunningTasks().filter((t) => roleOf(t.subagentType, this.#opts.agentRoles, NAMED_AGENTS) === 'writer'), Date.now())
                 const additionalContext = [reminder, recalled, loopRecap, machineNudge, longWork].filter(Boolean).join('\n\n')
                 if (!fromSubagent && this.#opts.turnTiming) {
                   const hookMs = Date.now() - hookT0
