@@ -12,7 +12,7 @@
 import { llm, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } from '@livekit/agents'
 import { ClaudeLLM, type ClaudeLLMOptions } from './claude-llm.js'
 import { askPipelineFastBrain, type PipelineFastBrainResult, type AgentControlCallbacks } from './pipeline-fastbrain.js'
-import { storeExists, openStore, recentRows } from './session-store.js'
+import { storeExists, openStore, recentRows, rowInScope } from './session-store.js'
 import { statusManager } from './status-manager.js'
 import { noiseGate, GATE_CONTEXT_TURNS } from './noise-gate.js'
 import { cleanTurnText, redactSecrets, isAmbientTurn } from './content/transcript-sanitizer.js'
@@ -77,6 +77,7 @@ export function buildSessionTail(
       for (const row of rows) {
         if (kept.length >= maxRows) break
         if (row.msgType !== 'user' && row.msgType !== 'assistant') continue
+        if (!rowInScope(row.cwd, workingDir)) continue
         const clean = cleanTurnText(row.text, row.msgType === 'user' ? 'user' : 'assistant')
         if (!clean) continue
         const summary = redactSecrets(

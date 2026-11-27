@@ -36,6 +36,7 @@ import { join, basename } from 'path'
 import { homedir } from 'os'
 import { envFlagOn } from './env-keys.js'
 import { isWithin } from './lib/safe-artifact-path.js'
+import { readCrossProjectRecall } from './config.js'
 import { getSessionPaths, getSessionSubAgents, projectPathToSlug } from './session-access.js'
 
 // ============================================================
@@ -90,10 +91,14 @@ interface ExtractedRecord {
 // ============================================================
 
 /** osb index dir for a session: ~/.claude/projects/{slug}/osb/{sessionId}/ */
-function getOsbDir(sessionId: string, workingDir: string): string {
+/** A project's `osb` root, holding one folder per session. */
+export function getOsbRoot(workingDir: string): string {
   const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
-  const slug = projectPathToSlug(workingDir)
-  return join(claudeDir, 'projects', slug, 'osb', sessionId)
+  return join(claudeDir, 'projects', projectPathToSlug(workingDir), 'osb')
+}
+
+function getOsbDir(sessionId: string, workingDir: string): string {
+  return join(getOsbRoot(workingDir), sessionId)
 }
 
 export function getStorePath(sessionId: string, workingDir: string): string {
@@ -593,8 +598,11 @@ export interface RecallOpts {
   scopeCwd?: string
 }
 
-/** OSBORN_CROSS_PROJECT_RECALL=on|1|true lets recall reach other projects; default off (#657). */
-export const crossProjectRecallEnabled = (): boolean => envFlagOn(process.env.OSBORN_CROSS_PROJECT_RECALL)
+/** Config `crossProjectRecall` lets recall reach other projects; default off (#657). OSBORN_CROSS_PROJECT_RECALL, when set, overrides it (dev/test). */
+export const crossProjectRecallEnabled = (): boolean => {
+  const env = process.env.OSBORN_CROSS_PROJECT_RECALL
+  return env ? envFlagOn(env) : readCrossProjectRecall()
+}
 
 /** True when a row recorded at `rowCwd` may be shown for `activeCwd` (that dir or inside it); a row with no cwd is this store's own. */
 export function rowInScope(rowCwd: string | null | undefined, activeCwd: string | undefined): boolean {

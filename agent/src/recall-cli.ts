@@ -17,23 +17,13 @@
 
 import { existsSync, statSync, readdirSync } from 'fs'
 import { join } from 'path'
-import { homedir } from 'os'
-import { openStore, recall, getStorePath, crossProjectRecallEnabled, rowInScope, type RecallHit } from './session-store.js'
+import { openStore, recall, getStorePath, crossProjectRecallEnabled, getOsbRoot, rowInScope, type RecallHit } from './session-store.js'
 import { getEmbedder } from './embedder.js'
 import { isWithin } from './lib/safe-artifact-path.js'
 
-function projectSlug(dir: string): string {
-  return dir.replace(/\//g, '-')
-}
-
-function osbRoot(cwd: string): string {
-  const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
-  return join(claudeDir, 'projects', projectSlug(cwd), 'osb')
-}
-
 /** Every session.db under a project's osb dir, newest first. */
 function listStores(cwd: string): { sessionId: string; path: string; mtime: number; bytes: number }[] {
-  const root = osbRoot(cwd)
+  const root = getOsbRoot(cwd)
   if (!existsSync(root)) return []
   const out: { sessionId: string; path: string; mtime: number; bytes: number }[] = []
   for (const sid of readdirSync(root)) {
@@ -85,13 +75,13 @@ export async function main(argv: string[]): Promise<number> {
   // The agent sets OSBORN_RECALL_SCOPE to the session's project dir for its Claude subprocess (#657); unset (a hand run) means no scope.
   const scopeCwd = process.env.OSBORN_RECALL_SCOPE || undefined
   const cwd = (typeof opts.cwd === 'string' ? opts.cwd : '') || scopeCwd || process.env.OSBORN_CWD || process.cwd()
-  const refused = (dbPath?: string) => !!scopeCwd && !crossProjectRecallEnabled() && (!rowInScope(cwd, scopeCwd) || (!!dbPath && !isWithin(dbPath, osbRoot(cwd))))
-  const REFUSED = 'Cross-project recall is off: this store belongs to another project.'
+  const refused = (dbPath?: string) => !!scopeCwd && !crossProjectRecallEnabled() && (!rowInScope(cwd, scopeCwd) || (!!dbPath && !isWithin(dbPath, getOsbRoot(cwd))))
+  const REFUSED = 'Cross-project recall is off: this store belongs to another project. The owner can turn it on in the agent\'s settings.'
   if (refused()) { console.error(REFUSED); return 1 }
 
   if (opts.list) {
     const stores = listStores(cwd)
-    if (!stores.length) { console.log(`No session stores under ${osbRoot(cwd)}`); return 0 }
+    if (!stores.length) { console.log(`No session stores under ${getOsbRoot(cwd)}`); return 0 }
     for (const s of stores) {
       console.log(`${s.sessionId}  ${(s.bytes / 1024 / 1024).toFixed(2)}MB  ${new Date(s.mtime).toISOString()}`)
     }
@@ -106,7 +96,7 @@ export async function main(argv: string[]): Promise<number> {
 
   const dbPath = resolveDbPath(opts, cwd)
   if (!dbPath) {
-    console.error(`No session store found (looked in ${osbRoot(cwd)}). Pass --db <path> or --session <id> --cwd <dir>.`)
+    console.error(`No session store found (looked in ${getOsbRoot(cwd)}). Pass --db <path> or --session <id> --cwd <dir>.`)
     return 1
   }
   if (refused(dbPath)) { console.error(REFUSED); return 1 }
