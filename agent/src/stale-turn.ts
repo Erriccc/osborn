@@ -30,10 +30,7 @@ export function isStaleBlock(
 export function heardSlice(text: string, chars: number): string {
   const n = Math.max(0, Math.min(Math.round(chars), text.length))
   const i = text.lastIndexOf(' ', n)
-  const cut = text.slice(0, i > 0 ? i : n)
-  if (cut) return cut
-  const w = text.indexOf(' ')  // a cut still counts as an interruption, so the result is never empty
-  return w > 0 ? text.slice(0, w) : text
+  return text.slice(0, i > 0 ? i : n) || text.split(' ', 1)[0] || text  // never empty: a cut still counts as an interruption
 }
 
 /**
