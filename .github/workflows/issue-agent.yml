@@ -29,13 +29,14 @@ jobs:
           # Post with the repo's own token so comments come from the
           # GitHub Actions bot, not the Claude app.
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Never merge or push to main. Branch protection on main is the real guard.
+          # Never merge or push to main (the Main ruleset is the real guard).
+          # Allow the GitHub writes the job exists for: the auto-mode check
+          # blocked `gh issue comment` in the first two runs.
           claude_args: >-
             --disallowedTools "Bash(gh pr merge:*)" "Bash(git push origin main:*)"
             "Bash(git push origin HEAD:main:*)" "Bash(git push -f:*)" "Bash(git push --force:*)"
+            --allowedTools "Bash(gh issue comment:*)" "Bash(gh issue edit:*)" "Bash(gh pr create:*)" "Bash(gh pr edit:*)"
           # Commits authored as the owner (CLAUDE.md), not the default claude[bot].
-          # TEMPORARY: full output for one debug run. Logs are public; remove after the test.
-          show_full_output: true
           bot_id: '97201349'
           bot_name: Erriccc
           prompt: |
