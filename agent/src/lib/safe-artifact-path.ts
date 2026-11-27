@@ -46,7 +46,7 @@ function claudeConfigDir(): string {
   return process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
 }
 
-function osbornHomeDir(): string {
+export function osbornHomeDir(): string {
   // Matches how the rest of the agent locates ~/.osborn (homedir, with an
   // OSBORN_HOME override). The legacy `.osborn/sessions|research` roots live
   // here; no active code writes to them, but we honor the location for parity.

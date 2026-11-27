@@ -200,29 +200,33 @@ await t('a refused post reports why', async () => {
   assert.match(r.detail ?? '', /403: not allowed/)
 })
 
-rmSync(home, { recursive: true, force: true })
-console.log(`\n${pass} passed`)
-
 await t('incognito (the default) sends nothing and writes nothing', async () => {
   seed('s-incog')
   sent = []
-  process.env.OSBORN_HOME_DIR = join(home, 'osb-home')
+  process.env.OSBORN_HOME = join(home, 'osb-home')
   const r = await flushSession('s-incog', cwd, { ...deps(), modeFor: undefined })
   assert.equal(r.status, 'incognito')
   assert.equal(sent.length, 0)
   assert.equal(L.fileableLoops(L.readLoopRecords('s-incog', cwd)).length > 0, true)
 })
-await t('public mode saved per project files as before; back to incognito stops it', async () => {
-  const M = await import('../src/project-mode.js')
-  process.env.OSBORN_HOME_DIR = join(home, 'osb-home')
-  assert.equal(M.getProjectMode(cwd), 'incognito')
-  assert.equal(M.setProjectMode(cwd, 'public'), true)
-  assert.equal(M.getProjectMode(cwd), 'public')
-  assert.equal(M.getProjectMode(join(home, 'other')), 'incognito')
+await t('public mode saved per project files as before; any other value is incognito', async () => {
+  const { getProjectMode } = await import('../src/project-mode.js')
+  const modes = join(home, 'osb-home', 'project-modes.json')
+  mkdirSync(dirname(modes), { recursive: true })
+  writeFileSync(modes, '{ not json')
+  assert.equal(getProjectMode(cwd), 'incognito')
+  writeFileSync(modes, JSON.stringify({ [cwd]: 'PUBLIC' }))
+  assert.equal(getProjectMode(cwd), 'incognito')
+  writeFileSync(modes, JSON.stringify({ [cwd]: 'public' }))
+  assert.equal(getProjectMode(cwd), 'public')
+  assert.equal(getProjectMode(join(cwd, '.')), 'public')
+  assert.equal(getProjectMode(join(home, 'other')), 'incognito')
   sent = []
   const r = await flushSession('s-incog', cwd, { ...deps(), modeFor: undefined })
   assert.equal(r.status, 'done')
   assert.ok(sent.length > 0)
-  M.setProjectMode(cwd, 'incognito')
-  assert.equal(M.getProjectMode(cwd), 'incognito')
+  delete process.env.OSBORN_HOME
 })
+
+rmSync(home, { recursive: true, force: true })
+console.log(`\n${pass} passed`)

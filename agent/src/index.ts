@@ -59,7 +59,6 @@ import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { outboundText } from './follow-through-client.js'
-import { getProjectMode, setProjectMode } from './project-mode.js'
 import { loopIds, noticeThrottled, appendLoopRecord, appendQueuedLoop, markQueuedStarted, pendingDeliveries, staleWork, expiredWork, readLoopRecords, workLedgerEnabled } from './loops-ledger.js'
 import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
@@ -7375,12 +7374,6 @@ async function main() {
       else if (data.type === 'cancel_session_switch') {
         if (pendingSwitch) cancelPendingSwitch('user_cancelled')
         else await sendToFrontend({ type: 'session_switch_cancelled', sessionId: (data.sessionId as string) || null, reason: 'nothing_pending' })
-      }
-      else if (data.type === 'get_project_mode' || data.type === 'set_project_mode') {
-        // Per-project privacy mode (#663): incognito (default) never writes to GitHub; public lets follow-through file there.
-        const dir = (currentLLM as any)?.workingDirectory || workingDir
-        if (data.type === 'set_project_mode' && (data.mode === 'public' || data.mode === 'incognito')) setProjectMode(dir, data.mode)
-        await sendToFrontend({ type: 'project_mode', workingDirectory: dir, mode: getProjectMode(dir) })
       }
       else if (data.type === 'get_current_session' && currentLLM) {
         // Get current session ID
