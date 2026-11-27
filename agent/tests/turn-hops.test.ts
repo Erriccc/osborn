@@ -19,12 +19,23 @@ markSay(4500)
 markSay(4600)  // once per turn
 markAudio(4900)
 markAudio(5000)  // once per turn
+// Turn 2: the user starts again before turn 2's hook finishes; that onset belongs to turn 3.
+markUserState(true, 6000)
+markUserState(false, 6500)
+markChat(6700)
+markUserState(true, 6800)
+markHookDone(10)
+markUserState(false, 7300)
+markChat(7500)
+markHookDone(10)
 console.log = orig
 
 const turn = JSON.parse(lines.find((l) => l.startsWith('[turn-timing] '))!.slice('[turn-timing] '.length))
 assert.equal(turn.onsetToStop, 1400)  // the last onset: a flap restarts it
 assert.equal(turn.stopToFinal, 400)
 assert.equal(turn.stopToChat, 600)
+const turns = lines.filter((l) => l.startsWith('[turn-timing] ')).map((l) => JSON.parse(l.slice('[turn-timing] '.length)))
+assert.equal(turns[2].onsetToStop, 500)  // onset after turn 2's chat carried into turn 3
 const out = lines.filter((l) => l.startsWith('[turn-timing-out]')).map((l) => JSON.parse(l.slice('[turn-timing-out] '.length)))
 assert.equal(out.length, 2)
 assert.deepEqual(out[0], { turn: 1, stage: 'say', chatToSay: 900, stopToSay: 1500 })

@@ -48,14 +48,15 @@ export const markUserState = (speaking: boolean, now = Date.now()) => {
 export const markReplay = (now = Date.now()) => { marks.replayAt = now }
 export const markChat = (now = Date.now()) => { marks.chatAt = now; marks.pushAt = undefined; marks.deferredMs = undefined; marks.hookMs = undefined }
 export const markPush = (deferredMs = 0, now = Date.now()) => { marks.pushAt = now; marks.deferredMs = deferredMs }
-/** Hook is the last stage: log the line and start the next turn's marks (speech/replay carry over only if newer than the chat). The optional breakdown is left out of the line when not given. */
+/** Hook is the last stage: log the line and start the next turn's marks (speech/replay/onset/stop carry over only if newer than the chat). The optional breakdown is left out of the line when not given. */
 export function markHookDone(ms: number, extra?: Pick<TurnMarks, 'recallMs' | 'nudgeMs' | 'recallTimedOut'>): void {
   if (marks.chatAt == null) return
   marks.hookMs = ms
   Object.assign(marks, extra)
   console.log(formatTurnTiming(marks, ++turn))
   out = { turn, stopAt: marks.stopAt, finalAt: marks.finalAt, chatAt: marks.chatAt }
-  marks = { speechAt: marks.speechAt && marks.speechAt > marks.chatAt ? marks.speechAt : undefined, replayAt: marks.replayAt && marks.replayAt > marks.chatAt ? marks.replayAt : undefined }
+  const later = (t?: number) => (t && t > marks.chatAt ? t : undefined)
+  marks = { speechAt: later(marks.speechAt), replayAt: later(marks.replayAt), onsetAt: later(marks.onsetAt), stopAt: later(marks.stopAt) }
 }
 
 /** Output hops of the turn just logged: first reply block handed to TTS, then its first audio frame. One line each, once per turn. */
