@@ -6,20 +6,15 @@
  * refuses a store of another project. `OSBORN_CROSS_PROJECT_RECALL=on` (or `1`/`true`)
  * is the explicit opt-in. A row with no cwd is kept: it sits in this session's own store.
  */
-import { resolve, sep } from 'path'
 import { envFlagOn } from './env-keys.js'
+import { isWithin } from './lib/safe-artifact-path.js'
 
 export function crossProjectRecallEnabled(): boolean {
   return envFlagOn(process.env.OSBORN_CROSS_PROJECT_RECALL)
 }
 
-export function within(child: string, parent: string): boolean {
-  const c = resolve(child), p = resolve(parent)
-  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep)
-}
-
 /** True when a row recorded at `rowCwd` may be shown in a session for `activeCwd`. */
 export function rowInScope(rowCwd: string | null | undefined, activeCwd: string | undefined): boolean {
   if (!rowCwd || !activeCwd || crossProjectRecallEnabled()) return true
-  return within(rowCwd, activeCwd)
+  return isWithin(rowCwd, activeCwd)
 }

@@ -78,10 +78,15 @@ function canonicalize(absPath: string): string {
   return absPath
 }
 
+/** True iff `child` is `parent` or under it, both resolved (no symlink canonicalization). */
+export function isWithin(child: string, parent: string): boolean {
+  const c = resolve(child), p = resolve(parent)
+  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep)
+}
+
 /** True iff `resolved` (already canonical) is inside the canonicalized `root`. */
 function isInside(resolved: string, root: string): boolean {
-  const r = canonicalize(resolve(root))
-  return resolved === r || resolved.startsWith(r + sep)
+  return isWithin(resolved, canonicalize(resolve(root)))
 }
 
 /**
@@ -114,7 +119,7 @@ export function isSafeArtifactPath(
       // climbed out of projects fails the prefix test; `osb` as a substring of
       // some other name (e.g. `osbornish`) is not a component and fails too.
       const projectsRoot = canonicalize(resolve(join(claudeConfigDir(), 'projects')))
-      if (resolved === projectsRoot || resolved.startsWith(projectsRoot + sep)) {
+      if (isWithin(resolved, projectsRoot)) {
         const rel = relative(projectsRoot, resolved)
         if (rel && !rel.startsWith('..') && rel.split(sep).includes('osb')) return true
       }

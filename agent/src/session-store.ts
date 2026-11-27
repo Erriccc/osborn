@@ -668,9 +668,9 @@ export async function recall(
   )
   const hits: RecallHit[] = []
   for (const [id, meta] of ranked) {
+    if (hits.length >= topK) break
     const row = getRow.get(id) as any
     if (!row || !rowInScope(row.cwd, opts?.scopeCwd)) continue
-    if (hits.length >= topK) break
     hits.push({
       id: row.id,
       source: row.source,

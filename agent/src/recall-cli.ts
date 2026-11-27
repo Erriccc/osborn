@@ -20,7 +20,8 @@ import { join } from 'path'
 import { homedir } from 'os'
 import { openStore, recall, getStorePath, type RecallHit } from './session-store.js'
 import { getEmbedder } from './embedder.js'
-import { crossProjectRecallEnabled, rowInScope, within } from './recall-scope.js'
+import { crossProjectRecallEnabled, rowInScope } from './recall-scope.js'
+import { isWithin } from './lib/safe-artifact-path.js'
 
 function projectSlug(dir: string): string {
   return dir.replace(/\//g, '-')
@@ -83,6 +84,11 @@ function fmtHit(h: RecallHit, maxChars: number): string {
 export async function main(argv: string[]): Promise<number> {
   const { opts, positional } = parseArgs(argv)
   const cwd = (typeof opts.cwd === 'string' ? opts.cwd : '') || process.env.OSBORN_CWD || process.cwd()
+  // Active project = OSBORN_CWD, which the agent sets to the session's working dir for its Claude subprocess; another project's store is opt-in (#657).
+  const scopeCwd = crossProjectRecallEnabled() ? undefined : process.env.OSBORN_CWD || process.cwd()
+  const refused = (dbPath?: string) => !!scopeCwd && (!rowInScope(cwd, scopeCwd) || (!!dbPath && !isWithin(dbPath, osbRoot(cwd))))
+  const REFUSED = 'Cross-project recall is off: this store belongs to another project. Set OSBORN_CROSS_PROJECT_RECALL=on to allow it.'
+  if (refused()) { console.error(REFUSED); return 1 }
 
   if (opts.list) {
     const stores = listStores(cwd)
@@ -91,14 +97,6 @@ export async function main(argv: string[]): Promise<number> {
       console.log(`${s.sessionId}  ${(s.bytes / 1024 / 1024).toFixed(2)}MB  ${new Date(s.mtime).toISOString()}`)
     }
     return 0
-  }
-
-  // Active project = OSBORN_CWD, which the agent sets to the session's working dir for its Claude subprocess; another project's store is opt-in (#657).
-  const activeCwd = process.env.OSBORN_CWD || process.cwd()
-  const scopeCwd = crossProjectRecallEnabled() ? undefined : activeCwd
-  if (scopeCwd && ((typeof opts.cwd === 'string' && !rowInScope(opts.cwd, scopeCwd)) || (typeof opts.db === 'string' && !within(opts.db, osbRoot(scopeCwd))))) {
-    console.error('Cross-project recall is off: this store belongs to another project. Set OSBORN_CROSS_PROJECT_RECALL=on to allow it.')
-    return 1
   }
 
   const query = positional.join(' ').trim()
@@ -112,6 +110,7 @@ export async function main(argv: string[]): Promise<number> {
     console.error(`No session store found (looked in ${osbRoot(cwd)}). Pass --db <path> or --session <id> --cwd <dir>.`)
     return 1
   }
+  if (refused(dbPath)) { console.error(REFUSED); return 1 }
 
   const mode = (typeof opts.mode === 'string' ? opts.mode : 'hybrid') as 'hybrid' | 'keyword' | 'vector'
   const topK = typeof opts['top-k'] === 'string' ? parseInt(opts['top-k'] as string, 10) : 8

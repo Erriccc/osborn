@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, relative } from 'node:path'
 import { spawnSync } from 'node:child_process'
 
 process.env.HOME = mkdtempSync(join(tmpdir(), 'osborn-recall-scope-'))
@@ -39,10 +39,15 @@ delete process.env.OSBORN_CROSS_PROJECT_RECALL
 assert.equal((await texts()).length, 2) // no scope given: unfiltered
 assert.ok(rowInScope(join(A, 'sub'), A) && rowInScope(null, A) && !rowInScope(B, A) && !rowInScope(process.env.HOME, A))
 
-// osborn-recall refuses another project's store by default
-const cli = (env: Record<string, string>) => spawnSync('npx', ['tsx', join(import.meta.dirname, '../src/recall-cli.ts'), 'zebrafish', '--mode', 'keyword', '--cwd', B], {
+// osborn-recall refuses another project's store by default (--cwd, --list, --session escaping the project)
+const bStore = getStorePath(sid, B); mkdirSync(dirname(bStore), { recursive: true }); writeFileSync(bStore, '')
+const cli = (args: string[], env: Record<string, string> = {}) => spawnSync('npx', ['tsx', join(import.meta.dirname, '../src/recall-cli.ts'), ...args], {
   env: { ...process.env, OSBORN_CWD: A, ...env }, encoding: 'utf-8' })
-const r = cli({})
-assert.equal(r.status, 1); assert.match(r.stderr, /Cross-project recall is off/)
-assert.doesNotMatch(cli({ OSBORN_CROSS_PROJECT_RECALL: 'on' }).stderr, /Cross-project recall is off/)
+for (const args of [['zebrafish', '--cwd', B], ['--list', '--cwd', B], ['zebrafish', '--session', relative(dirname(dirname(getStorePath(sid, A))), dirname(bStore))]]) {
+  const r = cli(args)
+  assert.equal(r.status, 1, args.join(' ')); assert.match(r.stderr, /Cross-project recall is off/)
+}
+assert.doesNotMatch(cli(['zebrafish', '--mode', 'keyword', '--cwd', B], { OSBORN_CROSS_PROJECT_RECALL: 'on' }).stderr, /Cross-project recall is off/)
+const own = cli(['zebrafish', '--mode', 'keyword'])
+assert.equal(own.status, 0); assert.match(own.stdout, /project A/); assert.doesNotMatch(own.stdout, /project B/)
 console.log('recall-scope: ok')
