@@ -17,9 +17,8 @@
 
 import { existsSync, statSync, readdirSync } from 'fs'
 import { join } from 'path'
-import { openStore, recall, getStorePath, crossProjectRecallEnabled, getOsbRoot, rowInScope, type RecallHit } from './session-store.js'
+import { openStore, recall, getStorePath, recallScope, getOsbRoot, rowInScope, pathWithin, type RecallHit } from './session-store.js'
 import { getEmbedder } from './embedder.js'
-import { isWithin } from './lib/safe-artifact-path.js'
 
 /** Every session.db under a project's osb dir, newest first. */
 function listStores(cwd: string): { sessionId: string; path: string; mtime: number; bytes: number }[] {
@@ -75,8 +74,9 @@ export async function main(argv: string[]): Promise<number> {
   // The agent sets OSBORN_RECALL_SCOPE to the session's project dir for its Claude subprocess (#657); unset (a hand run) means no scope.
   const scopeCwd = process.env.OSBORN_RECALL_SCOPE || undefined
   const cwd = (typeof opts.cwd === 'string' ? opts.cwd : '') || scopeCwd || process.env.OSBORN_CWD || process.cwd()
-  const refused = (dbPath?: string) => !!scopeCwd && !crossProjectRecallEnabled() && (!rowInScope(cwd, scopeCwd) || (!!dbPath && !isWithin(dbPath, getOsbRoot(cwd))))
-  const REFUSED = 'Cross-project recall is off: this store belongs to another project. The owner can turn it on in the agent\'s settings.'
+  const scope = scopeCwd ? recallScope(scopeCwd) : undefined // a fresh process per call: the setting is read each run (guidance, not a sandbox)
+  const refused = (dbPath?: string) => !!scope && (!rowInScope(cwd, scope) || (!!dbPath && !pathWithin(dbPath, getOsbRoot(cwd))))
+  const REFUSED = 'Cross-project recall is off: this store belongs to another project. Ask the user whether to turn it on.'
   if (refused()) { console.error(REFUSED); return 1 }
 
   if (opts.list) {
@@ -113,7 +113,7 @@ export async function main(argv: string[]): Promise<number> {
 
   const db = openStore(dbPath)
   try {
-    let hits = await recall(db, query, { mode, topK, embed: embed ?? undefined, scopeCwd })
+    let hits = await recall(db, query, { mode, topK, embed: embed ?? undefined, scopeCwd: scope })
     if (typeof opts.type === 'string') {
       const types = new Set((opts.type as string).split(',').map(s => s.trim()))
       hits = hits.filter(h => types.has(h.msgType))
