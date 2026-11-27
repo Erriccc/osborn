@@ -111,6 +111,7 @@ const mocks: Record<string, any> = {
   '@/lib/sandbox-claims': {
     serviceClient: () => admin,
     checkSandboxClaim: async () => 'mine',
+    machineForPhone: async () => ({ userId: USER, sandboxId: 'osborn-mine', syncToken: TOKEN }),
   },
   '@/lib/connect-agent': {
     connectUserAgent: async (_u: string, _s: any, _g: any, roomName: string) => ({ ok: true, roomName, agentUrl: 'https://agent.example', callCode: st.callCode }),

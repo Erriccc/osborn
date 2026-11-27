@@ -100,6 +100,22 @@ export async function checkSandboxClaim(
   }
 }
 
+/**
+ * A verified phone number (E.164) → its account and that account's own machine
+ * (phone calls, WhatsApp messages). Null when the number is not verified, the
+ * account has no machine or sync token, or the machine is not positively its alone.
+ * (null client to checkSandboxClaim: the per-user RPC needs the user's session; use the service-role check.)
+ */
+export async function machineForPhone(admin: any, e164: string): Promise<{ userId: string; sandboxId: string; syncToken: string } | null> {
+  const { data: userId, error } = await admin.rpc('user_id_for_phone', { p_phone: e164 })
+  if (error || typeof userId !== 'string' || !userId) return null
+  const { data: inst } = await admin.from('instances').select('sandbox_id, sync_token').eq('user_id', userId).single()
+  const sandboxId = inst?.sandbox_id as string | null | undefined
+  const syncToken = inst?.sync_token as string | null | undefined
+  if (!sandboxId || !syncToken || (await checkSandboxClaim(null, sandboxId, userId)) !== 'mine') return null
+  return { userId, sandboxId, syncToken }
+}
+
 /** Fail-closed convenience: true unless the id is positively the caller's alone. */
 export async function sandboxClaimedByAnotherUser(
   userClient: unknown,

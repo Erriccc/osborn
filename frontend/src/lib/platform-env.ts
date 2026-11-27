@@ -116,6 +116,8 @@ export const MACHINE_ENV_DENYLIST: readonly string[] = [
   'META_WA_TOKEN',
   'META_WA_PHONE_ID',
   'SUPABASE_SEND_SMS_HOOK_SECRET',
+  'META_WA_APP_SECRET',
+  'META_WA_WEBHOOK_VERIFY_TOKEN',
 ]
 
 /** Delete every MACHINE_ENV_DENYLIST key from `env` in place; returns the keys removed. */

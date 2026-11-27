@@ -4,7 +4,7 @@
  */
 import { createHmac } from 'node:crypto'
 import { IngressClient, IngressInput, RoomServiceClient } from 'livekit-server-sdk'
-import { checkSandboxClaim, serviceClient } from '@/lib/sandbox-claims'
+import { machineForPhone, serviceClient } from '@/lib/sandbox-claims'
 import { connectUserAgent } from '@/lib/connect-agent'
 import { touchLastSeen } from '@/lib/last-seen'
 import { sleep } from '@/lib/sleep'
@@ -163,21 +163,14 @@ export async function routeCall(
   }
   // Any throw below would leave the caller in a silent room: hang up, then rethrow for the webhook's log.
   try {
-    const { data: userId, error } = await admin.rpc('user_id_for_phone', { p_phone: call.callerE164 })
-    if (error || typeof userId !== 'string' || !userId) {
-      await hangUp(call.roomName)
-      return 'rejected'
-    }
-    const { data: inst } = await admin.from('instances').select('sandbox_id, sync_token').eq('user_id', userId).single()
-    const sandboxId = (inst?.sandbox_id as string | null | undefined) ?? undefined
-    const syncToken = (inst?.sync_token as string | null | undefined) ?? undefined
     // The phone path joins a caller-supplied room, which the agent only allows
     // with the machine's sync token; and the recorded machine must be this user's alone.
-    // (null client: skip the per-user RPC, which needs the user's own session, and use the service-role check.)
-    if (!sandboxId || !syncToken || (await checkSandboxClaim(null, sandboxId, userId)) !== 'mine') {
+    const owner = await machineForPhone(admin, call.callerE164)
+    if (!owner) {
       await hangUp(call.roomName)
       return 'rejected'
     }
+    const { userId, sandboxId, syncToken } = owner
     // A sleeping machine can take minutes: the caller hears the hold line
     // until the agent has joined (or the wake has failed).
     const lineUrl = (path: string) => (publicOrigin ? `${publicOrigin}${path}` : undefined)

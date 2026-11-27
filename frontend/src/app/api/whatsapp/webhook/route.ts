@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { checkSandboxClaim, serviceClient } from '@/lib/sandbox-claims'
+import { machineForPhone, serviceClient } from '@/lib/sandbox-claims'
 import { wakeUserAgent } from '@/lib/connect-agent'
 import { touchLastSeen } from '@/lib/last-seen'
 import { textMessages, verifyChallenge, verifyMetaSignature } from '@/lib/whatsapp-inbound'
@@ -24,12 +24,9 @@ export async function GET(request: Request) {
 async function wakeFor(from: string): Promise<void> {
   const admin = serviceClient()
   if (!admin) return
-  const { data: userId, error } = await admin.rpc('user_id_for_phone', { p_phone: `+${from}` })
-  if (error || typeof userId !== 'string' || !userId) return
-  const { data: inst } = await admin.from('instances').select('sandbox_id, sync_token').eq('user_id', userId).single()
-  const sandboxId = (inst?.sandbox_id as string | null | undefined) ?? undefined
-  const syncToken = (inst?.sync_token as string | null | undefined) ?? undefined
-  if (!sandboxId || !syncToken || (await checkSandboxClaim(null, sandboxId, userId)) !== 'mine') return
+  const owner = await machineForPhone(admin, `+${from}`)
+  if (!owner) return
+  const { userId, sandboxId, syncToken } = owner
   const r = await wakeUserAgent(userId, sandboxId, async () => syncToken)
   if (r.ok) touchLastSeen(admin, userId)
   else console.warn(`[whatsapp] could not wake the machine: ${r.reason}`)
