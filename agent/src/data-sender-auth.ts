@@ -80,6 +80,8 @@ export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'favorite_changed',
   // Changes which tool requests are approved without asking (#364).
   'set_approval_mode',
+  // Decides whether Osborn may write to the project's GitHub repo (#663).
+  'set_project_mode',
 ])
 
 /** Read-only queries any participant may send. Everything else is gated. */
@@ -93,6 +95,7 @@ export const READ_ONLY_MESSAGE_TYPES: ReadonlySet<string> = new Set([
   'skill_get',
   // End asks whether the agent is mid-task before offering keep-working.
   'get_busy',
+  'get_project_mode',
 ])
 
 /**

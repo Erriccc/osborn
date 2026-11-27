@@ -30,7 +30,7 @@ const routeStub = (mode: 'ok' | 'fail' = 'ok') => (async (_url: string, init: an
     : { key: i.key, action: 'held' })
   return new Response(JSON.stringify({ results }), { status: 200 })
 }) as unknown as typeof fetch
-const deps = (extra: any = {}) => ({ syncToken: 'tok-0123456789abcdef', frontendUrl: 'https://f', repoFor: () => 'o/r', fetchFn: routeStub(), ...extra })
+const deps = (extra: any = {}) => ({ modeFor: () => 'public' as const, syncToken: 'tok-0123456789abcdef', frontendUrl: 'https://f', repoFor: () => 'o/r', fetchFn: routeStub(), ...extra })
 
 function seed(sid: string) {
   L.appendLoopRecord(sid, cwd, { kind: 'prompt', text: 'remind me to ship', origin: 'user_mic', fg: true })
@@ -202,3 +202,27 @@ await t('a refused post reports why', async () => {
 
 rmSync(home, { recursive: true, force: true })
 console.log(`\n${pass} passed`)
+
+await t('incognito (the default) sends nothing and writes nothing', async () => {
+  seed('s-incog')
+  sent = []
+  process.env.OSBORN_HOME_DIR = join(home, 'osb-home')
+  const r = await flushSession('s-incog', cwd, { ...deps(), modeFor: undefined })
+  assert.equal(r.status, 'incognito')
+  assert.equal(sent.length, 0)
+  assert.equal(L.fileableLoops(L.readLoopRecords('s-incog', cwd)).length > 0, true)
+})
+await t('public mode saved per project files as before; back to incognito stops it', async () => {
+  const M = await import('../src/project-mode.js')
+  process.env.OSBORN_HOME_DIR = join(home, 'osb-home')
+  assert.equal(M.getProjectMode(cwd), 'incognito')
+  assert.equal(M.setProjectMode(cwd, 'public'), true)
+  assert.equal(M.getProjectMode(cwd), 'public')
+  assert.equal(M.getProjectMode(join(home, 'other')), 'incognito')
+  sent = []
+  const r = await flushSession('s-incog', cwd, { ...deps(), modeFor: undefined })
+  assert.equal(r.status, 'done')
+  assert.ok(sent.length > 0)
+  M.setProjectMode(cwd, 'incognito')
+  assert.equal(M.getProjectMode(cwd), 'incognito')
+})
