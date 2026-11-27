@@ -26,14 +26,16 @@ const getMainAgentBudget = () => fillMainAgentLimits(readFileSync(join(PROMPTS_F
 /** The per-turn reminder (UserPromptSubmit), read fresh on every turn. */
 export const getTurnShapeReminder = () => fillMainAgentLimits(readFileSync(join(PROMPTS_FILE_DIR, 'turn-shape-reminder.md'), 'utf-8'))
 /** A local writer task running longer than this is flagged to the main agent (#651). */
-export const LONG_WRITE_MIN = 5
-/** The note for writer tasks past LONG_WRITE_MIN, or null. Task text is agent-written: quoted by recapText. */
-export const getLongLocalWriteNote = (tasks: Array<{ description?: string; startedAt: number }>, now: number): string | null => {
-  const late = tasks.filter((t) => now - t.startedAt > LONG_WRITE_MIN * 60_000).sort((a, b) => a.startedAt - b.startedAt)
+const LONG_WRITE_MIN = 5
+/** The note for writer tasks past LONG_WRITE_MIN and not yet in `noted` (each task is flagged once; added here), or null. Task text is agent-written: quoted by recapText. */
+export const getLongLocalWriteNote = (tasks: Array<{ taskId: string; description?: string; startedAt: number }>, now: number, noted: Set<string>): string | null => {
+  const late = tasks.filter((t) => !noted.has(t.taskId) && now - t.startedAt > LONG_WRITE_MIN * 60_000).sort((a, b) => a.startedAt - b.startedAt).slice(0, 3)
   if (!late.length) return null
   try {
-    const rows = late.slice(0, 3).map((t) => `  · ${Math.floor((now - t.startedAt) / 60_000)} min: ${recapText(t.description || 'writer task')}`).join('\n')
-    return readFileSync(join(PROMPTS_FILE_DIR, 'long-local-write.md'), 'utf-8').trim().replace('{{minutes}}', String(LONG_WRITE_MIN)).replace('{{tasks}}', rows)
+    const rows = late.map((t) => `  · ${Math.floor((now - t.startedAt) / 60_000)} min: ${recapText(t.description || 'writer task')}`).join('\n')
+    const note = readFileSync(join(PROMPTS_FILE_DIR, 'long-local-write.md'), 'utf-8').trim().replace('{{minutes}}', String(LONG_WRITE_MIN)).replace('{{tasks}}', rows)
+    late.forEach((t) => noted.add(t.taskId))
+    return note
   } catch { return null }
 }
 /** The non-blocking note claude-llm.ts injects every SPEAK_CADENCE_N main-agent calls. */

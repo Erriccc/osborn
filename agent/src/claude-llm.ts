@@ -157,6 +157,8 @@ const TOOL_HARD_CEILING = Number(process.env.OSBORN_TOOL_HARD_CEILING ?? 60)
 // the spoken-progress note rides the next ACTUALLY-allowed main-agent tool call (even if the exact
 // cadence call was a deferred/denied write).
 let pendingSpeakNudge = false
+// Writer task ids already flagged as long-running (#651): the note goes to the main agent once per task.
+const longWriteNoted = new Set<string>()
 
 // Writer PROVENANCE REMINDER (Chesterton's Fence): before the writer mutates a
 // version-controlled file it should review that file's git history so the edit is
@@ -3196,7 +3198,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // whole block already lands after the cached tools→system→history
                 // prefix, but ordering volatile content last keeps any future
                 // cache_control breakpoint inside this block useful too.
-                const longWork = fromSubagent ? null : getLongLocalWriteNote(this.#llmRef.getRunningTasks().filter((t) => roleOf(t.subagentType, this.#opts.agentRoles, NAMED_AGENTS) === 'writer'), Date.now())
+                const longWork = fromSubagent ? null : getLongLocalWriteNote(this.#llmRef.getRunningTasks().filter((t) => roleOf(t.subagentType, this.#opts.agentRoles, NAMED_AGENTS) === 'writer'), Date.now(), longWriteNoted)
                 const additionalContext = [reminder, recalled, loopRecap, machineNudge, longWork].filter(Boolean).join('\n\n')
                 if (!fromSubagent && this.#opts.turnTiming) {
                   const hookMs = Date.now() - hookT0
