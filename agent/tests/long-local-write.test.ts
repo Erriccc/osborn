@@ -15,3 +15,22 @@ assert.equal(getLongLocalWriteNote([row('b', 9 * 60_000)], now, noted), null, 'e
 assert.match(getLongLocalWriteNote([row('b', 9 * 60_000), row('c', 6 * 60_000)], now, noted)!, /6 min: "fix"/, 'a new late task still is')
 assert.match(getLongLocalWriteNote([row('d', 6 * 60_000, "pay $& and $'")], now, noted)!, /"pay \$& and \$'"/, 'task text is inserted literally')
 console.log('ok   long-local-write')
+
+// Issue-filing gate (#651)
+import { issueGate } from '../src/issue-gate.js'
+{
+  const pub = { publicSince: () => '2026-01-01T00:00:00.000Z', repoFor: () => 'o/r' }
+  const inc = { publicSince: () => undefined, repoFor: () => 'o/r' }
+  assert.equal(issueGate('ls', '/x', pub).decision, 'allow')
+  assert.equal(issueGate('gh issue create -t a -F b.md', '/x', inc).decision, 'deny', 'incognito files nothing')
+  assert.equal(issueGate('gh issue create -t a -F b.md', '/x', pub).decision, 'ask', 'public asks the user')
+  assert.equal(issueGate('gh issue create -R o/r -t a', '/x', pub).decision, 'ask')
+  assert.equal(issueGate('gh issue create --repo=evil/x -t a', '/x', pub).decision, 'deny', 'only the project repo')
+  assert.equal(issueGate('gh issue create -t a', '/x', { ...pub, repoFor: () => undefined }).decision, 'deny', 'no nameable repo')
+  assert.equal(issueGate("bash -c 'gh issue create -t a'", '/x', inc).decision, 'deny', 'wrapped')
+  assert.equal(issueGate("echo 'gh issue create'", '/x', inc).decision, 'allow', 'quoted text is not a command')
+  assert.equal(issueGate('gh repo create foo --public', '/x', pub).decision, 'deny')
+  assert.equal(issueGate('gh repo create foo', '/x', pub).decision, 'deny')
+  assert.equal(issueGate('gh repo create foo --private', '/x', pub).decision, 'allow')
+}
+console.log('issue-gate ok')

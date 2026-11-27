@@ -27,6 +27,7 @@ import { fileURLToPath } from 'node:url'
 import { homedir, loadavg, totalmem, freemem, cpus } from 'node:os'
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { stewardGate } from './steward-gate.js'
+import { issueGate } from './issue-gate.js'
 import { addressedPoints, turnPoints } from './points.js'
 import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, workLedgerEnabled, type LoopRecordInput, type SpokenLine } from './loops-ledger.js'
 import { outboundText } from './follow-through-client.js'
@@ -3015,6 +3016,10 @@ class ClaudeLLMStream extends llm.LLMStream {
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
                 }
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
+                // Filing an issue or creating a repo (#651): incognito keeps the handoff local; public asks the user.
+                const filing = issueGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
+                if (filing.decision === 'deny') return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: filing.message }
+                if (filing.decision === 'ask') return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
               }
 
               // File-edit access control (agent-store.ts EDIT_TOOLS) — keyed by the agent's ROLE
