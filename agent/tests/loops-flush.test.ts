@@ -7,10 +7,12 @@ import { tmpdir } from 'node:os'
 
 const home = mkdtempSync(join(tmpdir(), 'loops-flush-test-'))
 process.env.CLAUDE_CONFIG_DIR = join(home, '.claude')
+process.env.HOME = home // the saved project mode is read from ~/.osborn/config.yaml
 const cwd = join(home, 'proj')
 mkdirSync(cwd, { recursive: true })
 const L = await import('../src/loops-ledger.js')
 const { flushSession } = await import('../src/loops-flush.js')
+const { readProjectMode } = await import('../src/config.js')
 const { acquireLock, releaseLock } = await import('../src/content/lens-paths.js')
 
 let pass = 0
@@ -203,29 +205,26 @@ await t('a refused post reports why', async () => {
 await t('incognito (the default) sends nothing and writes nothing', async () => {
   seed('s-incog')
   sent = []
-  process.env.OSBORN_HOME = join(home, 'osb-home')
   const r = await flushSession('s-incog', cwd, { ...deps(), modeFor: undefined })
   assert.equal(r.status, 'incognito')
   assert.equal(sent.length, 0)
   assert.equal(L.fileableLoops(L.readLoopRecords('s-incog', cwd)).length > 0, true)
 })
 await t('public mode saved per project files as before; any other value is incognito', async () => {
-  const { getProjectMode } = await import('../src/project-mode.js')
-  const modes = join(home, 'osb-home', 'project-modes.json')
-  mkdirSync(dirname(modes), { recursive: true })
-  writeFileSync(modes, '{ not json')
-  assert.equal(getProjectMode(cwd), 'incognito')
-  writeFileSync(modes, JSON.stringify({ [cwd]: 'PUBLIC' }))
-  assert.equal(getProjectMode(cwd), 'incognito')
-  writeFileSync(modes, JSON.stringify({ [cwd]: 'public' }))
-  assert.equal(getProjectMode(cwd), 'public')
-  assert.equal(getProjectMode(join(cwd, '.')), 'public')
-  assert.equal(getProjectMode(join(home, 'other')), 'incognito')
+  const file = join(home, '.osborn', 'config.yaml')
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, 'projectModes: [not: a map')
+  assert.equal(readProjectMode(cwd), 'incognito')
+  writeFileSync(file, `projectModes:\n  ${JSON.stringify(cwd)}: PUBLIC\n`)
+  assert.equal(readProjectMode(cwd), 'incognito')
+  writeFileSync(file, `approvalMode: ask\nprojectModes:\n  ${JSON.stringify(cwd)}: public\n`)
+  assert.equal(readProjectMode(cwd), 'public')
+  assert.equal(readProjectMode(join(cwd, '.')), 'public')
+  assert.equal(readProjectMode(join(home, 'other')), 'incognito')
   sent = []
   const r = await flushSession('s-incog', cwd, { ...deps(), modeFor: undefined })
   assert.equal(r.status, 'done')
   assert.ok(sent.length > 0)
-  delete process.env.OSBORN_HOME
 })
 
 rmSync(home, { recursive: true, force: true })

@@ -53,6 +53,22 @@ export interface OsbornConfig {
 
   // Tool approval mode (#364), set from the app; applies to browser and phone calls.
   approvalMode?: ApprovalMode
+
+  // Per-project privacy mode (#663), keyed by absolute project folder: { "/abs/folder": public }.
+  projectModes?: Record<string, ProjectMode>
+}
+
+/** incognito (default): follow-through files nothing to the project's GitHub repo; public: it may. */
+export type ProjectMode = 'incognito' | 'public'
+
+/** The project's saved mode (config.yaml `projectModes`); incognito unless set to public, or unreadable. */
+export function readProjectMode(cwd: string, file = CONFIG_FILE): ProjectMode {
+  try {
+    const modes = (parse(readFileSync(file, 'utf-8')) as OsbornConfig | null)?.projectModes
+    return modes?.[resolve(cwd)] === 'public' ? 'public' : 'incognito'
+  } catch {
+    return 'incognito'
+  }
 }
 
 /** The saved approval mode (config.yaml `approvalMode`); 'ask' when unset or unreadable. */
