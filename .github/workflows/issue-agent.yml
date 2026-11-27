@@ -30,7 +30,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: anthropics/claude-code-action@v1
+      - id: claude
+        uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Post with the repo's own token so comments come from the
@@ -53,3 +54,44 @@ jobs:
             Trigger: ${{ github.event_name }}/${{ github.event.action }}
             ${{ github.event_name == 'issue_comment' && format('Comment: {0}', github.event.comment.html_url) || '' }}
             Follow .github/issue-agent-prompt.md for this issue.
+      # The action does not post its final answer in agent mode, and full
+      # output is off because the logs are public. Post the final result as
+      # one issue comment so every run leaves a visible outcome. The result
+      # text only ever goes through a file, never through an expression.
+      - name: Post result on the issue
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          CONCLUSION: ${{ steps.claude.outputs.conclusion }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          path = os.environ.get("EXECUTION_FILE", "")
+          result = ""
+          try:
+              with open(path) as f:
+                  data = json.load(f)
+              entries = data if isinstance(data, list) else [data]
+              for entry in reversed(entries):
+                  if isinstance(entry, dict) and entry.get("type") == "result":
+                      result = entry.get("result") or ""
+                      break
+          except Exception:
+              result = ""
+          run_url = os.environ["RUN_URL"]
+          if result.strip():
+              limit = 60000
+              if len(result) > limit:
+                  result = result[:limit] + "\n\n[Truncated. See the run for the rest.]"
+              body = f"Issue agent result (run {run_url}):\n\n{result}\n"
+          else:
+              conclusion = os.environ.get("CONCLUSION") or "no conclusion"
+              body = f"Issue agent run ended without a result ({conclusion}). See run {run_url}.\n"
+          with open(os.path.join(os.environ["RUNNER_TEMP"], "issue-agent-result.md"), "w") as f:
+              f.write(body)
+          PY
+          gh issue comment "$ISSUE_NUMBER" --body-file "$RUNNER_TEMP/issue-agent-result.md"
