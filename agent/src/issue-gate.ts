@@ -1,18 +1,19 @@
 // Issue-filing gate (#651, privacy mode #663). The agent may file a handoff issue with
 // `gh issue create` only in a project switched to public mode, only on the repo named by
-// the project's own github.com origin, and only through the approval dialog. Incognito
-// (the default) keeps the handoff local: nothing leaves the machine. `gh repo create`
-// is refused unless it is private: a new project never gets a public repo by default.
+// the project's own github.com origin, and only through the approval mode (the dialog unless the
+// user chose Allow all). Incognito (the default) keeps the handoff local: nothing leaves the
+// machine. `gh repo create` is refused unless it is private: a new project never gets a public
+// repo by default. Like the steward gate it guides the agent and is not a sandbox (`gh api`,
+// `GH_REPO=` are not parsed).
 import { gitActions } from './steward-gate.js'
 import { readPublicSince } from './config.js'
 import { repoFromCwd } from './loops-ledger.js'
+import type { FlushDeps } from './loops-flush.js'
 
 export type IssueGateResult = { decision: 'allow' | 'ask' | 'deny'; message?: string }
 
-export interface IssueGateDeps {
-  publicSince?: (cwd: string) => string | undefined
-  repoFor?: (cwd: string) => string | undefined
-}
+/** The same test seams as the follow-through flush (loops-flush.ts), which applies the same public-mode rule. */
+export type IssueGateDeps = Pick<FlushDeps, 'publicSince' | 'repoFor'>
 
 /** The value of `--repo X` / `-R X` / `--repo=X` in a gh argument list. */
 function repoArg(args: string[]): string | undefined {

@@ -38,6 +38,10 @@ try {
   assert.equal((await stewardGate('git add -A && git commit -m b', repo, 'block')).decision, 'deny')
   assert.equal((await stewardGate('git add -A && git commit -m b', repo, 'off')).decision, 'allow')
   assert.equal((await stewardGate('npm test', repo, 'block')).decision, 'allow')
+  // gh issue/repo create are parsed for issue-gate.ts, never steward-checked
+  assert.equal(gitActions('gh -R o/r issue create -t a', repo)[0]?.action, 'issue')
+  assert.equal(gitActions('gh repo create x --private', repo)[0]?.action, 'repo')
+  assert.equal((await stewardGate('gh issue create -t a', repo, 'block')).decision, 'allow')
 
   // Sign-off covers exactly this content, untracked files included, and leaves the index alone
   signOff()

@@ -3006,6 +3006,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               // Steward sign-off gate (#218): a commit, push or PR whose content the steward has
               // not signed off is refused (block, default) or only reported (OSBORN_STEWARD_MODE=advise).
               let stewardNote: string | null = null  // advise mode: rides the allow tail below
+              let askUser = false  // issue gate: the call goes to the approval dialog, through the shared tail
               if (toolName === 'Bash') {
                 const gate = await stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
                 if (gate.decision !== 'allow') {
@@ -3018,8 +3019,11 @@ class ClaudeLLMStream extends llm.LLMStream {
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
                 // Filing an issue or creating a repo (#651): incognito keeps the handoff local; public asks the user.
                 const filing = issueGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
-                if (filing.decision === 'deny') return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: filing.message }
-                if (filing.decision === 'ask') return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } }
+                if (filing.decision === 'deny') {
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: filing.message, agent: agentType ?? 'main' })
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: filing.message }
+                }
+                askUser = filing.decision === 'ask'
               }
 
               // File-edit access control (agent-store.ts EDIT_TOOLS) — keyed by the agent's ROLE
@@ -3091,7 +3095,7 @@ class ClaudeLLMStream extends llm.LLMStream {
               const nudge = pendingSpeakNudge && !agentType ? getSpeakCadenceNudge(turnToolCallCount) : null
               if (nudge) pendingSpeakNudge = false
               const context = [stewardNote, nudge].filter(Boolean).join('\n\n')
-              if (context) return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: context } }
+              if (context || askUser) return { hookSpecificOutput: { hookEventName: 'PreToolUse', ...(askUser ? { permissionDecision: 'ask' } : {}), ...(context ? { additionalContext: context } : {}) } }
               return {}
             }]
           }],
