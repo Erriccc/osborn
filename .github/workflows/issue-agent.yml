@@ -1,24 +1,26 @@
 name: issue-agent
 
-# Runs the issue agent on one issue when the owner opens it, or when the owner
-# adds the "agent:go" label (for anyone else's issue). Issues filed as notes
-# (label osborn:noted) do not start a run on open.
+# Runs the issue agent on one issue when the owner opens it (including
+# voice-filed issues), or when the owner comments on an issue with a comment
+# starting "/agent". No labels start or gate a run.
 on:
   issues:
-    types: [opened, labeled]
-
-concurrency:
-  group: issue-agent-${{ github.event.issue.number }}
-  cancel-in-progress: false
+    types: [opened]
+  issue_comment:
+    types: [created]
 
 jobs:
   agent:
     if: >-
       github.event.sender.login == 'Erriccc' && (
-        (github.event.action == 'labeled' && github.event.label.name == 'agent:go') ||
-        (github.event.action == 'opened' && github.event.issue.user.login == 'Erriccc' &&
-         !contains(github.event.issue.labels.*.name, 'osborn:noted')))
+        (github.event_name == 'issues' && github.event.action == 'opened' &&
+         github.event.issue.user.login == 'Erriccc') ||
+        (github.event_name == 'issue_comment' && !github.event.issue.pull_request &&
+         startsWith(github.event.comment.body, '/agent')))
     runs-on: ubuntu-latest
+    concurrency:
+      group: issue-agent-${{ github.event.issue.number }}
+      cancel-in-progress: false
     timeout-minutes: 60
     permissions:
       contents: write
@@ -38,15 +40,16 @@ jobs:
           # Allow the GitHub writes the job exists for: the auto-mode check
           # blocked `gh issue comment` in the first two runs.
           claude_args: >-
+            --max-turns 80
             --disallowedTools "Bash(gh pr merge:*)" "Bash(git push origin main:*)"
             "Bash(git push origin HEAD:main:*)" "Bash(git push -f:*)" "Bash(git push --force:*)"
             --allowedTools "Bash(gh issue comment:*)" "Bash(gh issue edit:*)" "Bash(gh pr create:*)" "Bash(gh pr edit:*)"
           # Commits authored as the owner (CLAUDE.md), not the default claude[bot].
-          # TEMPORARY: full output for one debug run. Logs are public; remove after the test.
-          show_full_output: true
           bot_id: '97201349'
           bot_name: Erriccc
           prompt: |
             Repository: ${{ github.repository }}
             Issue: #${{ github.event.issue.number }}
+            Trigger: ${{ github.event_name }}/${{ github.event.action }}
+            ${{ github.event_name == 'issue_comment' && format('Comment: {0}', github.event.comment.html_url) || '' }}
             Follow .github/issue-agent-prompt.md for this issue.
