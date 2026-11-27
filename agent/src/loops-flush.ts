@@ -15,7 +15,7 @@ import {
   LOOPS_LOCK, LOOPS_LOCK_TTL_MS, appendLoopRecord, fileableLoops, getLoopsPath, loopKey, readLoopRecords, repoFromCwd,
 } from './loops-ledger.js'
 import { osbornFrontendUrl } from './pushover.js'
-import { readProjectMode, type ProjectMode } from './config.js'
+import { readPublicSince } from './config.js'
 
 export type FlushStatus = 'locked' | 'incognito' | 'nothing' | 'no-repo' | 'no-token' | 'error' | 'done'
 
@@ -27,8 +27,8 @@ export interface FlushDeps {
   repoFor?: (cwd: string) => string | undefined
   /** Test seam: the fallback repo when the cwd has no origin (default: OSBORN_FOLLOW_THROUGH_DEFAULT_REPO). */
   defaultRepo?: string
-  /** Test seam: the project's privacy mode (default: the saved one; incognito unless switched to public). */
-  modeFor?: (cwd: string) => ProjectMode
+  /** Test seam: when the project went public, ISO (default: the saved one; undefined = incognito). */
+  publicSince?: (cwd: string) => string | undefined
   now?: number
 }
 
@@ -44,13 +44,14 @@ function inGitCheckout(cwd: string): boolean {
 }
 
 export async function flushSession(sessionId: string, cwd: string, deps: FlushDeps = {}): Promise<{ status: FlushStatus; filed: number; repo?: string; via?: 'origin' | 'default'; detail?: string }> {
-  // Incognito (the default) files nothing: items stay open in the local ledger.
-  if ((deps.modeFor ?? readProjectMode)(cwd) !== 'public') return { status: 'incognito', filed: 0 }
+  // Incognito (the default) files nothing; a public project files only what was recorded after the switch.
+  const since = (deps.publicSince ?? readPublicSince)(cwd)
+  if (!since) return { status: 'incognito', filed: 0 }
   const lockDir = dirname(getLoopsPath(sessionId, cwd))
   if (!acquireLock(lockDir, deps.now ?? Date.now(), LOOPS_LOCK, LOOPS_LOCK_TTL_MS)) return { status: 'locked', filed: 0 }
   try {
     const records = readLoopRecords(sessionId, cwd)
-    const open = fileableLoops(records)
+    const open = fileableLoops(records).filter((i) => i.at >= since)
     if (!open.length) return { status: 'nothing', filed: 0 }
     // The cwd's own origin wins; a multi-project folder with none falls back to the configured default
     // (validated by the route, whose refusal the worker logs).

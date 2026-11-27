@@ -54,20 +54,22 @@ export interface OsbornConfig {
   // Tool approval mode (#364), set from the app; applies to browser and phone calls.
   approvalMode?: ApprovalMode
 
-  // Per-project privacy mode (#663), keyed by absolute project folder: { "/abs/folder": public }.
-  projectModes?: Record<string, ProjectMode>
+  // Per-project privacy mode (#663), keyed by absolute project folder: { "/abs/folder": { mode: public, since: "<ISO time>" } }.
+  projectModes?: Record<string, { mode?: string; since?: string }>
 }
 
-/** incognito (default): follow-through files nothing to the project's GitHub repo; public: it may. */
-export type ProjectMode = 'incognito' | 'public'
-
-/** The project's saved mode (config.yaml `projectModes`); incognito unless set to public, or unreadable. */
-export function readProjectMode(cwd: string, file = CONFIG_FILE): ProjectMode {
+/**
+ * When the project was switched to public mode (config.yaml `projectModes`), as an ISO time; undefined
+ * means incognito (the default, also for a missing or unreadable `since`). Follow-through files only
+ * items recorded after this time, so switching never back-fills what piled up while incognito.
+ */
+export function readPublicSince(cwd: string, file = CONFIG_FILE): string | undefined {
   try {
-    const modes = (parse(readFileSync(file, 'utf-8')) as OsbornConfig | null)?.projectModes
-    return modes?.[resolve(cwd)] === 'public' ? 'public' : 'incognito'
+    const m = (parse(readFileSync(file, 'utf-8')) as OsbornConfig | null)?.projectModes?.[resolve(cwd)]
+    const since = m?.mode === 'public' && typeof m.since === 'string' ? new Date(m.since).toISOString() : undefined
+    return since
   } catch {
-    return 'incognito'
+    return undefined
   }
 }
 
