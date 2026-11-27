@@ -273,11 +273,6 @@ export function openLoops(records: LoopRecord[]): LoopItem[] {
   return [...foldLoops(records).values()].filter((i) => i.open && !i.filedUrl && !!i.text)
 }
 
-/** Repos this ledger has learned are public (or of unknown visibility): they held an item back. */
-export function publicRepos(records: LoopRecord[]): Set<string> {
-  return new Set(records.filter((r) => r.kind === 'held' && r.repo).map((r) => r.repo!.toLowerCase()))
-}
-
 /** Open items this machine may file: written by the foreground voice session only. */
 export function fileableLoops(records: LoopRecord[]): LoopItem[] {
   // A point inferred from a long turn stays local until a read-back exists (#461).

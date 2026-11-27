@@ -91,7 +91,7 @@ import { readVolumeSyncStatus } from './volume-sync-status.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 import { closeSessionBounded } from './lib/settle-within.js'
-import { markTranscript, markReplay } from './turn-timing.js'
+import { markTranscript, markReplay, markUserState, markSay, markAudio } from './turn-timing.js'
 import { speechTimeline } from './speech-timeline.js'
 
 // ============================================================
@@ -5335,6 +5335,7 @@ async function main() {
       }
 
       const sayId = Date.now() // simple ID to correlate start/end logs
+      markSay()
       console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
 
       // Apply agent-requested speed (e.g. [SPEED:0.85] stripped from response text)
@@ -5357,6 +5358,7 @@ async function main() {
             const onPlaybackStarted = () => {
               playbackStartedAt = Date.now()
               console.log(`🔊 [${sayId}] audio first frame out (playbackStarted)`)
+              markAudio()
               audioOutputRef.off('playbackStarted', onPlaybackStarted)
               // Notify frontend that this TTS chunk is now audibly playing
               if (data.messageId != null && data.chunkIndex != null) {
@@ -6287,6 +6289,7 @@ async function main() {
       sess.on('user_state_changed' as any, (ev: any) => {
         const prev = userState
         userState = ev.newState
+        if (ev.newState !== 'away') markUserState(ev.newState === 'speaking') // away is the idle timeout, not a stop
         // On a user onset over the agent's speech, log how far into its speech that landed and whether the AEC warm-up still applied
         // (the VAD path never emits overlapping_speech, so this is the barge-in timing line on a default machine).
         const overAgent = ev.newState === 'speaking' && agentState === 'speaking' && speakingSince > 0

@@ -21,6 +21,7 @@ const llmSrc = readFileSync(`${AGENT}/src/claude-llm.ts`, 'utf-8')
 const directSrc = readFileSync(`${AGENT}/src/pipeline-direct-llm.ts`, 'utf-8')
 const fbSrc = readFileSync(`${AGENT}/src/pipeline-fastbrain.ts`, 'utf-8')
 const indexSrc = readFileSync(`${AGENT}/src/index.ts`, 'utf-8')
+const promptsSrc = readFileSync(`${AGENT}/src/prompts.ts`, 'utf-8')
 const sdkDts = readFileSync(`${AGENT}/node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`, 'utf-8')
 
 let failures = 0
@@ -78,7 +79,9 @@ function balancedBlock(src: string, idx: number, open = '{', close = '}'): strin
 
 // ───────────────────────── Item 3: interrupt truthfulness ─────────────────────────
 {
-  const code = stripComments(directSrc)
+  // The enrichment text lives in prompts.ts (getInterruptedNote); the interrupt handling stays in pipeline-direct-llm.ts.
+  const all = stripComments(promptsSrc)
+  const code = all.slice(all.indexOf('export function getInterruptedNote'), all.indexOf('export function getSuppressedNote'))
   check('3a', !/SEVERED/i.test(code.replace(/re-?dispatch/gi, '')) || !/SEVERED/.test(code),
     `no "SEVERED" claim in emitted code (comments excluded): ${!/SEVERED/.test(code)}`)
   check('3b', /SURVIVED|survive/.test(code) && /report back/.test(code),
@@ -89,10 +92,11 @@ function balancedBlock(src: string, idx: number, open = '{', close = '}'): strin
   check('3c', badRedispatch.length === 0,
     badRedispatch.length === 0 ? 'every re-dispatch mention is a negation ("do NOT re-dispatch")' : `imperative re-dispatch lines: ${JSON.stringify(badRedispatch)}`)
   // Must not mark active dispatches failed at interrupt time: find the [INTERRUPTED] region
-  const start = code.indexOf('[INTERRUPTED]')
-  check('3d-pre', start >= 0, '[INTERRUPTED] template exists')
-  const regionStart = Math.max(0, code.lastIndexOf('interruptQuery', start) - 2000)
-  const region = code.slice(regionStart, start + 4000)
+  const direct = stripComments(directSrc)
+  const start = direct.indexOf('getInterruptedNote(')
+  check('3d-pre', code.includes('[INTERRUPTED]') && start >= 0, '[INTERRUPTED] template exists and pipeline-direct-llm.ts uses it')
+  const regionStart = Math.max(0, direct.lastIndexOf('interruptQuery', start) - 2000)
+  const region = direct.slice(regionStart, start + 4000)
   check('3d', !/['"]failed['"]/.test(region) && !/markFailed|failDispatch|dispatchState:\s*['"]failed/.test(region),
     'no dispatch marked \'failed\' in the interrupt-enrichment region')
 }

@@ -65,12 +65,12 @@ t('S9 handleSwitchSession sends workingDirectory + force', () => {
   const b = block('const handleSwitchSession = useCallback(', 900)
   assert.ok(/workingDirectory: cwd/.test(b) && /force/.test(b))
 })
-t('S9 Rooms passes room.cwd; ControlMenu passes session.cwd and honest copy', () => {
+t('S9 Rooms passes room.cwd', () => {
   assert.ok(/handleSwitchSession\(room\.id, room\.cwd\)/.test(vr))
-  const cm = fs.readFileSync(path.join(__dirname, '../src/components/voice/ControlMenu.tsx'), 'utf8')
-  assert.ok(!/Current context will be saved/.test(cm))
-  assert.ok(/finishes the current step here first/.test(cm))
-  assert.ok(/onResumeSession\(session\.sessionId, session\.cwd\)/.test(cm))
+})
+t('S9 the clock-button ControlMenu is gone', () => {
+  assert.ok(!fs.existsSync(path.join(__dirname, '../src/components/voice/ControlMenu.tsx')))
+  assert.ok(!/ControlMenu/.test(vr))
 })
 t('S9 pending / cancelled handlers exist and Switch now resends with force', () => {
   assert.ok(vr.includes("data.type === 'session_switch_pending'"))

@@ -35,8 +35,7 @@ export function resumeChipReducer(state: ResumeChip | null, ev: ResumeChipEvent)
   }
 }
 
-export function resumeChipLabel(sessionId?: string | null, kind: 'resume' | 'continue' = 'resume'): string {
-  if (kind === 'continue') return 'Continuing previous session…'
+export function resumeChipLabel(sessionId?: string | null): string {
   return sessionId ? `Resuming session ${sessionId.slice(0, 8)}…` : 'Resuming session…'
 }
 

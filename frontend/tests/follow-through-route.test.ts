@@ -151,6 +151,26 @@ async function main() {
     ok(gh.creates.length === 1, `creates ${gh.creates.length}`)
   })
 
+  await t('a security-sounding explicit ask is held on a public repo, filed on a private one', async () => {
+    reset()
+    const sec = (n: number) => item(n, { text: 'fix the vulnerability where the api key is exposed' })
+    const pub = await post({ repo: 'acme/public-repo', items: [sec(5)] })
+    ok(pub.body.results[0].action === 'held' && gh.creates.length === 0, JSON.stringify(pub.body.results))
+    const priv = await post({ repo: 'acme/private-repo', items: [sec(6)] })
+    ok(priv.body.results[0].action === 'created', JSON.stringify(priv.body.results))
+  })
+
+  await t('ordinary asks that mention tokens, leaks or passwords still file; real secret exposure is held', async () => {
+    reset()
+    const ordinary = ['show the token count in the header', 'fix the memory leak in the poller', 'add a password reset screen to login']
+    const r = await post({ repo: 'acme/public-repo', items: ordinary.map((text, n) => item(30 + n, { text })) })
+    ok(r.body.results.every((x: any) => x.action === 'created'), JSON.stringify(r.body.results))
+    const bad = ['the sync token is leaked in the logs', 'SECRET_KEY is hardcoded in the repo', 'XSS in the chat']
+    reset()
+    const h = await post({ repo: 'acme/public-repo', items: bad.map((text, n) => item(40 + n, { text })) })
+    ok(h.body.results.every((x: any) => x.action === 'held'), JSON.stringify(h.body.results))
+  })
+
   await t('a meeting- or phone-sourced "explicit" item never files to a public repo', async () => {
     reset()
     const r = await post({ repo: 'acme/public-repo', items: [item(3, { origin: 'meeting' }), item(4, { origin: 'phone' })] })

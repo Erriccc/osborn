@@ -58,7 +58,6 @@ t('explicit clear (e.g. resume failed) removes it', () => {
 t('labels', () => {
   eq(resumeChipLabel(), 'Resuming session…', 'no id')
   eq(resumeChipLabel('1a2b3c4d-0000-1111-2222-333333333333'), 'Resuming session 1a2b3c4d…', 'with id')
-  eq(resumeChipLabel(undefined, 'continue'), 'Continuing previous session…', 'continue')
 })
 
 t('legacy transcript lines are recognised', () => {

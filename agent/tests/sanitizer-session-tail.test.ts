@@ -1,6 +1,6 @@
 // Fixture tests for the shared transcript sanitizer (lane L2a, UI#2, #9, #10, #11, #16).
 // Real-shaped inputs: the [time:] tag the frontend prepends to typed turns, the
-// [INTERRUPTED]/[CONTEXT] templates from pipeline-direct-llm.ts, the post-compaction
+// [INTERRUPTED]/[CONTEXT] templates from prompts.ts, the post-compaction
 // <session_tail> block, <recalled_context>, client notices ([favorited], [welcome-back]),
 // [SYSTEM] lines. Also covers the data path that reads them: getSessionPreview (via
 // listAllClaudeSessions + the persisted manifest) and the recall store (string-content
@@ -25,32 +25,13 @@ function ok(name: string, cond: boolean, extra = '') {
 }
 const LEAK_RE = /\[time:|<session_tail|<\/session_tail>|\[INTERRUPTED\]|\[CONTEXT\]|\[SYSTEM|<recalled_context|<system-reminder|<task-notification|CONTEXT PRESERVATION|\[favorited\]|\[welcome-back\]/
 
-// ── Real-shaped builders (mirror pipeline-direct-llm.ts templates) ───────────
+// ── The live templates (prompts.ts) ───────────
+const { getInterruptedNote, getSuppressedNote } = await import('../src/prompts.js')
 const T = '[time: 2026-11-06 16:14 local] '
 const longRecent = Array.from({ length: 12 }, (_, i) => `Assistant message ${i}: ` + 'lorem ipsum dolor sit amet '.repeat(12)).join('\n\n')
-function interrupted(userText: string): string {
-  return [
-    `[INTERRUPTED] The user interrupted your response mid-speech.`, ``,
-    `What the user heard before cutoff:`, `"I've got part 1, all set"`, ``,
-    `WHAT THE USER DID NOT HEAR (you wrote this but it was cut off):`,
-    `Anything in "Your recent messages" below that appears AFTER the quoted heard text is content the user did not hear. The user has no memory of it.`, ``,
-    `Your recent messages (full untruncated — you wrote these):`, longRecent, ``, ``,
-    `User's message: "${userText}"`, ``,
-    `CONTEXT PRESERVATION (READ THIS):`,
-    `The user has NO memory of unheard content.`, ``,
-    `SUB-AGENTS: background sub-agents survive an interrupt.`, ``,
-    `RESPOND with speech first, then act:`,
-    `- ALWAYS reply with at least one spoken sentence before doing any tool calls`,
-  ].join('\n')
-}
-function contextWrap(userText: string): string {
-  return [
-    `[CONTEXT] You generated speech while the user was already talking. None of it played.`, ``,
-    `What the user is saying now:`, `"${userText}"`, ``,
-    `Text you produced that the user did NOT hear:`, `"some unheard text"`, ``,
-    `CONTEXT PRESERVATION (READ THIS):`, `The user has NO memory of the unheard text.`,
-  ].join('\n')
-}
+const interrupted = (userText: string): string =>
+  getInterruptedNote({ spokenText: "I've got part 1, all set", recentMessages: longRecent, userText, liveSubagents: [] })
+const contextWrap = (userText: string): string => getSuppressedNote(userText, 'some unheard text')
 const tail = [
   '<session_tail>',
   '2026-09-10T22:49:35  User: [Request interrupted by user]',
