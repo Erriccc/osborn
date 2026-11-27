@@ -62,10 +62,10 @@ jobs:
           # Allow the GitHub writes the job exists for: the auto-mode check
           # blocked `gh issue comment` in the first two runs.
           claude_args: >-
-            --max-turns 80
+            --max-turns 200
             --disallowedTools "Bash(gh pr merge:*)" "Bash(git push origin main:*)"
             "Bash(git push origin HEAD:main:*)" "Bash(git push -f:*)" "Bash(git push --force:*)"
-            --allowedTools "Bash(gh issue comment:*)" "Bash(gh issue edit:*)" "Bash(gh pr create:*)" "Bash(gh pr edit:*)"
+            --allowedTools "Bash(gh issue comment:*)" "Bash(gh issue edit:*)" "Bash(gh pr create:*)" "Bash(gh pr edit:*)" "Bash(date:*)"
           # Commits authored as the owner (CLAUDE.md), not the default claude[bot].
           bot_id: '97201349'
           bot_name: Erriccc
