@@ -26,6 +26,8 @@ jobs:
       contents: write
       issues: write
       pull-requests: write
+      # To start the PR checks on the agent's branch (last step).
+      actions: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,6 +52,9 @@ jobs:
           bot_name: Erriccc
           # On during the testing phase (founder decision): logs are public. Turn off once runs are stable.
           show_full_output: true
+          # Claude waits for sub-agents instead of backgrounding them: a
+          # backgrounded steward died when the run ended (#480, run 45943983205).
+          settings: '{"env":{"CLAUDE_CODE_DISABLE_BACKGROUND_TASKS":"1"}}'
           prompt: |
             Repository: ${{ github.repository }}
             Issue: #${{ github.event.issue.number }}
@@ -97,3 +102,26 @@ jobs:
               f.write(body)
           PY
           gh issue comment "$ISSUE_NUMBER" --body-file "$RUNNER_TEMP/issue-agent-result.md"
+      # A PR opened with GITHUB_TOKEN starts no pull_request runs, but
+      # workflow_dispatch runs always start, even from GITHUB_TOKEN:
+      # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
+      # So start the PR checks on the agent's branch here. Keep this list in
+      # step with the workflows that run on pull_request.
+      - name: Run PR checks on the agent's PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          branch=$(gh pr list --state open --limit 200 --json headRefName \
+            --jq "map(.headRefName | select(startswith(\"auto/${ISSUE_NUMBER}-\"))) | first // empty")
+          if [ -z "$branch" ]; then
+            echo "No open PR on an auto/${ISSUE_NUMBER}- branch, so no checks to start."
+            exit 0
+          fi
+          failed=0
+          for wf in agent-tests.yml frontend-lint.yml ios-build.yml rn-ios-build.yml typecheck.yml; do
+            gh workflow run "$wf" --ref "$branch" || failed=1
+          done
+          exit "$failed"
