@@ -56,10 +56,10 @@ jobs:
             Trigger: ${{ github.event_name }}/${{ github.event.action }}
             ${{ github.event_name == 'issue_comment' && format('Comment: {0}', github.event.comment.html_url) || '' }}
             Follow .github/issue-agent-prompt.md for this issue.
-      # The action does not post its final answer in agent mode, and full
-      # output is off because the logs are public. Post the final result as
-      # one issue comment so every run leaves a visible outcome. The result
-      # text only ever goes through a file, never through an expression.
+      # The action does not post its final answer in agent mode. Post the
+      # final result as one issue comment so every run leaves a visible
+      # outcome on the issue. The result text only ever goes through a file,
+      # never through an expression.
       - name: Post result on the issue
         if: always()
         env:
