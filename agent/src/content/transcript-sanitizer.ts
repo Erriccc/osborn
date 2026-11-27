@@ -12,7 +12,7 @@
  *
  * It only *references* the live agent's marker formats (read-only) to stay
  * faithful to what the runtime actually writes:
- *   - [INTERRUPTED] / [CONTEXT] templates ....... pipeline-direct-llm.ts
+ *   - [INTERRUPTED] / [CONTEXT] templates ....... prompts.ts (getInterruptedNote / getSuppressedNote)
  *   - <session_tail> post-compaction block ...... pipeline-direct-llm.ts (buildSessionTail)
  * Do NOT import from the live agent here — the anchors are inlined as
  * verified string constants so this module stays self-contained.
@@ -140,9 +140,9 @@ const DROP_PREFIXES: RegExp[] = [
   /^\[\d{1,2}:\d{2}\]\s+(System|You|Osborn):/,
 ]
 
-// Rule 2 anchors — [INTERRUPTED] template (pipeline-direct-llm.ts ~L257-275).
+// Rule 2 anchors — [INTERRUPTED] template (prompts.ts getInterruptedNote).
 const INTERRUPTED_PREFIX = '[INTERRUPTED]'
-// Rule 3 anchors — [CONTEXT] template (pipeline-direct-llm.ts ~L293-298).
+// Rule 3 anchors — [CONTEXT] template (prompts.ts getSuppressedNote).
 const CONTEXT_PREFIX = '[CONTEXT]'
 
 /** Rule 4 — leading "[time: YYYY-MM-DD HH:MM local] " prefix. */

@@ -1777,6 +1777,77 @@ export function getDroppedUnspokenNote(chars: number): string {
 </system-reminder>`
 }
 
+/** The user's turn after they cut a reply off mid-speech (pipeline mode). The "User's message … CONTEXT PRESERVATION" shape is parsed back by transcript-sanitizer.ts. */
+export function getInterruptedNote(c: { spokenText: string; suppressedText?: string; recentMessages?: string; fullBlockText?: string; userText: string; liveSubagents: string[] }): string {
+  const suppressedBlock = c.suppressedText
+    ? [
+        ``,
+        `Text you generated while the user was speaking — NOT played (we suppressed it so we wouldn't talk over them):`,
+        `"${c.suppressedText}"`,
+        `If any of that is still relevant to the user's current message, re-articulate the key points naturally. If it's no longer relevant, drop it.`,
+      ].join('\n')
+    : ''
+  const subagentReminder = c.liveSubagents.length
+    ? `SUB-AGENTS STILL RUNNING: the interrupt stopped only your current turn — your in-flight background sub-agents SURVIVED and will report back normally: ${c.liveSubagents.join(', ')}. Do NOT re-dispatch them; wait for their results (or stop any that are no longer needed).`
+    : `SUB-AGENTS: background sub-agents survive an interrupt (only your current turn was stopped) — any in flight will still report back; do not re-dispatch duplicates.`
+  return [
+    `[INTERRUPTED] The user interrupted your response mid-speech.`,
+    ``,
+    `What the user heard before cutoff:`,
+    `"${c.spokenText}"`,
+    ``,
+    `WHAT THE USER DID NOT HEAR (you wrote this but it was cut off):`,
+    `Anything in "Your recent messages" below that appears AFTER the quoted heard text is content the user did not hear. The user has no memory of it.`,
+    ``,
+    `Your recent messages (full untruncated — you wrote these):`,
+    c.recentMessages
+      || (c.fullBlockText
+        ? `(JSONL unavailable — full TTS block text follows)\n"${c.fullBlockText}"`
+        : '(no recent messages found)'),
+    suppressedBlock,
+    ``,
+    `User's message: "${c.userText}"`,
+    ``,
+    `CONTEXT PRESERVATION (READ THIS):`,
+    `The user has NO memory of unheard content. If any of it bears on their current message — answers a question they just asked, sets up a follow-up they're now asking about, or shows a knowledge gap and fills in a detail they're reacting to — you MUST surface it. Briefly is fine if their message is off-topic or explores a direction they haven't asked about yet. But never assume they remember what they never heard.`,
+    ``,
+    subagentReminder,
+    ``,
+    `RESPOND with speech first, then act:`,
+    `- ALWAYS reply with at least one spoken sentence before doing any tool calls`,
+    `- If it's a quick side question, answer it then continue where you left off`,
+    `- If they want to change direction, acknowledge and follow their lead`,
+    `- Clarify when asked to or the question requires going over what you just said`,
+    `- ANSWER FIRST: reply to the user's message above before anything else. Then, in one short sentence, give what they missed: start from the last thing they heard, then the unheard points that still matter. Skip what their message already made moot.`,
+    `- If you were mid-list, say where you stopped and carry on from there unless their message changed direction.`,
+  ].join('\n')
+}
+
+/** The user's turn when reply text was generated while they were talking and none of it played (no interrupt). */
+export function getSuppressedNote(userText: string, suppressedText: string): string {
+  return [
+    `[CONTEXT] You generated speech while the user was already talking. None of it played.`,
+    ``,
+    `What the user is saying now:`,
+    `"${userText}"`,
+    ``,
+    `Text you produced that the user did NOT hear:`,
+    `"${suppressedText}"`,
+    ``,
+    `CONTEXT PRESERVATION (READ THIS):`,
+    `The user has NO memory of the unheard text. If any of it bears on their current message — answers a question they just asked, sets up a follow-up they're now asking about, or shows a knowledge gap and fills in a detail they're reacting to — you MUST surface it. Briefly is fine if their message is off-topic or explores a direction they haven't asked about yet. But never assume they remember what they never heard.`,
+    ``,
+    `RESPOND with speech first, then act:`,
+    `- ALWAYS reply with at least one spoken sentence before doing any tool calls`,
+    `- Three likely cases — figure out which applies:`,
+    `  (a) the user didn't realize you were responding → forward the key points of the unheard text`,
+    `  (b) the user changed direction → drop the unheard text, follow their lead`,
+    `  (c) the user's message builds on the unheard text → integrate it as if they'd heard it`,
+    `- ANSWER FIRST: the user's message above gets answered before the unheard text; add what they missed afterwards in one short sentence, and skip what their message already made moot.`,
+    `- Keep it tight — this is a voice response.`,
+  ].join('\n')
+}
+
 /** Sent when the user turns the noise-cancellation (side-conversation filter) toggle on or off; a [SYSTEM prefix so it never steers a live turn. */
 export function getNoiseCancelNote(on: boolean): string {
   return on
