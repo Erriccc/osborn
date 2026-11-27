@@ -34,6 +34,7 @@ import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } 
 import { existsSync, statSync, openSync, readSync, closeSync, mkdirSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
+import { rowInScope } from './recall-scope.js'
 import { getSessionPaths, getSessionSubAgents, projectPathToSlug } from './session-access.js'
 
 // ============================================================
@@ -587,6 +588,8 @@ export interface RecallOpts {
   mode?: 'hybrid' | 'keyword' | 'vector'
   topK?: number
   embed?: Embedder
+  /** Active project dir: rows recorded outside it are dropped unless cross-project recall is on (#657). */
+  scopeCwd?: string
 }
 
 /**
@@ -657,7 +660,7 @@ export async function recall(
     fused.set(id, cur)
   }
 
-  const ranked = [...fused.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, topK)
+  const ranked = [...fused.entries()].sort((a, b) => b[1].score - a[1].score)
   if (!ranked.length) return []
 
   const getRow = db.prepare(
@@ -666,7 +669,8 @@ export async function recall(
   const hits: RecallHit[] = []
   for (const [id, meta] of ranked) {
     const row = getRow.get(id) as any
-    if (!row) continue
+    if (!row || !rowInScope(row.cwd, opts?.scopeCwd)) continue
+    if (hits.length >= topK) break
     hits.push({
       id: row.id,
       source: row.source,

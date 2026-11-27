@@ -1,0 +1,24 @@
+/**
+ * recall-scope.ts — which project's memory may reach the model (#657).
+ *
+ * Default: only the active project. A recalled row from another project (its JSONL
+ * `cwd` is outside the active working directory) is dropped, and `osborn-recall`
+ * refuses a store of another project. `OSBORN_CROSS_PROJECT_RECALL=on` (or `1`/`true`)
+ * is the explicit opt-in. A row with no cwd is kept: it sits in this session's own store.
+ */
+import { resolve, sep } from 'path'
+
+export function crossProjectRecallEnabled(): boolean {
+  return /^(on|1|true|yes)$/i.test(String(process.env.OSBORN_CROSS_PROJECT_RECALL || '').trim())
+}
+
+function within(child: string, parent: string): boolean {
+  const c = resolve(child), p = resolve(parent)
+  return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep)
+}
+
+/** True when a row recorded at `rowCwd` may be shown in a session for `activeCwd`. */
+export function rowInScope(rowCwd: string | null | undefined, activeCwd: string | undefined): boolean {
+  if (!rowCwd || !activeCwd || crossProjectRecallEnabled()) return true
+  return within(rowCwd, activeCwd) || within(activeCwd, rowCwd)
+}

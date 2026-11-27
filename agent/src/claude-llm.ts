@@ -101,7 +101,7 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
     const db = openStore(getStorePath(sessionId, workingDir), { readonly: true })
     let hits: RecallHit[]
     try {
-      hits = await recall(db, q, { mode: embed ? 'hybrid' : 'keyword', topK: RECALL_TOP_K, embed })
+      hits = await recall(db, q, { mode: embed ? 'hybrid' : 'keyword', topK: RECALL_TOP_K, embed, scopeCwd: workingDir })
     } finally {
       db.close()
       if (timing) timing.sqlMs = Date.now() - sqlT0 - (timing.embedMs ?? 0)
