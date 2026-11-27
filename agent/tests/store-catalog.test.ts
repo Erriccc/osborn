@@ -199,6 +199,7 @@ const run = async () => {
     assert.ok(!existsSync(join(root2, 'own-lic', 'LICENSE')))
     // A licence that cannot be fetched refuses the install and leaves nothing behind.
     assert.match((await installSkill({ ...b, name: 'nolic' }, root2, new Set(), async (q) => (q === 'LICENSE' ? null : fetchB(q))) as any).error, /could not fetch LICENSE/)
+    assert.match((await installSkill({ ...b, name: 'biglic' }, root2, new Set(), async (q) => { if (q === 'LICENSE') throw new TooLarge('LICENSE is larger than 2 MB'); return fetchB(q) }) as any).error, /larger than 2 MB/, 'an oversize licence is named as such')
     assert.ok(!existsSync(join(root2, 'nolic')))
 
     // The installed skill is offered an update when only a script changed upstream.

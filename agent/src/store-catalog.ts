@@ -184,7 +184,18 @@ async function treeAt(repo: string, sha: string): Promise<Snapshot> {
 }
 
 /** Blob shas of a repo at a pinned commit (null when it cannot be listed). */
-const blobShasAt = (repo: string, sha: string) => treeAt(repo, sha).then((s) => s.shas, () => null)
+const treeShas = new Map<string, Promise<Record<string, string> | null>>()
+const blobShasAt = (repo: string, sha: string) => {
+  const key = `${repo}@${sha}`  // one tree fetch per repo and commit, however many skills were installed from it
+  let p = treeShas.get(key)
+  if (!p) {
+    if (treeShas.size >= 50) treeShas.clear()
+    p = treeAt(repo, sha).then((s) => s.shas, () => null)
+    p.then((r) => { if (!r) treeShas.delete(key) })  // a failure is retried by the pinned-read backoff
+    treeShas.set(key, p)
+  }
+  return p
+}
 
 /** Fallback when the API is rate-limited or blocked: a blobless depth-1 clone, file names only. */
 async function snapshotViaGit(repo: string): Promise<Snapshot> {
@@ -309,9 +320,12 @@ export async function installSkill(
   const tmp = mkdtempSync(join(skillsDir, `.installing-${name}-`))
   try {
     let total = 0
-    for (const f of entry.files) {
+    // The repo's root licence travels with the skill when the skill folder has none.
+    const copies: [string, string][] = entry.files.map((f) => [`${entry.path}/${f}`, f])
+    if (entry.licenseFile) copies.push([entry.licenseFile, 'LICENSE'])
+    for (const [from, f] of copies) {
       let buf: Buffer | null
-      try { buf = await fetchFile(`${entry.path}/${f}`) } catch (e) { if (e instanceof TooLarge) return { error: e.message }; throw e }
+      try { buf = await fetchFile(from) } catch (e) { if (e instanceof TooLarge) return { error: e.message }; throw e }
       if (!buf) return { error: `could not fetch ${f}` }
       total += buf.length
       if (total > MAX_SKILL_BYTES) return { error: 'skill is larger than 10 MB' }
@@ -319,16 +333,9 @@ export async function installSkill(
       mkdirSync(dirname(out), { recursive: true })
       writeFileSync(out, buf)
     }
-    // The repo's root licence travels with the skill when the skill folder has none.
-    if (entry.licenseFile) {
-      let lic: Buffer | null = null
-      try { lic = await fetchFile(entry.licenseFile) } catch { /* below */ }
-      if (!lic) return { error: `could not fetch ${entry.licenseFile}` }
-      writeFileSync(join(tmp, 'LICENSE'), lic)
-    }
     writeFileSync(join(tmp, PROVENANCE_FILE), JSON.stringify({
       source: entry.source, repo: entry.repo, sha: entry.sha, path: entry.path, license: entry.license,
-      files: entry.files, scripts: entry.scripts, rev: entry.rev, installedAt: new Date().toISOString(),
+      files: entry.files, scripts: entry.scripts, rev: entry.rev, ...(entry.licenseFile ? { licenseFile: entry.licenseFile } : {}), installedAt: new Date().toISOString(),
     }, null, 2))
     if (!opts.update) { renameSync(tmp, dst); return { ok: true, name } }
     // Swap: the old copy is moved aside first and put back if the new one cannot take its place.
