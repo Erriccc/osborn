@@ -32,10 +32,11 @@ import Database from 'better-sqlite3'
 import * as sqliteVec from 'sqlite-vec'
 import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'zlib'
 import { existsSync, statSync, openSync, readSync, closeSync, mkdirSync } from 'fs'
-import { join, basename } from 'path'
+import { join, basename, resolve } from 'path'
 import { homedir } from 'os'
 import { envFlagOn } from './env-keys.js'
-import { isWithin } from './lib/safe-artifact-path.js'
+import { isWithin, canonicalize } from './lib/safe-artifact-path.js'
+import { readCrossProjectRecall } from './config.js'
 import { getSessionPaths, getSessionSubAgents, projectPathToSlug } from './session-access.js'
 
 // ============================================================
@@ -89,11 +90,15 @@ interface ExtractedRecord {
 // PATHS
 // ============================================================
 
+/** A project's `osb` root, holding one folder per session. */
+export function getOsbRoot(workingDir: string): string {
+  const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
+  return join(claudeDir, 'projects', projectPathToSlug(workingDir), 'osb')
+}
+
 /** osb index dir for a session: ~/.claude/projects/{slug}/osb/{sessionId}/ */
 function getOsbDir(sessionId: string, workingDir: string): string {
-  const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
-  const slug = projectPathToSlug(workingDir)
-  return join(claudeDir, 'projects', slug, 'osb', sessionId)
+  return join(getOsbRoot(workingDir), sessionId)
 }
 
 export function getStorePath(sessionId: string, workingDir: string): string {
@@ -593,12 +598,52 @@ export interface RecallOpts {
   scopeCwd?: string
 }
 
-/** OSBORN_CROSS_PROJECT_RECALL=on|1|true lets recall reach other projects; default off (#657). */
-export const crossProjectRecallEnabled = (): boolean => envFlagOn(process.env.OSBORN_CROSS_PROJECT_RECALL)
+/** Config `crossProjectRecall` lets recall reach other projects; default off (#657). OSBORN_CROSS_PROJECT_RECALL, when set, overrides it (dev/test). */
+const crossProjectRecallEnabled = (): boolean => {
+  const env = process.env.OSBORN_CROSS_PROJECT_RECALL
+  if (env) return envFlagOn(env)
+  // Read once per process: the model has Bash and could append the key to the file mid-session.
+  fileSetting ??= readCrossProjectRecall()
+  return fileSetting
+}
+let fileSetting: boolean | undefined
+/** Test hook: forget the cached config read. */
+export const resetCrossProjectRecallCache = (): void => { fileSetting = undefined }
 
-/** True when a row recorded at `rowCwd` may be shown for `activeCwd` (that dir or inside it); a row with no cwd is this store's own. */
-export function rowInScope(rowCwd: string | null | undefined, activeCwd: string | undefined): boolean {
-  return !rowCwd || !activeCwd || crossProjectRecallEnabled() || isWithin(rowCwd, activeCwd)
+/** The dir recall is limited to: `activeCwd`, or none when cross-project recall is on. Call once per scan: the setting is a file read. */
+export const recallScope = (activeCwd: string | undefined): string | undefined => crossProjectRecallEnabled() ? undefined : activeCwd
+
+/** True when a row recorded at `rowCwd` may be shown for `scope` (from `recallScope`: that dir or inside it); a row with no cwd is this store's own. */
+export function rowInScope(rowCwd: string | null | undefined, scope: string | undefined): boolean {
+  return !rowCwd || !scope || pathWithin(rowCwd, scope)
+}
+
+const canonCache = new Map<string, string>()
+const canon = (p: string): string => {
+  let c = canonCache.get(p)
+  if (c === undefined) {
+    if (canonCache.size > 500) canonCache.clear()
+    c = canonicalize(resolve(p)); canonCache.set(p, c)
+  }
+  return c
+}
+
+/** `child` is `parent` or inside it, also when they differ only by a symlink (Fly /app/.osborn -> /workspace, macOS /private/var). */
+export function pathWithin(child: string, parent: string): boolean {
+  return isWithin(child, parent) || isWithin(canon(child), canon(parent))
+}
+
+/** SQL clause (and params) keeping rows with no cwd or a cwd inside any of `scopes` (the raw and canonical forms of the scope dir). */
+function scopeSql(scope: string): { sql: string; params: string[] } {
+  const forms = [...new Set([resolve(scope), canon(scope)])]
+  const parts: string[] = [`cwd IS NULL`, `cwd = ''`]
+  const params: string[] = []
+  for (const f of forms) {
+    const prefix = f.endsWith('/') ? f : f + '/'
+    parts.push(`cwd = ?`, `substr(cwd, 1, ${[...prefix].length}) = ?`)
+    params.push(f, prefix)
+  }
+  return { sql: `(${parts.join(' OR ')})`, params }
 }
 
 /**
@@ -676,10 +721,11 @@ export async function recall(
     'SELECT id, source, line_num, byte_offset, ts, msg_type, model, git_branch, cwd, tool_name, blob FROM content WHERE id = ?'
   )
   const hits: RecallHit[] = []
+  const scope = opts?.scopeCwd ? recallScope(opts.scopeCwd) : undefined
   for (const [id, meta] of ranked) {
     if (hits.length >= topK) break
     const row = getRow.get(id) as any
-    if (!row || !rowInScope(row.cwd, opts?.scopeCwd)) continue
+    if (!row || !rowInScope(row.cwd, scope)) continue
     hits.push({
       id: row.id,
       source: row.source,
@@ -704,7 +750,8 @@ export async function recall(
  * Powers fast-brain's "recent entries" path and the session tail. Encapsulates
  * decompress so callers never touch the blob/compression.
  * `msgTypes` optionally filters by msg_type IN SQL — so callers that only want
- * user/assistant rows don't decompress rows they'd discard. `opts.sources`
+ * user/assistant rows don't decompress rows they'd discard. `opts.scope` (from
+ * `recallScope`) drops rows recorded outside that dir in SQL, before decompressing. `opts.sources`
  * optionally restricts to given sources (e.g. ['main'] = the session's own JSONL,
  * no sub-agent rows).
  *
@@ -718,7 +765,7 @@ export function recentRows(
   db: Database.Database,
   count: number,
   msgTypes?: string[],
-  opts?: { sources?: string[] },
+  opts?: { sources?: string[]; scope?: string },
 ): RecallHit[] {
   const where: string[] = []
   const params: unknown[] = []
@@ -729,6 +776,10 @@ export function recentRows(
   if (opts?.sources && opts.sources.length) {
     where.push(`source IN (${opts.sources.map(() => '?').join(', ')})`)
     params.push(...opts.sources)
+  }
+  if (opts?.scope) {
+    const s = scopeSql(opts.scope)
+    where.push(s.sql); params.push(...s.params)
   }
   const filter = where.length ? `WHERE ${where.join(' AND ')}` : ''
   params.push(Math.max(1, count))

@@ -282,14 +282,14 @@ async function executeSearch(phrases: string[], sessionId: string, workingDir: s
   return sections.length > 0 ? sections.join('\n') : `No matches for: ${phrases.join(', ')}`
 }
 
-async function getRecentEntries(sessionId: string, workingDir: string, _: string | undefined, count: number): Promise<string> {
+export async function getRecentEntries(sessionId: string, workingDir: string, _: string | undefined, count: number): Promise<string> {
   // Newest content rows straight from the recall DB (append-only, so highest id = latest).
-  const { storeExists, openStore, recentRows, rowInScope } = await import('./session-store.js')
+  const { storeExists, openStore, recentRows, recallScope } = await import('./session-store.js')
   const dbPath = storeExists(sessionId, workingDir)
   if (!dbPath) return 'Index not built yet.'
   const db = openStore(dbPath, { readonly: true })
   try {
-    const rows = recentRows(db, count).filter(r => rowInScope(r.cwd, workingDir)) // newest first
+    const rows = recentRows(db, count, undefined, { scope: recallScope(workingDir) }) // newest first; out-of-scope rows are dropped in SQL
     if (!rows.length) return 'No entries yet.'
     const out: string[] = [`[RECENT — last ${rows.length} entries, newest first]`]
     for (const h of rows) {

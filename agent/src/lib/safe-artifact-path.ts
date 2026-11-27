@@ -60,7 +60,7 @@ function osbornHomeDir(): string {
  * segments came out of resolve(), so they contain no `..` or `.` to re-open a
  * traversal. On total failure returns the input unchanged (still absolute).
  */
-function canonicalize(absPath: string): string {
+export function canonicalize(absPath: string): string {
   let cur = absPath
   const suffix: string[] = []
   // Bounded loop — dirname() strictly converges to the filesystem root.

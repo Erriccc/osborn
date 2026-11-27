@@ -12,7 +12,7 @@
 import { llm, DEFAULT_API_CONNECT_OPTIONS, type APIConnectOptions } from '@livekit/agents'
 import { ClaudeLLM, type ClaudeLLMOptions } from './claude-llm.js'
 import { askPipelineFastBrain, type PipelineFastBrainResult, type AgentControlCallbacks } from './pipeline-fastbrain.js'
-import { storeExists, openStore, recentRows } from './session-store.js'
+import { storeExists, openStore, recentRows, recallScope } from './session-store.js'
 import { statusManager } from './status-manager.js'
 import { noiseGate, GATE_CONTEXT_TURNS } from './noise-gate.js'
 import { cleanTurnText, redactSecrets, isAmbientTurn } from './content/transcript-sanitizer.js'
@@ -70,8 +70,8 @@ export function buildSessionTail(
     const db = openStore(dbPath, { readonly: true })
     try {
       // Over-fetch: sanitizing drops notice/wrapper-only rows, so the limit
-      // should count kept lines, not raw rows.
-      const rows = recentRows(db, maxRows * 2, ['user', 'assistant'], { sources: ['main'] })
+      // should count kept lines, not raw rows. Out-of-scope rows are dropped in SQL.
+      const rows = recentRows(db, maxRows * 2, ['user', 'assistant'], { sources: ['main'], scope: recallScope(workingDir) })
       const kept: string[] = [] // newest-first while filling
       let used = OPEN.length + CLOSE.length + 2 // tags + their newlines
       for (const row of rows) {
