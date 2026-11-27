@@ -18,7 +18,7 @@ interface SkillsPanelProps {
   setNewSkillContent?: (v: string) => void
 }
 
-export function SkillsPanel({
+function SkillsPanel({
   store,
   showAddSkill,
   setShowAddSkill,

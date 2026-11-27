@@ -3030,8 +3030,8 @@ function VoiceRoomInner({
     dispatchResumeChip({ type: 'start', label: resumeChipLabel(sessionId), now: Date.now() })
   }, [sendToAgent])
 
-  // MID-SESSION switch of an already-live session (in-chat History menu + Rooms
-  // rail). The agent switches in place: when the current session is idle it
+  // MID-SESSION switch of an already-live session (Rooms rail,
+  // Switch now). The agent switches in place: when the current session is idle it
   // closes it and rebuilds on the target, then emits `session_switched`; when it
   // is busy it finishes the current step first (`session_switch_pending`, with
   // Switch now / Cancel). `session_switched` — not a bare ack — is the real
