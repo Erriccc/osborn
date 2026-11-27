@@ -38,3 +38,7 @@ dist/rest.*
 # Tests (never published)
 tests/
 test-results/
+
+# Recall regression check fixture (dev only)
+recall-golden/
+scripts/recall-check.ts
