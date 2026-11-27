@@ -9,6 +9,7 @@ import { gitActions } from './steward-gate.js'
 import { readPublicSince } from './config.js'
 import { repoFromCwd } from './loops-ledger.js'
 import type { FlushDeps } from './loops-flush.js'
+import { ISSUE_GATE_DENIED } from './prompts.js'
 
 export type IssueGateResult = { decision: 'allow' | 'ask' | 'deny'; message?: string }
 
@@ -32,18 +33,18 @@ export function issueGate(cmd: string, cwd: string, deps: IssueGateDeps = {}): I
     const dir = hit.dir ?? cwd
     if (hit.action === 'repo') {
       if (hit.args?.includes('--private')) continue
-      return { decision: 'deny', message: 'A new repository is never public by default. Offer the user a PRIVATE repo (`gh repo create --private`) and ask before creating it.' }
+      return { decision: 'deny', message: ISSUE_GATE_DENIED.publicRepo }
     }
     if (!(deps.publicSince ?? readPublicSince)(dir)) {
-      return { decision: 'deny', message: 'This project is incognito (the default), so nothing is filed on GitHub. Keep the handoff local: write it to the session workspace and tell the user where it is.' }
+      return { decision: 'deny', message: ISSUE_GATE_DENIED.incognito }
     }
     const repo = (deps.repoFor ?? repoFromCwd)(dir)
     if (!repo) {
-      return { decision: 'deny', message: 'This project has no github.com origin to name, so no issue is filed. Keep the handoff local, or offer the user a PRIVATE repo for it.' }
+      return { decision: 'deny', message: ISSUE_GATE_DENIED.noOrigin }
     }
     const target = repoArg(hit.args ?? [])
     if (target && target.toLowerCase() !== repo.toLowerCase()) {
-      return { decision: 'deny', message: `Issues for this project go to ${repo} only; --repo ${target} is refused.` }
+      return { decision: 'deny', message: ISSUE_GATE_DENIED.otherRepo(repo, target) }
     }
     result = { decision: 'ask' }
   }

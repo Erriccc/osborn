@@ -2103,3 +2103,11 @@ export const PHONE_PERMISSION_DENIED = 'Tools that need approval cannot be appro
 
 /** Deny reason the model reads for any tool during a phone call (phone tools off): a call is talk-only. */
 export const PHONE_TOOLS_DENIED = 'Tools are off on a phone call: no reading files, running commands, searching the web or starting agents. Answer from what you already know, and tell the caller you cannot do that on a call and to use the app for it.'
+
+/** Deny reasons the model reads from the issue-filing gate (issue-gate.ts, #651). */
+export const ISSUE_GATE_DENIED = {
+  publicRepo: 'A new repository is never public by default. Offer the user a PRIVATE repo (`gh repo create --private`) and ask before creating it.',
+  incognito: 'This project is incognito (the default), so nothing is filed on GitHub. Keep the handoff local: write it to the session workspace and tell the user where it is.',
+  noOrigin: 'This project has no github.com origin to name, so no issue is filed. Keep the handoff local, or offer the user a PRIVATE repo for it.',
+  otherRepo: (repo: string, target: string) => `Issues for this project go to ${repo} only; --repo ${target} is refused.`,
+}
