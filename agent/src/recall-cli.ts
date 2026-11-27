@@ -82,12 +82,11 @@ function fmtHit(h: RecallHit, maxChars: number): string {
 
 export async function main(argv: string[]): Promise<number> {
   const { opts, positional } = parseArgs(argv)
-  // Active project = OSBORN_CWD, which the agent sets to the session's working dir for its Claude subprocess; another project's store is opt-in (#657).
-  const active = process.env.OSBORN_CWD || process.cwd()
-  const cwd = (typeof opts.cwd === 'string' ? opts.cwd : '') || active
-  const scopeCwd = crossProjectRecallEnabled() ? undefined : active
-  const refused = (dbPath?: string) => !!scopeCwd && (!rowInScope(cwd, scopeCwd) || (!!dbPath && !isWithin(dbPath, osbRoot(cwd))))
-  const REFUSED = 'Cross-project recall is off: this store belongs to another project. Set OSBORN_CROSS_PROJECT_RECALL=on to allow it.'
+  // The agent sets OSBORN_RECALL_SCOPE to the session's project dir for its Claude subprocess (#657); unset (a hand run) means no scope.
+  const scopeCwd = process.env.OSBORN_RECALL_SCOPE || undefined
+  const cwd = (typeof opts.cwd === 'string' ? opts.cwd : '') || scopeCwd || process.env.OSBORN_CWD || process.cwd()
+  const refused = (dbPath?: string) => !!scopeCwd && !crossProjectRecallEnabled() && (!rowInScope(cwd, scopeCwd) || (!!dbPath && !isWithin(dbPath, osbRoot(cwd))))
+  const REFUSED = 'Cross-project recall is off: this store belongs to another project.'
   if (refused()) { console.error(REFUSED); return 1 }
 
   if (opts.list) {

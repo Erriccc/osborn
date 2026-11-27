@@ -41,7 +41,7 @@ assert.ok(rowInScope(join(A, 'sub'), A) && rowInScope(null, A) && !rowInScope(B,
 // osborn-recall refuses another project's store by default (--cwd, --list, --session escaping the project)
 const bStore = getStorePath(sid, B); mkdirSync(dirname(bStore), { recursive: true }); writeFileSync(bStore, '')
 const cli = (args: string[], env: Record<string, string> = {}) => spawnSync('npx', ['tsx', join(import.meta.dirname, '../src/recall-cli.ts'), ...args], {
-  env: { ...process.env, OSBORN_CWD: A, ...env }, encoding: 'utf-8' })
+  env: { ...process.env, OSBORN_RECALL_SCOPE: A, ...env }, encoding: 'utf-8' })
 for (const args of [['zebrafish', '--cwd', B], ['--list', '--cwd', B], ['zebrafish', '--session', relative(dirname(dirname(getStorePath(sid, A))), dirname(bStore))]]) {
   const r = cli(args)
   assert.equal(r.status, 1, args.join(' ')); assert.match(r.stderr, /Cross-project recall is off/)
