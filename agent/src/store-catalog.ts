@@ -27,8 +27,10 @@ interface CatalogSource {
   agent?: RegExp          // matches <file>.md
 }
 
+const TOP_SKILLS = /^skills\/[^/]+\/SKILL\.md$/
+
 export const SOURCES: CatalogSource[] = [
-  { id: 'anthropic-skills', label: 'Anthropic skills', repo: 'anthropics/skills', trust: 'anthropic', skill: /^skills\/[^/]+\/SKILL\.md$/ },
+  { id: 'anthropic-skills', label: 'Anthropic skills', repo: 'anthropics/skills', trust: 'anthropic', skill: TOP_SKILLS },
   {
     id: 'anthropic-plugins', label: 'Anthropic plugins', repo: 'anthropics/claude-plugins-official', trust: 'anthropic',
     skill: /^plugins\/([^/]+)\/skills\/[^/]+\/SKILL\.md$/, agent: /^plugins\/([^/]+)\/agents\/[^/]+\.md$/,
@@ -37,7 +39,7 @@ export const SOURCES: CatalogSource[] = [
     id: 'wshobson-agents', label: 'wshobson/agents', repo: 'wshobson/agents', trust: 'community',
     skill: /^plugins\/([^/]+)\/skills\/[^/]+\/SKILL\.md$/, agent: /^plugins\/([^/]+)\/agents\/[^/]+\.md$/,
   },
-  { id: 'iart-b-roll', label: 'iart-ai/b-roll-skills', repo: 'iart-ai/b-roll-skills', trust: 'community', skill: /^skills\/[^/]+\/SKILL\.md$/ },
+  { id: 'iart-b-roll', label: 'iart-ai/b-roll-skills', repo: 'iart-ai/b-roll-skills', trust: 'community', skill: TOP_SKILLS },
 ]
 
 export interface CatalogEntry {
