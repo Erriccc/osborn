@@ -16,11 +16,11 @@
  */
 
 import { existsSync, statSync, readdirSync } from 'fs'
-import { join, resolve, sep } from 'path'
+import { join } from 'path'
 import { homedir } from 'os'
 import { openStore, recall, getStorePath, type RecallHit } from './session-store.js'
 import { getEmbedder } from './embedder.js'
-import { crossProjectRecallEnabled, rowInScope } from './recall-scope.js'
+import { crossProjectRecallEnabled, rowInScope, within } from './recall-scope.js'
 
 function projectSlug(dir: string): string {
   return dir.replace(/\//g, '-')
@@ -93,10 +93,10 @@ export async function main(argv: string[]): Promise<number> {
     return 0
   }
 
-  // Active project = the agent's own working dir; another project's store is opt-in (#657).
+  // Active project = OSBORN_CWD, which the agent sets to the session's working dir for its Claude subprocess; another project's store is opt-in (#657).
   const activeCwd = process.env.OSBORN_CWD || process.cwd()
   const scopeCwd = crossProjectRecallEnabled() ? undefined : activeCwd
-  if (scopeCwd && ((typeof opts.cwd === 'string' && !rowInScope(opts.cwd, scopeCwd)) || (typeof opts.db === 'string' && !resolve(opts.db).startsWith(resolve(osbRoot(scopeCwd)) + sep)))) {
+  if (scopeCwd && ((typeof opts.cwd === 'string' && !rowInScope(opts.cwd, scopeCwd)) || (typeof opts.db === 'string' && !within(opts.db, osbRoot(scopeCwd))))) {
     console.error('Cross-project recall is off: this store belongs to another project. Set OSBORN_CROSS_PROJECT_RECALL=on to allow it.')
     return 1
   }

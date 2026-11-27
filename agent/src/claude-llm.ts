@@ -2834,6 +2834,8 @@ class ClaudeLLMStream extends llm.LLMStream {
 
       const sdkOptions: Options = {
         cwd: this.#opts.workingDirectory,
+        // osborn-recall reads OSBORN_CWD as the active project (#657).
+        ...(this.#opts.workingDirectory ? { env: { ...process.env, OSBORN_CWD: this.#opts.workingDirectory } } : {}),
         permissionMode: this.#opts.permissionMode,
         allowedTools,
         // Only the hub's own tools (not allowed, so each call asks); the config/toggle servers stay inert here.

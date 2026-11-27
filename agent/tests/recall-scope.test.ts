@@ -37,7 +37,7 @@ process.env.OSBORN_CROSS_PROJECT_RECALL = 'on'
 assert.equal((await texts(A)).length, 2)
 delete process.env.OSBORN_CROSS_PROJECT_RECALL
 assert.equal((await texts()).length, 2) // no scope given: unfiltered
-assert.ok(rowInScope(join(A, 'sub'), A) && rowInScope(null, A) && !rowInScope(B, A))
+assert.ok(rowInScope(join(A, 'sub'), A) && rowInScope(null, A) && !rowInScope(B, A) && !rowInScope(process.env.HOME, A))
 
 // osborn-recall refuses another project's store by default
 const cli = (env: Record<string, string>) => spawnSync('npx', ['tsx', join(import.meta.dirname, '../src/recall-cli.ts'), 'zebrafish', '--mode', 'keyword', '--cwd', B], {

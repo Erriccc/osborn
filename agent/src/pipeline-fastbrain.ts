@@ -243,7 +243,7 @@ async function executeSearch(phrases: string[], sessionId: string, workingDir: s
     const db = openStore(dbPath, { readonly: true })
     try {
       const query = phrases.slice(0, 6).join(' ')
-      const hits = await recall(db, query, { mode: embed ? 'hybrid' : 'keyword', topK: 12, embed })
+      const hits = await recall(db, query, { mode: embed ? 'hybrid' : 'keyword', topK: 12, embed, scopeCwd: workingDir })
       if (!hits.length) {
         dbResult = `No matches for: ${phrases.join(', ')}`
       } else {
