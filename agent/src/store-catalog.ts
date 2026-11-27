@@ -64,7 +64,7 @@ export interface CatalogEntry {
 }
 
 /** shas: each path's git blob sha, so a changed script moves an entry's rev. */
-export interface Snapshot { sha: string; paths: string[]; shas?: Record<string, string> }
+export interface Snapshot { sha: string; paths: string[]; shas: Record<string, string> }
 type Reader = (path: string) => Promise<string | null>
 
 // ── Parsing ──────────────────────────────────────────────────────────────────
@@ -76,6 +76,7 @@ const list = (v: unknown): string[] =>
 const toolsOf = (meta: Record<string, unknown>) => list(meta.tools ?? meta['allowed-tools'])
 const SCRIPT_EXT = /\.(py|sh|bash|zsh|js|mjs|cjs|ts|rb|pl|ps1|php|html?)$/i  // html: a template Chrome renders runs its scripts
 const isHidden = (rel: string) => rel.split('/').some((s) => s.startsWith('.'))
+const hasOwnLicense = (files: string[]) => files.some((f) => /^LICEN[CS]E/i.test(f))
 
 function detectLicense(text: string | null | undefined): string | undefined {
   if (!text) return undefined
@@ -103,7 +104,7 @@ export const revOf = (md: string, files: string[], blobs?: string[]) => {
   if (blobs) h.update('\0' + blobs.join('\n'))
   return (blobs ? 's2:' : '') + h.digest('hex').slice(0, 16)
 }
-const blobsOf = (files: string[], dir: string, shas?: Record<string, string>) => shas ? files.map((f) => shas[`${dir}/${f}`] ?? '') : undefined
+const blobsOf = (files: string[], dir: string, shas: Record<string, string>) => files.map((f) => shas[`${dir}/${f}`] ?? '')
 
 /** Turns a repo snapshot into catalog entries (pure apart from `read`). Returns the bodies too. */
 export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: Reader): Promise<{ entries: CatalogEntry[]; bodies: Record<string, string>; failed: number; tooLarge: number }> {
@@ -146,9 +147,9 @@ export async function normaliseSource(src: CatalogSource, snap: Snapshot, read: 
       tools, ...(str(meta.model) ? { model: str(meta.model) } : {}),
       files, repo: src.repo, path: dir, sha: snap.sha,
       rev: h.kind === 'skill' ? revOf(md, files, blobsOf(files, dir, snap.shas)) : revOf(md, files),
-      license: ownLicense ? (/LICENSE/i.test(ownLicense) ? 'See LICENSE.txt' : ownLicense.slice(0, 40)) : (files.some((f) => /^LICEN[CS]E/i.test(f)) ? 'See LICENSE.txt' : repoLicense || 'Unknown'),
+      license: ownLicense ? (/LICENSE/i.test(ownLicense) ? 'See LICENSE.txt' : ownLicense.slice(0, 40)) : (hasOwnLicense(files) ? 'See LICENSE.txt' : repoLicense || 'Unknown'),
       scripts: files.filter((f) => f.startsWith('scripts/') || SCRIPT_EXT.test(f)),
-      ...(h.kind === 'skill' && rootLicense && !files.some((f) => /^LICEN[CS]E/i.test(f)) ? { licenseFile: rootLicense } : {}),
+      ...(h.kind === 'skill' && rootLicense && !hasOwnLicense(files) ? { licenseFile: rootLicense } : {}),
       trust: src.trust,
       ...(h.plugin ? { plugin: h.plugin, ...(market[h.plugin]?.category ? { category: market[h.plugin].category } : {}) } : {}),
     }
@@ -170,24 +171,20 @@ async function snapshotViaApi(repo: string): Promise<Snapshot> {
   if (!c.ok) throw new Error(`commit lookup ${c.status}`)
   const sha = (await c.text()).trim()
   if (!/^[0-9a-f]{40}$/.test(sha)) throw new Error('bad commit sha')
-  const t = await fetch(`${GH_API}/repos/${repo}/git/trees/${sha}?recursive=1`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20000) })
-  if (!t.ok) throw new Error(`tree ${t.status}`)
-  return snapshotOfTree(await t.json(), sha)
+  return treeAt(repo, sha)
 }
 
-function snapshotOfTree(tree: { tree?: { path: string; type: string; sha?: string }[]; truncated?: boolean }, sha: string): Snapshot {
+async function treeAt(repo: string, sha: string): Promise<Snapshot> {
+  const t = await fetch(`${GH_API}/repos/${repo}/git/trees/${sha}?recursive=1`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20000) })
+  if (!t.ok) throw new Error(`tree ${t.status}`)
+  const tree = await t.json() as { tree?: { path: string; type: string; sha?: string }[]; truncated?: boolean }
   if (tree.truncated) throw new Error('tree listing truncated')  // a partial listing would cache as complete; git lists it all
   const blobs = (tree.tree || []).filter((n) => n.type === 'blob')
   return { sha, paths: blobs.map((n) => n.path), shas: Object.fromEntries(blobs.map((n) => [n.path, n.sha || ''])) }
 }
 
 /** Blob shas of a repo at a pinned commit (null when it cannot be listed). */
-async function blobShasAt(repo: string, sha: string): Promise<Record<string, string> | null> {
-  try {
-    const t = await fetch(`${GH_API}/repos/${repo}/git/trees/${sha}?recursive=1`, { headers: { ...ghHeaders(), Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(20000) })
-    return t.ok ? snapshotOfTree(await t.json(), sha).shas ?? null : null
-  } catch { return null }
-}
+const blobShasAt = (repo: string, sha: string) => treeAt(repo, sha).then((s) => s.shas, () => null)
 
 /** Fallback when the API is rate-limited or blocked: a blobless depth-1 clone, file names only. */
 async function snapshotViaGit(repo: string): Promise<Snapshot> {
@@ -323,7 +320,7 @@ export async function installSkill(
       writeFileSync(out, buf)
     }
     // The repo's root licence travels with the skill when the skill folder has none.
-    if (entry.licenseFile && !entry.files.some((f) => /^LICEN[CS]E/i.test(f))) {
+    if (entry.licenseFile) {
       let lic: Buffer | null = null
       try { lic = await fetchFile(entry.licenseFile) } catch { /* below */ }
       if (!lic) return { error: `could not fetch ${entry.licenseFile}` }
@@ -367,14 +364,14 @@ export interface StoreUpdate { id: string; kind: EntryKind; target: string; from
 // A failed read is remembered for a few minutes, so a rate limit does not cost every catalog load.
 const RETRY_MS = 5 * 60 * 1000
 const pinnedReads = new Map<string, { p: Promise<{ rev: string; md: string } | null>; failedAt: number }>()
-function readAtCommit(kind: EntryKind, repo: string, sha: string, path: string, files: string[], read: Reader, shasAt?: () => Promise<Record<string, string> | null>): Promise<{ rev: string; md: string } | null> {
+function readAtCommit(kind: EntryKind, repo: string, sha: string, path: string, files: string[], read: Reader, shasAt: () => Promise<Record<string, string> | null>): Promise<{ rev: string; md: string } | null> {
   const key = `${repo}@${sha}/${path}`
   const hit = pinnedReads.get(key)
   if (hit && !(hit.failedAt && Date.now() - hit.failedAt > RETRY_MS)) return hit.p
   const rec = { p: (async () => {
     const md = await read(kind === 'skill' ? `${path}/SKILL.md` : path)
     if (md == null) return null
-    if (kind !== 'skill' || !shasAt) return { rev: revOf(md, files), md }
+    if (kind !== 'skill') return { rev: revOf(md, files), md }
     const shas = await shasAt()
     return shas ? { rev: revOf(md, files, blobsOf(files, path, shas)), md } : null
   })().catch(() => null), failedAt: 0 }

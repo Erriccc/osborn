@@ -190,9 +190,12 @@ const run = async () => {
     assert.deepEqual(await installSkill(b, root2, new Set(), fetchB), { ok: true, name: 'talking-head-b-roll' })
     assert.equal(readFileSync(join(root2, 'talking-head-b-roll', 'LICENSE'), 'utf-8'), bFiles.LICENSE, 'the root licence is installed with the skill')
     // A skill that ships its own licence keeps it and gets no second copy.
-    const own = { ...b, name: 'own-lic', files: [...b.files, 'LICENSE.txt'] }
-    const fetchOwn = async (q: string) => (q.endsWith('LICENSE.txt') ? Buffer.from('own') : fetchB(q))
-    await installSkill(own, root2, new Set(), fetchOwn)
+    const ownFiles = { ...bFiles, [`${D}/LICENSE.txt`]: 'own' }
+    const [own0] = (await normaliseSource(br, snapAt('6'.repeat(40), ownFiles, Object.keys(ownFiles)), async (q) => ownFiles[q] ?? null)).entries
+    assert.equal(own0.licenseFile, undefined, 'a skill with its own licence carries no root licence')
+    const own = { ...own0, name: 'own-lic' }
+    await installSkill(own, root2, new Set(), async (q) => (ownFiles[q] != null ? Buffer.from(ownFiles[q]) : null))
+    assert.ok(existsSync(join(root2, 'own-lic', 'LICENSE.txt')))
     assert.ok(!existsSync(join(root2, 'own-lic', 'LICENSE')))
     // A licence that cannot be fetched refuses the install and leaves nothing behind.
     assert.match((await installSkill({ ...b, name: 'nolic' }, root2, new Set(), async (q) => (q === 'LICENSE' ? null : fetchB(q))) as any).error, /could not fetch LICENSE/)
