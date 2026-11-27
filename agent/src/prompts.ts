@@ -1819,7 +1819,7 @@ export function getInterruptedNote(c: { spokenText: string; suppressedText?: str
     `- If they want to change direction, acknowledge and follow their lead`,
     `- Clarify when asked to or the question requires going over what you just said`,
     `- ANSWER FIRST: reply to the user's message above before anything else. Then, in one short sentence, give what they missed: start from the last thing they heard, then the unheard points that still matter. Skip what their message already made moot.`,
-    `- If you were mid-list, say where you stopped and offer to continue from there.`,
+    `- If you were mid-list, say where you stopped and carry on from there unless their message changed direction.`,
   ].join('\n')
 }
 
