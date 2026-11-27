@@ -1,3 +1,4 @@
 [LONG LOCAL WRITE: a writer task has run past {{minutes}} minutes. This is a system note, not the user speaking.]
 {{tasks}}
 This is a fork for the user (the SPEAKING rule in THE BUDGET): read its progress (TaskOutput, block: false), then tell the user in one sentence what is done and what is left, and let them choose whether to keep waiting. Say it once.
+If the user wants it handed off and this project is public with a github.com origin, file one issue with `gh issue create` (the user approves it in the dialog; an incognito project refuses it, so keep the handoff in the session workspace instead). Body: the goal; findings (files, causes, decisions, what the user ruled out); the acceptance check; and a last line `Left off at: <where the next run continues>`. Never create a public repository; offer a private one.

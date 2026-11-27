@@ -14,6 +14,8 @@ const run = promisify(execFile)
 
 export type StewardMode = 'advise' | 'block' | 'off'
 export type GitAction = 'commit' | 'push' | 'pr'
+/** `gh issue create` / `gh repo create`: not steward-checked; issue-gate.ts rules on them (#651). */
+export type GhAction = 'issue' | 'repo'
 
 export const MARKER_FILE = 'osborn-steward'
 
@@ -36,7 +38,7 @@ export function stewardMode(env: Record<string, string | undefined> = process.en
 // counts: not `grep "git push"` or `echo "... git commit"`.
 // `dir: null` = the shell's directory there could not be worked out, so the
 // action is skipped rather than checked against a guess.
-type Hit = { action: GitAction; dir: string | null }
+type Hit = { action: GitAction | GhAction; dir: string | null; args?: string[] }
 // Words that can precede a command: keywords, wrappers, and wrappers' options.
 const PREFIX = new Set(['sudo', 'command', 'exec', 'env', 'nohup', 'time', 'builtin', 'nice', 'xargs', 'timeout', 'setsid', 'stdbuf', 'doas', 'ionice',
   'then', 'do', 'else', 'elif', 'if', 'while', 'until', '!', '{', '}'])
@@ -135,6 +137,7 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
     if (name === 'gh') {
       const rest = w.slice(1).filter((x, j, a) => !x.startsWith('-') && !['--repo', '-R', '--hostname'].includes(a[j - 1]))
       if (rest[0] === 'pr' && rest[1] === 'create') hits.push({ action: 'pr', dir })
+      if ((rest[0] === 'issue' || rest[0] === 'repo') && rest[1] === 'create') hits.push({ action: rest[0] as GhAction, dir, args: w.slice(1) })
       return
     }
     if (name !== 'git') return
@@ -212,6 +215,7 @@ export async function stewardGate(cmd: string, cwd: string, mode: StewardMode = 
   if (mode === 'off') return { decision: 'allow' }
   let unsigned: GitAction | null = null, failed: string | null = null
   for (const hit of gitActions(cmd, cwd)) {
+    if (hit.action === 'issue' || hit.action === 'repo') continue
     // An unknown directory (`cd $VAR`, `cd -`) or one the command has not created
     // yet is skipped, as before: there is no repo to read, and nothing the agent
     // could do about a complaint. `git worktree add w && cd w && git commit` is
