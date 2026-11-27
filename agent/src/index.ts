@@ -4088,6 +4088,7 @@ async function main() {
     suppressedBlocks: SuppressedBlock[]  // agent text we did NOT play because the user was speaking (see tts_say gate below), one entry per block with its own turn id and first-buffered time (#549)
     fullBlockText?: string  // full intended TTS block text — fallback when JSONL is empty
     messageId?: string       // the turn the barge-in cut off; marked stale only once it is consumed
+    heardIsEstimate?: boolean  // spokenText came from a position or timer, not the SDK's synced transcript (#675)
     timestamp: number
   } | null = null
 
@@ -4096,7 +4097,7 @@ async function main() {
    * If interrupted: gather spoken text + JSONL context. Does NOT send to Claude yet —
    * that happens when the user's transcribed message arrives via chat().
    */
-  async function handleSpeechDone(handle: any, fullText: string, fullBlockText?: string, messageId?: string) {
+  async function handleSpeechDone(handle: any, fullText: string, fullBlockText?: string, messageId?: string, heardIsEstimate = false) {
     if (!handle.interrupted) {
       lastInterruption = null
       return
@@ -4143,6 +4144,7 @@ async function main() {
       suppressedBlocks: carriedSuppressed,
       fullBlockText: fullBlockText && fullBlockText !== fullText ? fullBlockText : undefined,
       messageId,
+      heardIsEstimate,
       timestamp: Date.now(),
     }
     console.log(`📋 Interruption context stored (text: ${fullText.length} chars, JSONL: ${recentMessages.length} chars, block: ${fullBlockText?.length ?? 0} chars, suppressed carried: ${totalChars(carriedSuppressed)} chars)`)
@@ -4279,6 +4281,7 @@ async function main() {
       recentMessages: heard ? lastInterruption.recentMessages : '',
       suppressedText: joinBlocks(live),
       fullBlockText: heard ? lastInterruption.fullBlockText : undefined,
+      heardIsEstimate: heard && !!lastInterruption.heardIsEstimate,
     }
     staleTurnId = staleIdOnConsume(heard ? lastInterruption : null, staleTurnId)
     if (ctx.suppressedText) console.log(`🤐 [suppressed] CONSUMED ${ctx.suppressedText.length} chars by chat() (may not reach the prompt if the turn text was empty)`)
@@ -5400,19 +5403,23 @@ async function main() {
                 method = 'wall-clock'
               } else {
                 // Fallback: interrupt fired before first frame — pass full block
-                spokenText = data.text
+                spokenText = heardSlice(data.text, 0)  // nothing played yet: the opening word at most (#675)
                 method = 'full-block-fallback'
               }
+              const syncLost = sdkTranscript ? null
+                : !audioOutput?.lastPlaybackEvent ? 'no lastPlaybackEvent on the audio output'
+                : 'lastPlaybackEvent had no synchronizedTranscript (TTS gave no aligned transcript)'
 
               console.log('🔇 Interruption estimate:', JSON.stringify({
                 method,
                 sdkPlaybackSec,
                 isSynced: !!sdkTranscript,
+                ...(syncLost ? { syncLost } : {}),
                 spokenChars: spokenText.length,
                 fullChars: data.text.length,
                 heard: spokenText.slice(0, 80) + (spokenText.length > 80 ? '...' : '')
               }))
-              handleSpeechDone(sh, spokenText, data.text, data.messageId)
+              handleSpeechDone(sh, spokenText, data.text, data.messageId, !sdkTranscript)
             } else {
               bargeInPausedAt = null
               console.log(`✅ [${sayId}] session.say DONE`)

@@ -1778,7 +1778,7 @@ export function getDroppedUnspokenNote(chars: number): string {
 }
 
 /** The user's turn after they cut a reply off mid-speech (pipeline mode). The "User's message … CONTEXT PRESERVATION" shape is parsed back by transcript-sanitizer.ts. */
-export function getInterruptedNote(c: { spokenText: string; suppressedText?: string; recentMessages?: string; fullBlockText?: string; userText: string; liveSubagents: string[] }): string {
+export function getInterruptedNote(c: { spokenText: string; heardIsEstimate?: boolean; suppressedText?: string; recentMessages?: string; fullBlockText?: string; userText: string; liveSubagents: string[] }): string {
   const suppressedBlock = c.suppressedText
     ? [
         ``,
@@ -1795,6 +1795,7 @@ export function getInterruptedNote(c: { spokenText: string; suppressedText?: str
     ``,
     `What the user heard before cutoff:`,
     `"${c.spokenText}"`,
+    ...(c.heardIsEstimate ? [`(This is an estimate from playback timing. The user may have heard less than this, so do not assume they heard even the end of it.)`] : []),
     ``,
     `WHAT THE USER DID NOT HEAR (you wrote this but it was cut off):`,
     `Anything in "Your recent messages" below that appears AFTER the quoted heard text is content the user did not hear. The user has no memory of it.`,

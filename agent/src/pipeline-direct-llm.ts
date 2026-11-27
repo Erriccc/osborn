@@ -155,6 +155,7 @@ export function withNotePrepended(chatCtx: llm.ChatContext, note: string): llm.C
 
 export interface InterruptionContext {
   spokenText: string       // what user heard (word-accurate from LiveKit synchronizedTranscript)
+  heardIsEstimate?: boolean  // spokenText is a position/timer estimate, so the user may have heard less (#675)
   recentMessages: string   // last 10 assistant messages from JSONL (full untruncated)
   /**
    * Text the agent generated while the user was still speaking, which we
