@@ -43,6 +43,14 @@ jobs:
           sha=$(gh pr list --state open --limit 200 --json headRefName,headRefOid,isCrossRepository \
             --jq "map(select((.isCrossRepository | not) and (.headRefName | startswith(\"auto/${ISSUE_NUMBER}-\")))) | first | .headRefOid // empty")
           echo "sha=${sha:-none}" >> "$GITHUB_OUTPUT"
+      # A browser for UI screenshots (scripts/ui-shots.mjs): Playwright from
+      # tests/voice-e2e plus its pinned Chromium. On #480 the agent assumed
+      # there was none (run 45947089086). A failure here only costs screenshots.
+      - name: Install Playwright Chromium
+        continue-on-error: true
+        run: |
+          npm ci --prefix tests/voice-e2e --include=dev --ignore-scripts --no-audit --no-fund
+          npx --prefix tests/voice-e2e playwright install --with-deps chromium
       - id: claude
         uses: anthropics/claude-code-action@v1
         with:
