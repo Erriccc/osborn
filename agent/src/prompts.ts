@@ -33,7 +33,7 @@ export const getLongLocalWriteNote = (tasks: Array<{ taskId: string; description
   if (!late.length) return null
   try {
     const rows = late.map((t) => `  · ${Math.floor((now - t.startedAt) / 60_000)} min: ${recapText(t.description || 'writer task')}`).join('\n')
-    const note = readFileSync(join(PROMPTS_FILE_DIR, 'long-local-write.md'), 'utf-8').trim().replace('{{minutes}}', String(LONG_WRITE_MIN)).replace('{{tasks}}', rows)
+    const note = readFileSync(join(PROMPTS_FILE_DIR, 'long-local-write.md'), 'utf-8').trim().replace('{{minutes}}', String(LONG_WRITE_MIN)).replace('{{tasks}}', () => rows)
     late.forEach((t) => noted.add(t.taskId))
     return note
   } catch { return null }
