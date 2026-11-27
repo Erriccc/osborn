@@ -8,7 +8,7 @@
  * nothing, so the items stay open for the next flush or the next-start drain.
  */
 import { existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { acquireLock, releaseLock } from './content/lens-paths.js'
 import { postFollowThrough, type FollowThroughItem } from './follow-through-client.js'
 import {
@@ -32,6 +32,14 @@ export interface FlushDeps {
 // Small enough that the route answers inside the client's timeout (it creates issues one by one).
 const MAX_BATCH = 10
 
+/** The cwd or any parent holds `.git`, as `git remote get-url` resolves it (a subfolder counts). */
+function inGitCheckout(cwd: string): boolean {
+  for (let d = resolve(cwd); ; d = dirname(d)) {
+    if (existsSync(join(d, '.git'))) return true
+    if (dirname(d) === d) return false
+  }
+}
+
 export async function flushSession(sessionId: string, cwd: string, deps: FlushDeps = {}): Promise<{ status: FlushStatus; filed: number; repo?: string; via?: 'origin' | 'default'; detail?: string }> {
   const lockDir = dirname(getLoopsPath(sessionId, cwd))
   if (!acquireLock(lockDir, deps.now ?? Date.now(), LOOPS_LOCK, LOOPS_LOCK_TTL_MS)) return { status: 'locked', filed: 0 }
@@ -43,7 +51,7 @@ export async function flushSession(sessionId: string, cwd: string, deps: FlushDe
     // (validated by the route, whose refusal the worker logs).
     const origin = (deps.repoFor ?? repoFromCwd)(cwd)
     // Only a folder that is not a git checkout at all: a repo with a non-GitHub origin never files elsewhere.
-    const fallback = existsSync(join(cwd, '.git')) ? undefined : deps.defaultRepo ?? (process.env.OSBORN_FOLLOW_THROUGH_DEFAULT_REPO?.trim() || undefined)
+    const fallback = inGitCheckout(cwd) ? undefined : deps.defaultRepo ?? (process.env.OSBORN_FOLLOW_THROUGH_DEFAULT_REPO?.trim() || undefined)
     const repo = origin ?? fallback
     const via = origin ? 'origin' as const : 'default' as const
     if (!repo) return { status: 'no-repo', filed: 0 }

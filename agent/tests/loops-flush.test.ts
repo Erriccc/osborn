@@ -186,6 +186,10 @@ await t('a git checkout without a github origin never uses the default repo', as
   L.appendLoopRecord('s-gl', gitCwd, { kind: 'ask', id: L.loopIds.ask('remind me gl'), text: 'remind me gl', source: 'explicit', origin: 'user_mic', fg: true })
   const r = await flushSession('s-gl', gitCwd, deps({ repoFor: () => undefined, defaultRepo: 'o/default' }))
   assert.equal(r.status, 'no-repo')
+  // A subfolder of that checkout is still inside it.
+  const sub = join(gitCwd, 'pkg'); mkdirSync(sub, { recursive: true })
+  L.appendLoopRecord('s-gl2', sub, { kind: 'ask', id: L.loopIds.ask('remind me sub'), text: 'remind me sub', source: 'explicit', origin: 'user_mic', fg: true })
+  assert.equal((await flushSession('s-gl2', sub, deps({ repoFor: () => undefined, defaultRepo: 'o/default' }))).status, 'no-repo')
 })
 
 await t('a refused post reports why', async () => {
