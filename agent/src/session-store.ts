@@ -90,13 +90,13 @@ interface ExtractedRecord {
 // PATHS
 // ============================================================
 
-/** osb index dir for a session: ~/.claude/projects/{slug}/osb/{sessionId}/ */
 /** A project's `osb` root, holding one folder per session. */
 export function getOsbRoot(workingDir: string): string {
   const claudeDir = process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude')
   return join(claudeDir, 'projects', projectPathToSlug(workingDir), 'osb')
 }
 
+/** osb index dir for a session: ~/.claude/projects/{slug}/osb/{sessionId}/ */
 function getOsbDir(sessionId: string, workingDir: string): string {
   return join(getOsbRoot(workingDir), sessionId)
 }
@@ -604,9 +604,12 @@ export const crossProjectRecallEnabled = (): boolean => {
   return env ? envFlagOn(env) : readCrossProjectRecall()
 }
 
-/** True when a row recorded at `rowCwd` may be shown for `activeCwd` (that dir or inside it); a row with no cwd is this store's own. */
-export function rowInScope(rowCwd: string | null | undefined, activeCwd: string | undefined): boolean {
-  return !rowCwd || !activeCwd || crossProjectRecallEnabled() || isWithin(rowCwd, activeCwd)
+/** The dir recall is limited to: `activeCwd`, or none when cross-project recall is on. Call once per scan: the setting is a file read. */
+export const recallScope = (activeCwd: string | undefined): string | undefined => crossProjectRecallEnabled() ? undefined : activeCwd
+
+/** True when a row recorded at `rowCwd` may be shown for `scope` (from `recallScope`: that dir or inside it); a row with no cwd is this store's own. */
+export function rowInScope(rowCwd: string | null | undefined, scope: string | undefined): boolean {
+  return !rowCwd || !scope || isWithin(rowCwd, scope)
 }
 
 /**
@@ -684,10 +687,11 @@ export async function recall(
     'SELECT id, source, line_num, byte_offset, ts, msg_type, model, git_branch, cwd, tool_name, blob FROM content WHERE id = ?'
   )
   const hits: RecallHit[] = []
+  const scope = recallScope(opts?.scopeCwd)
   for (const [id, meta] of ranked) {
     if (hits.length >= topK) break
     const row = getRow.get(id) as any
-    if (!row || !rowInScope(row.cwd, opts?.scopeCwd)) continue
+    if (!row || !rowInScope(row.cwd, scope)) continue
     hits.push({
       id: row.id,
       source: row.source,
