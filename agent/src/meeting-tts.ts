@@ -135,7 +135,7 @@ async function tryProvider(req: ProviderRequest, timeoutMs: number, f: typeof fe
     })
     if (!r.ok) {
       const e = await r.text().catch(() => '')
-      console.warn(`⚠️ meeting tts ${req.label} ${r.status}: ${e.slice(0, 160)}`)
+      console.warn(`⚠️ meeting tts ${req.label} ${r.status}${r.status === 429 && req.label.startsWith('soniox') ? ' RATE/STREAM LIMIT' : ''}: ${e.slice(0, 160)}`)
       return null
     }
     const buf = Buffer.from(await r.arrayBuffer())

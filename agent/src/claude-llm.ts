@@ -36,6 +36,7 @@ import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFront
 import { isOwnApiCurl } from './canvas-key.js'
 import { currentIdOnPush } from './stale-turn.js'
 import { markPush, markHookDone } from './turn-timing.js'
+import { envWholeNumber } from './env-keys.js'
 
 // Directory of this module — used to locate co-located prompt files (e.g., compact-learnings instruction).
 const __claudeLlmDir = dirname(fileURLToPath(import.meta.url))
@@ -60,7 +61,9 @@ const RECALL_ENABLED = () => process.env.OSBORN_RECALL_INJECT !== '0'
 // Query-side embed budget. Vector/hybrid is the PREFERRED recall path; keyword is only
 // the fallback. This tight timeout means a slow network degrades to keyword FAST rather
 // than stalling the turn — the read path never waits the full write-path (20s) budget.
-const QUERY_EMBED_TIMEOUT_MS = Number(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS || 2500)
+const QUERY_EMBED_TIMEOUT_MS = envWholeNumber(process.env.OSBORN_QUERY_EMBED_TIMEOUT_MS) ?? 1200
+/** Catastrophic-hang backstop for the whole recall step; above the embed budget so a slow embed degrades to keyword first. */
+const RECALL_BACKSTOP_MS = QUERY_EMBED_TIMEOUT_MS + 800
 
 /** embedMs: the query embed fetch inside recall() (unset when none ran); sqlMs: store open + recall() without that fetch. */
 type RecallTiming = { embedMs?: number; sqlMs?: number }
@@ -101,7 +104,7 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
     const db = openStore(getStorePath(sessionId, workingDir), { readonly: true })
     let hits: RecallHit[]
     try {
-      hits = await recall(db, q, { mode: embed ? 'hybrid' : 'keyword', topK: RECALL_TOP_K, embed })
+      hits = await recall(db, q, { mode: embed ? 'hybrid' : 'keyword', topK: RECALL_TOP_K, embed, scopeCwd: workingDir })
     } finally {
       db.close()
       if (timing) timing.sqlMs = Date.now() - sqlT0 - (timing.embedMs ?? 0)
@@ -2836,6 +2839,8 @@ class ClaudeLLMStream extends llm.LLMStream {
 
       const sdkOptions: Options = {
         cwd: this.#opts.workingDirectory,
+        // osborn-recall reads OSBORN_RECALL_SCOPE as the active project (#657).
+        ...(this.#opts.workingDirectory ? { env: { ...process.env, OSBORN_RECALL_SCOPE: this.#opts.workingDirectory } } : {}),
         permissionMode: this.#opts.permissionMode,
         allowedTools,
         // Only the hub's own tools (not allowed, so each call asks); the config/toggle servers stay inert here.
@@ -3154,24 +3159,18 @@ class ClaudeLLMStream extends llm.LLMStream {
                 const fromSubagent = Boolean((input as any)?.agent_id)
                 const sid = (input as any)?.session_id || this.#sessionId
 
-                // Consolidated WRITE trigger: on every real user submission (main thread only),
-                // sweep main + ALL sub-agent JSONLs into session.db. Naturally debounced to the
-                // user's speech cadence (one submission = one sweep); guarded + fire-and-forget
-                // on the long-lived ClaudeLLM so injection below never waits on it. This is the
-                // single canonical write path — mirrors the flat index's sub-agent sweep, but
-                // stores FULL untruncated text + FTS5 + sqlite-vec instead of truncated summaries.
-                if (!fromSubagent && sid && this.#opts.workingDirectory) {
-                  this.#llmRef.triggerStoreUpdate(sid, this.#opts.workingDirectory)
-                }
+                // Consolidated WRITE trigger (main thread only): one sweep per user submission of main + ALL
+                // sub-agent JSONLs into session.db, guarded and fire-and-forget. Called after recall below so
+                // its synchronous parse/compress never runs ahead of the recall reads.
+                const sweepStore = () => { if (!fromSubagent && sid && this.#opts.workingDirectory) this.#llmRef.triggerStoreUpdate(sid, this.#opts.workingDirectory) }
                 // Follow-through ledger (#378): raw prompt + the user's own asks; recap once. The returned text is the recap plus any points checklist.
                 const loopRecap = fromSubagent ? '' : this.#llmRef.noteUserTurn(String(input?.prompt || ''), sid)
 
                 // Recall is best-effort and must never approach the SDK's 30s hook budget.
                 // buildRecallInjection is already self-bounding — the query embed has a tight
                 // timeout (falls back to keyword INSIDE recall) and the SQL is local/ms. This
-                // outer race is only a catastrophic-hang backstop (e.g. a momentarily locked
-                // store), set well above the embed budget so a slow embed degrades to keyword
-                // rather than being cut to nothing.
+                // outer race is a hang backstop at the embed budget + 800 ms: a slow embed degrades
+                // to keyword, and a store slower than that margin gets no recall this turn.
                 const hookT0 = Date.now()
                 // Longest event-loop stall during this hook (about 20 ms when idle): tells a blocked loop from slow I/O. Only with turn timing on.
                 const loopDelay = !fromSubagent && this.#opts.turnTiming ? (hookLoopDelay ??= monitorEventLoopDelay({ resolution: 20 })) : null
@@ -3182,9 +3181,10 @@ class ClaudeLLMStream extends llm.LLMStream {
                   ? ''
                   : await Promise.race([
                       buildRecallInjection(sid, this.#opts.workingDirectory, String(input?.prompt || ''), this.#opts.turnTiming ? recallTiming : undefined),
-                      new Promise<string>((res) => setTimeout(() => { backstopFired = true; res('') }, 6000)),
+                      new Promise<string>((res) => setTimeout(() => { backstopFired = true; res('') }, RECALL_BACKSTOP_MS)),
                     ])
                 const recallMs = Date.now() - hookT0
+                sweepStore()
                 const recallTimedOut = backstopFired // read now: the timer still fires after recall wins, during the nudge's wait
                 // Lightweight machine-load nudge (main agent only). Cheap synchronous
                 // snapshot, prepended so it's present even when recall degrades under load.
@@ -3203,7 +3203,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                 if (!fromSubagent && this.#opts.turnTiming) {
                   const hookMs = Date.now() - hookT0
                   markHookDone(hookMs, { recallMs, nudgeMs, recallTimedOut })
-                  if (hookMs > 1500) console.log(`[hook-timing] recall=${recallMs}ms embed=${recallTiming.embedMs ?? '-'}ms sql=${recallTiming.sqlMs ?? '-'}ms nudge=${nudgeMs}ms loop=${loopDelay ? Math.round(loopDelay.max / 1e6) : '-'}ms timedOut=${recallTimedOut}`)
+                  if (hookMs > 1000) console.log(`[hook-timing] recall=${recallMs}ms embed=${recallTiming.embedMs ?? '-'}ms sql=${recallTiming.sqlMs ?? '-'}ms nudge=${nudgeMs}ms loop=${loopDelay ? Math.round(loopDelay.max / 1e6) : '-'}ms timedOut=${recallTimedOut}`)
                   loopDelay?.disable() // read only here; left on it wakes the loop every 20 ms for the process lifetime
                 }
                 console.log(`📌 UserPromptSubmit: injected turn-shape reminder (${reminder.length} chars)${recalled ? ` + recall (${recalled.length} chars)` : ''}${machineNudge ? ` + machine(${machineNudge.includes('⚠️') ? 'HOT' : 'ok'})` : ''}${longWork ? ' + long-local-write' : ''} for prompt="${promptPreview}..." [counters reset; speak-cadence ${SPEAK_CADENCE_N}]`)

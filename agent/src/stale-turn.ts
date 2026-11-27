@@ -25,11 +25,12 @@ export function isStaleBlock(
 /**
  * Text heard of a block when only `chars` characters are known to have played:
  * cut at the last space at or before `chars`, or at `chars` when the first word is longer.
+ * When nothing measurable played, only the first word counts as heard: never the whole block (#675).
  */
 export function heardSlice(text: string, chars: number): string {
   const n = Math.max(0, Math.min(Math.round(chars), text.length))
   const i = text.lastIndexOf(' ', n)
-  return text.slice(0, i > 0 ? i : n) || text  // nothing measurable played: a cut still counts as an interruption
+  return text.slice(0, i > 0 ? i : n) || text.split(' ', 1)[0] || text  // never empty: a cut still counts as an interruption
 }
 
 /**

@@ -75,7 +75,7 @@ import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, Cli
 import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
-import { missingRequiredEnv, parseAecWarmupMs } from './env-keys.js'
+import { envWholeNumber, missingRequiredEnv, parseAecWarmupMs } from './env-keys.js'
 import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl, notifyPhone, isWatchBridgeEnabled, phonePushPending, settlePermissionPush } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate, isShhCue } from './noise-gate.js'
@@ -91,7 +91,7 @@ import { readVolumeSyncStatus } from './volume-sync-status.js'
 import { llm } from '@livekit/agents'
 import { z } from 'zod'
 import { closeSessionBounded } from './lib/settle-within.js'
-import { markTranscript, markReplay } from './turn-timing.js'
+import { markTranscript, markReplay, markUserState, markSay, markAudio } from './turn-timing.js'
 import { speechTimeline } from './speech-timeline.js'
 
 // ============================================================
@@ -3185,7 +3185,7 @@ async function main() {
       permissionMode: 'bypassPermissions' as const,
       enableFileCheckpointing: false,
       settingSources: ['project', 'user'] as any,
-      env: bgEnv,
+      env: { ...bgEnv, OSBORN_RECALL_SCOPE: slotWorkingDir },
     }
 
     // P1: persist the cold-start emitter + sdkOptions on the slot so a later
@@ -4088,6 +4088,7 @@ async function main() {
     suppressedBlocks: SuppressedBlock[]  // agent text we did NOT play because the user was speaking (see tts_say gate below), one entry per block with its own turn id and first-buffered time (#549)
     fullBlockText?: string  // full intended TTS block text — fallback when JSONL is empty
     messageId?: string       // the turn the barge-in cut off; marked stale only once it is consumed
+    heardIsEstimate?: boolean  // spokenText came from a position or timer, not the SDK's synced transcript (#675)
     timestamp: number
   } | null = null
 
@@ -4096,7 +4097,7 @@ async function main() {
    * If interrupted: gather spoken text + JSONL context. Does NOT send to Claude yet —
    * that happens when the user's transcribed message arrives via chat().
    */
-  async function handleSpeechDone(handle: any, fullText: string, fullBlockText?: string, messageId?: string) {
+  async function handleSpeechDone(handle: any, fullText: string, fullBlockText?: string, messageId?: string, heardIsEstimate = false) {
     if (!handle.interrupted) {
       lastInterruption = null
       return
@@ -4143,6 +4144,7 @@ async function main() {
       suppressedBlocks: carriedSuppressed,
       fullBlockText: fullBlockText && fullBlockText !== fullText ? fullBlockText : undefined,
       messageId,
+      heardIsEstimate,
       timestamp: Date.now(),
     }
     console.log(`📋 Interruption context stored (text: ${fullText.length} chars, JSONL: ${recentMessages.length} chars, block: ${fullBlockText?.length ?? 0} chars, suppressed carried: ${totalChars(carriedSuppressed)} chars)`)
@@ -4279,6 +4281,7 @@ async function main() {
       recentMessages: heard ? lastInterruption.recentMessages : '',
       suppressedText: joinBlocks(live),
       fullBlockText: heard ? lastInterruption.fullBlockText : undefined,
+      heardIsEstimate: heard && !!lastInterruption.heardIsEstimate,
     }
     staleTurnId = staleIdOnConsume(heard ? lastInterruption : null, staleTurnId)
     if (ctx.suppressedText) console.log(`🤐 [suppressed] CONSUMED ${ctx.suppressedText.length} chars by chat() (may not reach the prompt if the turn text was empty)`)
@@ -5335,6 +5338,7 @@ async function main() {
       }
 
       const sayId = Date.now() // simple ID to correlate start/end logs
+      markSay()
       console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
 
       // Apply agent-requested speed (e.g. [SPEED:0.85] stripped from response text)
@@ -5357,6 +5361,7 @@ async function main() {
             const onPlaybackStarted = () => {
               playbackStartedAt = Date.now()
               console.log(`🔊 [${sayId}] audio first frame out (playbackStarted)`)
+              markAudio()
               audioOutputRef.off('playbackStarted', onPlaybackStarted)
               // Notify frontend that this TTS chunk is now audibly playing
               if (data.messageId != null && data.chunkIndex != null) {
@@ -5397,20 +5402,21 @@ async function main() {
                 spokenText = heardSlice(data.text, elapsedSec * CHARS_PER_SEC)
                 method = 'wall-clock'
               } else {
-                // Fallback: interrupt fired before first frame — pass full block
-                spokenText = data.text
-                method = 'full-block-fallback'
+                // Fallback: interrupt fired before first frame — nothing played yet: the opening word at most (#675)
+                spokenText = heardSlice(data.text, 0)
+                method = 'before-first-frame'
               }
 
               console.log('🔇 Interruption estimate:', JSON.stringify({
                 method,
                 sdkPlaybackSec,
                 isSynced: !!sdkTranscript,
+                syncLost: sdkTranscript ? undefined : audioOutput?.lastPlaybackEvent ? 'lastPlaybackEvent had no synchronizedTranscript (TTS gave no aligned transcript)' : 'no lastPlaybackEvent on the audio output',
                 spokenChars: spokenText.length,
                 fullChars: data.text.length,
                 heard: spokenText.slice(0, 80) + (spokenText.length > 80 ? '...' : '')
               }))
-              handleSpeechDone(sh, spokenText, data.text, data.messageId)
+              handleSpeechDone(sh, spokenText, data.text, data.messageId, !sdkTranscript)
             } else {
               bargeInPausedAt = null
               console.log(`✅ [${sayId}] session.say DONE`)
@@ -5527,6 +5533,7 @@ async function main() {
       if (eotLive) turnDetection = detector
     }
     const aecWarmupOverrideMs = parseAecWarmupMs(process.env.OSBORN_AEC_WARMUP_MS)
+    const endpointMinDelayMs = envWholeNumber(process.env.OSBORN_ENDPOINT_MIN_DELAY_MS)
     const session = new voice.AgentSession({
       turnDetection,
       ...(aecWarmupOverrideMs !== undefined ? { aecWarmupDuration: aecWarmupOverrideMs } : {}),
@@ -5557,7 +5564,9 @@ async function main() {
       turnHandling: {
         endpointing: {
           mode: 'fixed' as any,
-          minDelay: 500,    // Wait 500ms after STT commits before generating reply
+          // Wait after STT commits before generating a reply. This is the whole flat `finalToChat` wait (#674) and the
+          // mid-thought guard: lowering it cuts people off sooner. OSBORN_ENDPOINT_MIN_DELAY_MS tunes it (0-2000).
+          minDelay: endpointMinDelayMs !== undefined && endpointMinDelayMs <= 2000 ? endpointMinDelayMs : 500,
           maxDelay: 2000,   // Force end-of-turn after 2s to prevent hangs
         },
         // Tightened gates: only commit to the pause path when the STT layer is
@@ -6287,6 +6296,7 @@ async function main() {
       sess.on('user_state_changed' as any, (ev: any) => {
         const prev = userState
         userState = ev.newState
+        if (ev.newState !== 'away') markUserState(ev.newState === 'speaking') // away is the idle timeout, not a stop
         // On a user onset over the agent's speech, log how far into its speech that landed and whether the AEC warm-up still applied
         // (the VAD path never emits overlapping_speech, so this is the barge-in timing line on a default machine).
         const overAgent = ev.newState === 'speaking' && agentState === 'speaking' && speakingSince > 0

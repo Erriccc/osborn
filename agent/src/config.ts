@@ -53,6 +53,35 @@ export interface OsbornConfig {
 
   // Tool approval mode (#364), set from the app; applies to browser and phone calls.
   approvalMode?: ApprovalMode
+
+  // Lets recall reach other projects' history (#657); off when unset. No UI toggle yet: edit the file.
+  crossProjectRecall?: boolean
+
+  // Per-project privacy mode (#663), keyed by absolute project folder: { "/abs/folder": { mode: public, since: "<ISO time>" } }.
+  projectModes?: Record<string, { mode?: string; since?: string }>
+}
+
+/**
+ * When the project was switched to public mode (config.yaml `projectModes`), as an ISO time; undefined
+ * means incognito (the default, also for a missing or unreadable `since`). Follow-through files only
+ * items recorded after this time, so switching never back-fills what piled up while incognito.
+ */
+export function readPublicSince(cwd: string, file = CONFIG_FILE): string | undefined {
+  try {
+    const m = (parse(readFileSync(file, 'utf-8')) as OsbornConfig | null)?.projectModes?.[resolve(cwd)]
+    return m?.mode === 'public' && typeof m.since === 'string' ? new Date(m.since).toISOString() : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** The saved cross-project recall opt-in (config.yaml `crossProjectRecall`); false when unset or unreadable. */
+export function readCrossProjectRecall(file = CONFIG_FILE): boolean {
+  try {
+    return (parse(readFileSync(file, 'utf-8')) as OsbornConfig | null)?.crossProjectRecall === true
+  } catch {
+    return false
+  }
 }
 
 /** The saved approval mode (config.yaml `approvalMode`); 'ask' when unset or unreadable. */

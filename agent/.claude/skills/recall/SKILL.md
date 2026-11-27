@@ -52,6 +52,7 @@ osborn-recall --list [--cwd <dir>]          # list available session stores, new
 - **Store resolution**: with no `--db`/`--session`, it picks the newest `session.db` under the
   current project. Pass `--session <id> --cwd <dir>` to target a specific past session, or
   `--db <path>` to point directly at a file. Use `--list` to see what's available.
+  Only the current project is readable: another project's store is refused.
 - **`--type`** — filter to message kinds (comma-separated). E.g. `--type user` to see only what
   the user actually asked; `--type tool_use,tool_result` to find a past command and its output.
 

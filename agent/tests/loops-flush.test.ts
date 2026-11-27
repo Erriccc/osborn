@@ -7,10 +7,12 @@ import { tmpdir } from 'node:os'
 
 const home = mkdtempSync(join(tmpdir(), 'loops-flush-test-'))
 process.env.CLAUDE_CONFIG_DIR = join(home, '.claude')
+process.env.HOME = home // the saved project mode is read from ~/.osborn/config.yaml
 const cwd = join(home, 'proj')
 mkdirSync(cwd, { recursive: true })
 const L = await import('../src/loops-ledger.js')
 const { flushSession } = await import('../src/loops-flush.js')
+const { readPublicSince } = await import('../src/config.js')
 const { acquireLock, releaseLock } = await import('../src/content/lens-paths.js')
 
 let pass = 0
@@ -30,7 +32,7 @@ const routeStub = (mode: 'ok' | 'fail' = 'ok') => (async (_url: string, init: an
     : { key: i.key, action: 'held' })
   return new Response(JSON.stringify({ results }), { status: 200 })
 }) as unknown as typeof fetch
-const deps = (extra: any = {}) => ({ syncToken: 'tok-0123456789abcdef', frontendUrl: 'https://f', repoFor: () => 'o/r', fetchFn: routeStub(), ...extra })
+const deps = (extra: any = {}) => ({ publicSince: () => '2000-01-01T00:00:00.000Z', syncToken: 'tok-0123456789abcdef', frontendUrl: 'https://f', repoFor: () => 'o/r', fetchFn: routeStub(), ...extra })
 
 function seed(sid: string) {
   L.appendLoopRecord(sid, cwd, { kind: 'prompt', text: 'remind me to ship', origin: 'user_mic', fg: true })
@@ -139,6 +141,101 @@ await t('a background session\'s items stay local (nothing to send)', async () =
   const r = await flushSession('s-bg', cwd, deps())
   assert.equal(r.status, 'nothing')
   assert.equal(sent.length, 0)
+})
+
+await t('no origin in the cwd: the configured default repo is used and reported; none set keeps no-repo', async () => {
+  seed('s-def'); sent = []
+  const none = await flushSession('s-def', cwd, deps({ repoFor: () => undefined, defaultRepo: undefined }))
+  assert.equal(none.status, 'no-repo')
+  assert.equal(sent.length, 0)
+  const r = await flushSession('s-def', cwd, deps({ repoFor: () => undefined, defaultRepo: 'o/default' }))
+  assert.equal(r.status, 'done')
+  assert.equal(sent[0].repo, 'o/default')
+  assert.deepEqual([r.repo, r.via], ['o/default', 'default'])
+  // A cwd with its own origin never uses the default.
+  seed('s-own'); sent = []
+  const own = await flushSession('s-own', cwd, deps({ defaultRepo: 'o/default' }))
+  assert.deepEqual([sent[0].repo, own.via], ['o/r', 'origin'])
+})
+
+await t('the env default is used when no seam is given', async () => {
+  seed('s-env'); sent = []
+  process.env.OSBORN_FOLLOW_THROUGH_DEFAULT_REPO = ' o/env '
+  try {
+    const r = await flushSession('s-env', cwd, deps({ repoFor: () => undefined }))
+    assert.deepEqual([sent[0].repo, r.via], ['o/env', 'default'])
+  } finally { delete process.env.OSBORN_FOLLOW_THROUGH_DEFAULT_REPO }
+})
+
+await t('an ask the repo held (security-sounding) is not re-sent to that repo', async () => {
+  seed('s-sec'); sent = []
+  const holdAll = (async (_u: string, init: any) => {
+    const body = JSON.parse(init.body); sent.push(body)
+    return new Response(JSON.stringify({ results: body.items.map((i: any) => ({ key: i.key, action: 'held' })) }), { status: 200 })
+  }) as unknown as typeof fetch
+  await flushSession('s-sec', cwd, deps({ fetchFn: holdAll }))
+  assert.equal(sent.length, 1)
+  const again = await flushSession('s-sec', cwd, deps({ fetchFn: holdAll }))
+  assert.equal(again.status, 'nothing')
+  assert.equal(sent.length, 1)
+  // Another repo may still take it.
+  await flushSession('s-sec', cwd, deps({ repoFor: () => 'o/private' }))
+  assert.equal(sent[1].repo, 'o/private')
+})
+
+await t('a git checkout without a github origin never uses the default repo', async () => {
+  const gitCwd = join(home, 'gl'); mkdirSync(join(gitCwd, '.git'), { recursive: true })
+  L.appendLoopRecord('s-gl', gitCwd, { kind: 'ask', id: L.loopIds.ask('remind me gl'), text: 'remind me gl', source: 'explicit', origin: 'user_mic', fg: true })
+  const r = await flushSession('s-gl', gitCwd, deps({ repoFor: () => undefined, defaultRepo: 'o/default' }))
+  assert.equal(r.status, 'no-repo')
+  // A subfolder of that checkout is still inside it.
+  const sub = join(gitCwd, 'pkg'); mkdirSync(sub, { recursive: true })
+  L.appendLoopRecord('s-gl2', sub, { kind: 'ask', id: L.loopIds.ask('remind me sub'), text: 'remind me sub', source: 'explicit', origin: 'user_mic', fg: true })
+  assert.equal((await flushSession('s-gl2', sub, deps({ repoFor: () => undefined, defaultRepo: 'o/default' }))).status, 'no-repo')
+})
+
+await t('a refused post reports why', async () => {
+  seed('s-why')
+  const fetchFn = (async () => new Response(JSON.stringify({ error: 'not allowed' }), { status: 403 })) as unknown as typeof fetch
+  const r = await flushSession('s-why', cwd, deps({ fetchFn }))
+  assert.equal(r.status, 'error')
+  assert.match(r.detail ?? '', /403: not allowed/)
+})
+
+await t('incognito (the default) sends nothing and writes nothing', async () => {
+  seed('s-incog')
+  sent = []
+  const r = await flushSession('s-incog', cwd, { ...deps(), publicSince: undefined })
+  assert.equal(r.status, 'incognito')
+  assert.equal(sent.length, 0)
+  assert.equal(L.fileableLoops(L.readLoopRecords('s-incog', cwd)).length > 0, true)
+})
+await t('public needs mode public and a valid since; anything else is incognito', async () => {
+  const file = join(home, '.osborn', 'config.yaml')
+  mkdirSync(dirname(file), { recursive: true })
+  const put = (v: string) => writeFileSync(file, `approvalMode: ask\nprojectModes:\n  ${JSON.stringify(cwd)}: ${v}\n`)
+  writeFileSync(file, 'projectModes: [not: a map')
+  assert.equal(readPublicSince(cwd), undefined)
+  put('public')
+  assert.equal(readPublicSince(cwd), undefined)
+  put('{ mode: PUBLIC, since: "2026-01-01T00:00:00Z" }')
+  assert.equal(readPublicSince(cwd), undefined)
+  put('{ mode: public, since: "not a date" }')
+  assert.equal(readPublicSince(cwd), undefined)
+  put('{ mode: public, since: "2026-01-01T00:00:00Z" }')
+  assert.equal(readPublicSince(cwd), '2026-01-01T00:00:00.000Z')
+  assert.equal(readPublicSince(join(cwd, '.')), '2026-01-01T00:00:00.000Z')
+  assert.equal(readPublicSince(join(home, 'other')), undefined)
+})
+await t('switching to public files only items recorded after the switch (no back-fill)', async () => {
+  seed('s-back')
+  sent = []
+  const past = await flushSession('s-back', cwd, { ...deps(), publicSince: () => '2999-01-01T00:00:00.000Z' })
+  assert.equal(past.status, 'nothing')
+  assert.equal(sent.length, 0)
+  const after = await flushSession('s-back', cwd, deps())
+  assert.equal(after.status, 'done')
+  assert.ok(sent.length > 0)
 })
 
 rmSync(home, { recursive: true, force: true })

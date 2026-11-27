@@ -11,6 +11,7 @@
  * Self-contained: never throws, always exits.
  */
 import { flushSession } from '../loops-flush.js'
+import { readPublicSince } from '../config.js'
 import { fileableLoops, listLedgers, readLoopRecordsAt } from '../loops-ledger.js'
 import { readLastSession } from './lens-paths.js'
 import { isFollowThroughEnabled } from './lens-launch.js'
@@ -26,7 +27,7 @@ async function main(): Promise<number> {
   const targets: Array<{ id: string; cwd: string }> = []
   if (process.argv.includes('--drain')) {
     for (const l of listLedgers()) {
-      if (l.cwd && fileableLoops(readLoopRecordsAt(l.path)).length) targets.push({ id: l.sessionId, cwd: l.cwd })
+      if (l.cwd && readPublicSince(l.cwd) && fileableLoops(readLoopRecordsAt(l.path)).length) targets.push({ id: l.sessionId, cwd: l.cwd })
     }
   } else if (process.argv.includes('--last')) {
     const last = readLastSession()
@@ -40,7 +41,7 @@ async function main(): Promise<number> {
   for (const t of targets) {
     try {
       const r = await flushSession(t.id, t.cwd)
-      process.stderr.write(`[follow-through] ${new Date().toISOString()} ${reason} ${t.id.slice(0, 8)}: ${r.status} filed=${r.filed}\n`)
+      process.stderr.write(`[follow-through] ${new Date().toISOString()} ${reason} ${t.id.slice(0, 8)}: ${r.status} filed=${r.filed}${r.repo ? ` repo=${r.repo} (${r.via === 'default' ? 'no origin in cwd, OSBORN_FOLLOW_THROUGH_DEFAULT_REPO' : 'cwd origin'})` : ''}${r.detail ? ` ${r.detail}` : ''}\n`)
     } catch (err) {
       process.stderr.write(`[follow-through] ${reason} ${t.id.slice(0, 8)}: error ${err instanceof Error ? err.message : String(err)}\n`)
     }
