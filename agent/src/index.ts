@@ -3185,7 +3185,7 @@ async function main() {
       permissionMode: 'bypassPermissions' as const,
       enableFileCheckpointing: false,
       settingSources: ['project', 'user'] as any,
-      env: bgEnv,
+      env: { ...bgEnv, OSBORN_RECALL_SCOPE: slotWorkingDir },
     }
 
     // P1: persist the cold-start emitter + sdkOptions on the slot so a later

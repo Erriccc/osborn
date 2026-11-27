@@ -34,6 +34,8 @@ import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } 
 import { existsSync, statSync, openSync, readSync, closeSync, mkdirSync } from 'fs'
 import { join, basename } from 'path'
 import { homedir } from 'os'
+import { envFlagOn } from './env-keys.js'
+import { isWithin } from './lib/safe-artifact-path.js'
 import { getSessionPaths, getSessionSubAgents, projectPathToSlug } from './session-access.js'
 
 // ============================================================
@@ -587,6 +589,16 @@ export interface RecallOpts {
   mode?: 'hybrid' | 'keyword' | 'vector'
   topK?: number
   embed?: Embedder
+  /** Active project dir: rows recorded outside it are dropped unless cross-project recall is on (#657). */
+  scopeCwd?: string
+}
+
+/** OSBORN_CROSS_PROJECT_RECALL=on|1|true lets recall reach other projects; default off (#657). */
+export const crossProjectRecallEnabled = (): boolean => envFlagOn(process.env.OSBORN_CROSS_PROJECT_RECALL)
+
+/** True when a row recorded at `rowCwd` may be shown for `activeCwd` (that dir or inside it); a row with no cwd is this store's own. */
+export function rowInScope(rowCwd: string | null | undefined, activeCwd: string | undefined): boolean {
+  return !rowCwd || !activeCwd || crossProjectRecallEnabled() || isWithin(rowCwd, activeCwd)
 }
 
 /**
@@ -657,7 +669,7 @@ export async function recall(
     fused.set(id, cur)
   }
 
-  const ranked = [...fused.entries()].sort((a, b) => b[1].score - a[1].score).slice(0, topK)
+  const ranked = [...fused.entries()].sort((a, b) => b[1].score - a[1].score)
   if (!ranked.length) return []
 
   const getRow = db.prepare(
@@ -665,8 +677,9 @@ export async function recall(
   )
   const hits: RecallHit[] = []
   for (const [id, meta] of ranked) {
+    if (hits.length >= topK) break
     const row = getRow.get(id) as any
-    if (!row) continue
+    if (!row || !rowInScope(row.cwd, opts?.scopeCwd)) continue
     hits.push({
       id: row.id,
       source: row.source,

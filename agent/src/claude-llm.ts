@@ -101,7 +101,7 @@ async function buildRecallInjection(sessionId: string | null, workingDir: string
     const db = openStore(getStorePath(sessionId, workingDir), { readonly: true })
     let hits: RecallHit[]
     try {
-      hits = await recall(db, q, { mode: embed ? 'hybrid' : 'keyword', topK: RECALL_TOP_K, embed })
+      hits = await recall(db, q, { mode: embed ? 'hybrid' : 'keyword', topK: RECALL_TOP_K, embed, scopeCwd: workingDir })
     } finally {
       db.close()
       if (timing) timing.sqlMs = Date.now() - sqlT0 - (timing.embedMs ?? 0)
@@ -2834,6 +2834,8 @@ class ClaudeLLMStream extends llm.LLMStream {
 
       const sdkOptions: Options = {
         cwd: this.#opts.workingDirectory,
+        // osborn-recall reads OSBORN_RECALL_SCOPE as the active project (#657).
+        ...(this.#opts.workingDirectory ? { env: { ...process.env, OSBORN_RECALL_SCOPE: this.#opts.workingDirectory } } : {}),
         permissionMode: this.#opts.permissionMode,
         allowedTools,
         // Only the hub's own tools (not allowed, so each call asks); the config/toggle servers stay inert here.

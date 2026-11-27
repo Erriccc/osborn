@@ -18,8 +18,9 @@
 import { existsSync, statSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { openStore, recall, getStorePath, type RecallHit } from './session-store.js'
+import { openStore, recall, getStorePath, crossProjectRecallEnabled, rowInScope, type RecallHit } from './session-store.js'
 import { getEmbedder } from './embedder.js'
+import { isWithin } from './lib/safe-artifact-path.js'
 
 function projectSlug(dir: string): string {
   return dir.replace(/\//g, '-')
@@ -81,7 +82,12 @@ function fmtHit(h: RecallHit, maxChars: number): string {
 
 export async function main(argv: string[]): Promise<number> {
   const { opts, positional } = parseArgs(argv)
-  const cwd = (typeof opts.cwd === 'string' ? opts.cwd : '') || process.env.OSBORN_CWD || process.cwd()
+  // The agent sets OSBORN_RECALL_SCOPE to the session's project dir for its Claude subprocess (#657); unset (a hand run) means no scope.
+  const scopeCwd = process.env.OSBORN_RECALL_SCOPE || undefined
+  const cwd = (typeof opts.cwd === 'string' ? opts.cwd : '') || scopeCwd || process.env.OSBORN_CWD || process.cwd()
+  const refused = (dbPath?: string) => !!scopeCwd && !crossProjectRecallEnabled() && (!rowInScope(cwd, scopeCwd) || (!!dbPath && !isWithin(dbPath, osbRoot(cwd))))
+  const REFUSED = 'Cross-project recall is off: this store belongs to another project.'
+  if (refused()) { console.error(REFUSED); return 1 }
 
   if (opts.list) {
     const stores = listStores(cwd)
@@ -103,6 +109,7 @@ export async function main(argv: string[]): Promise<number> {
     console.error(`No session store found (looked in ${osbRoot(cwd)}). Pass --db <path> or --session <id> --cwd <dir>.`)
     return 1
   }
+  if (refused(dbPath)) { console.error(REFUSED); return 1 }
 
   const mode = (typeof opts.mode === 'string' ? opts.mode : 'hybrid') as 'hybrid' | 'keyword' | 'vector'
   const topK = typeof opts['top-k'] === 'string' ? parseInt(opts['top-k'] as string, 10) : 8
@@ -116,7 +123,7 @@ export async function main(argv: string[]): Promise<number> {
 
   const db = openStore(dbPath)
   try {
-    let hits = await recall(db, query, { mode, topK, embed: embed ?? undefined })
+    let hits = await recall(db, query, { mode, topK, embed: embed ?? undefined, scopeCwd })
     if (typeof opts.type === 'string') {
       const types = new Set((opts.type as string).split(',').map(s => s.trim()))
       hits = hits.filter(h => types.has(h.msgType))

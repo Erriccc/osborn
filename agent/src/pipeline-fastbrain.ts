@@ -243,7 +243,7 @@ async function executeSearch(phrases: string[], sessionId: string, workingDir: s
     const db = openStore(dbPath, { readonly: true })
     try {
       const query = phrases.slice(0, 6).join(' ')
-      const hits = await recall(db, query, { mode: embed ? 'hybrid' : 'keyword', topK: 12, embed })
+      const hits = await recall(db, query, { mode: embed ? 'hybrid' : 'keyword', topK: 12, embed, scopeCwd: workingDir })
       if (!hits.length) {
         dbResult = `No matches for: ${phrases.join(', ')}`
       } else {
@@ -284,12 +284,12 @@ async function executeSearch(phrases: string[], sessionId: string, workingDir: s
 
 async function getRecentEntries(sessionId: string, workingDir: string, _: string | undefined, count: number): Promise<string> {
   // Newest content rows straight from the recall DB (append-only, so highest id = latest).
-  const { storeExists, openStore, recentRows } = await import('./session-store.js')
+  const { storeExists, openStore, recentRows, rowInScope } = await import('./session-store.js')
   const dbPath = storeExists(sessionId, workingDir)
   if (!dbPath) return 'Index not built yet.'
   const db = openStore(dbPath, { readonly: true })
   try {
-    const rows = recentRows(db, count) // newest first
+    const rows = recentRows(db, count).filter(r => rowInScope(r.cwd, workingDir)) // newest first
     if (!rows.length) return 'No entries yet.'
     const out: string[] = [`[RECENT — last ${rows.length} entries, newest first]`]
     for (const h of rows) {
