@@ -30,6 +30,7 @@ import { stewardGate } from './steward-gate.js'
 import { addressedPoints, turnPoints } from './points.js'
 import { appendLoopRecord, classifyPromptOrigin, diffTodos, extractAsks, loopIds, MAX_PROMPT_BYTES, takeLoopsRecap, workLedgerEnabled, type LoopRecordInput, type SpokenLine } from './loops-ledger.js'
 import { outboundText } from './follow-through-client.js'
+import { overdueWriterNote } from './long-work.js'
 import { writeLastSession } from './content/lens-paths.js'
 import { parseStewardVerdict, appendStewardRecord, agentResultRecord, githubIssueBase, type StewardRecord } from './steward-verdict.js'
 import { ROLES, EDIT_TOOLS, roleOf, coreRole, installsSkillsSilently, parseFrontMatter, type Role, type WriteRule } from './agent-store.js'
@@ -3196,7 +3197,8 @@ class ClaudeLLMStream extends llm.LLMStream {
                 // whole block already lands after the cached tools→system→history
                 // prefix, but ordering volatile content last keeps any future
                 // cache_control breakpoint inside this block useful too.
-                const additionalContext = [reminder, recalled, loopRecap, machineNudge].filter(Boolean).join('\n\n')
+                const longWork = fromSubagent ? null : overdueWriterNote(this.#llmRef.getRunningTasks(), Date.now())
+                const additionalContext = [reminder, recalled, loopRecap, machineNudge, longWork].filter(Boolean).join('\n\n')
                 if (!fromSubagent && this.#opts.turnTiming) {
                   const hookMs = Date.now() - hookT0
                   markHookDone(hookMs, { recallMs, nudgeMs, recallTimedOut })
