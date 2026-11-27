@@ -75,7 +75,7 @@ import { sessionListEntry, cleanHistoryRows, userEchoText, TypedEchoTracker, Cli
 import { getRecallClient } from './recall-client.js'
 import { synthMeetingAudio, selectMeetingTtsProviders } from './meeting-tts.js'
 import { MeetingTranscriptPoller } from './meeting-transcript-poller.js'
-import { missingRequiredEnv, parseAecWarmupMs } from './env-keys.js'
+import { envWholeNumber, missingRequiredEnv, parseAecWarmupMs } from './env-keys.js'
 import { armPermissionPush, handleWatchAck, setWatchResultHandler, osbornFrontendUrl, notifyPhone, isWatchBridgeEnabled, phonePushPending, settlePermissionPush } from './pushover.js'
 import { startWatchGateway } from './watch-gateway.js'
 import { noiseGate, isShhCue } from './noise-gate.js'
@@ -5529,6 +5529,7 @@ async function main() {
       if (eotLive) turnDetection = detector
     }
     const aecWarmupOverrideMs = parseAecWarmupMs(process.env.OSBORN_AEC_WARMUP_MS)
+    const endpointMinDelayMs = envWholeNumber(process.env.OSBORN_ENDPOINT_MIN_DELAY_MS)
     const session = new voice.AgentSession({
       turnDetection,
       ...(aecWarmupOverrideMs !== undefined ? { aecWarmupDuration: aecWarmupOverrideMs } : {}),
@@ -5561,7 +5562,7 @@ async function main() {
           mode: 'fixed' as any,
           // Wait after STT commits before generating a reply. This is the whole flat `finalToChat` wait (#674) and the
           // mid-thought guard: lowering it cuts people off sooner. OSBORN_ENDPOINT_MIN_DELAY_MS tunes it (0-2000).
-          minDelay: (() => { const v = Number(process.env.OSBORN_ENDPOINT_MIN_DELAY_MS); return Number.isInteger(v) && v >= 0 && v <= 2000 && process.env.OSBORN_ENDPOINT_MIN_DELAY_MS ? v : 500 })(),
+          minDelay: endpointMinDelayMs !== undefined && endpointMinDelayMs <= 2000 ? endpointMinDelayMs : 500,
           maxDelay: 2000,   // Force end-of-turn after 2s to prevent hangs
         },
         // Tightened gates: only commit to the pause path when the STT layer is

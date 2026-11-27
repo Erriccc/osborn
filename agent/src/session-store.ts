@@ -466,7 +466,7 @@ export async function updateSessionStore(
     const sources: { source: string; path: string }[] = []
     if (existsSync(paths.conversation)) sources.push({ source: 'main', path: paths.conversation })
 
-    // mainOnly skips sub-agent discovery, which parses the whole main JSONL.
+    // mainOnly skips sub-agent discovery.
     for (const f of opts?.mainOnly ? [] : paths.subagents) {
       const key = basename(f, '.jsonl').replace('agent-', '').substring(0, 8)
       sources.push({ source: `agent-${key}`, path: f })
