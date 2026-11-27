@@ -151,6 +151,15 @@ async function main() {
     ok(gh.creates.length === 1, `creates ${gh.creates.length}`)
   })
 
+  await t('a security-sounding explicit ask is held on a public repo, filed on a private one', async () => {
+    reset()
+    const sec = (n: number) => item(n, { text: 'fix the vulnerability where the api key is exposed' })
+    const pub = await post({ repo: 'acme/public-repo', items: [sec(5)] })
+    ok(pub.body.results[0].action === 'held' && gh.creates.length === 0, JSON.stringify(pub.body.results))
+    const priv = await post({ repo: 'acme/private-repo', items: [sec(6)] })
+    ok(priv.body.results[0].action === 'created', JSON.stringify(priv.body.results))
+  })
+
   await t('a meeting- or phone-sourced "explicit" item never files to a public repo', async () => {
     reset()
     const r = await post({ repo: 'acme/public-repo', items: [item(3, { origin: 'meeting' }), item(4, { origin: 'phone' })] })

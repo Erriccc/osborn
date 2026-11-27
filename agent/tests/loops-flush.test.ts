@@ -141,5 +141,53 @@ await t('a background session\'s items stay local (nothing to send)', async () =
   assert.equal(sent.length, 0)
 })
 
+await t('no origin in the cwd: the configured default repo is used and reported; none set keeps no-repo', async () => {
+  seed('s-def'); sent = []
+  const none = await flushSession('s-def', cwd, deps({ repoFor: () => undefined, defaultRepo: undefined }))
+  assert.equal(none.status, 'no-repo')
+  assert.equal(sent.length, 0)
+  const r = await flushSession('s-def', cwd, deps({ repoFor: () => undefined, defaultRepo: 'o/default' }))
+  assert.equal(r.status, 'done')
+  assert.equal(sent[0].repo, 'o/default')
+  assert.deepEqual([r.repo, r.via], ['o/default', 'default'])
+  // A cwd with its own origin never uses the default.
+  seed('s-own'); sent = []
+  const own = await flushSession('s-own', cwd, deps({ defaultRepo: 'o/default' }))
+  assert.deepEqual([sent[0].repo, own.via], ['o/r', 'origin'])
+})
+
+await t('the env default is used when no seam is given', async () => {
+  seed('s-env'); sent = []
+  process.env.OSBORN_FOLLOW_THROUGH_DEFAULT_REPO = ' o/env '
+  try {
+    const r = await flushSession('s-env', cwd, deps({ repoFor: () => undefined }))
+    assert.deepEqual([sent[0].repo, r.via], ['o/env', 'default'])
+  } finally { delete process.env.OSBORN_FOLLOW_THROUGH_DEFAULT_REPO }
+})
+
+await t('an ask the repo held (security-sounding) is not re-sent to that repo', async () => {
+  seed('s-sec'); sent = []
+  const holdAll = (async (_u: string, init: any) => {
+    const body = JSON.parse(init.body); sent.push(body)
+    return new Response(JSON.stringify({ results: body.items.map((i: any) => ({ key: i.key, action: 'held' })) }), { status: 200 })
+  }) as unknown as typeof fetch
+  await flushSession('s-sec', cwd, deps({ fetchFn: holdAll }))
+  assert.equal(sent.length, 1)
+  const again = await flushSession('s-sec', cwd, deps({ fetchFn: holdAll }))
+  assert.equal(again.status, 'nothing')
+  assert.equal(sent.length, 1)
+  // Another repo may still take it.
+  await flushSession('s-sec', cwd, deps({ repoFor: () => 'o/private' }))
+  assert.equal(sent[1].repo, 'o/private')
+})
+
+await t('a refused post reports why', async () => {
+  seed('s-why')
+  const fetchFn = (async () => new Response(JSON.stringify({ error: 'not allowed' }), { status: 403 })) as unknown as typeof fetch
+  const r = await flushSession('s-why', cwd, deps({ fetchFn }))
+  assert.equal(r.status, 'error')
+  assert.match(r.detail ?? '', /403: not allowed/)
+})
+
 rmSync(home, { recursive: true, force: true })
 console.log(`\n${pass} passed`)

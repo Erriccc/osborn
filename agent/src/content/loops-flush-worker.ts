@@ -40,7 +40,7 @@ async function main(): Promise<number> {
   for (const t of targets) {
     try {
       const r = await flushSession(t.id, t.cwd)
-      process.stderr.write(`[follow-through] ${new Date().toISOString()} ${reason} ${t.id.slice(0, 8)}: ${r.status} filed=${r.filed}\n`)
+      process.stderr.write(`[follow-through] ${new Date().toISOString()} ${reason} ${t.id.slice(0, 8)}: ${r.status} filed=${r.filed}${r.repo ? ` repo=${r.repo} (${r.via === 'default' ? 'no origin in cwd, OSBORN_FOLLOW_THROUGH_DEFAULT_REPO' : 'cwd origin'})` : ''}${r.detail ? ` ${r.detail}` : ''}\n`)
     } catch (err) {
       process.stderr.write(`[follow-through] ${reason} ${t.id.slice(0, 8)}: error ${err instanceof Error ? err.message : String(err)}\n`)
     }

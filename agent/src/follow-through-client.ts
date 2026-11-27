@@ -57,6 +57,7 @@ export async function postFollowThrough(
   items: FollowThroughItem[],
   fetchFn: typeof fetch = fetch,
   timeoutMs = FOLLOW_THROUGH_TIMEOUT_MS,
+  onFailure?: (detail: string) => void,
 ): Promise<FollowThroughResult[] | 'error'> {
   // Every item leaves through here, so redaction cannot be bypassed by a caller.
   const sent = items.map((i) => ({ ...i, text: outboundText(i.text) })).filter((i) => i.text)
@@ -68,8 +69,16 @@ export async function postFollowThrough(
       body: JSON.stringify({ repo, items: sent }),
       signal: AbortSignal.timeout(timeoutMs),
     })
-    return readFollowThroughReply(r.status, await r.json().catch(() => null))
-  } catch {
+    const body = await r.json().catch(() => null)
+    const reply = readFollowThroughReply(r.status, body)
+    if (reply === 'error') {
+      // The route's own reason ("not allowed" = not an admin account, "repo not allowed" = bad name or no push access, ...).
+      const why = (body as any)?.error
+      onFailure?.(`http ${r.status}${typeof why === 'string' ? `: ${why.slice(0, 80)}` : ''}`)
+    }
+    return reply
+  } catch (err) {
+    onFailure?.(`request failed: ${err instanceof Error ? err.message.slice(0, 80) : 'unknown'}`)
     return 'error'
   }
 }

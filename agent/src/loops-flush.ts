@@ -23,29 +23,36 @@ export interface FlushDeps {
   frontendUrl?: string
   /** Test seam: the repo for a cwd (default: the github.com origin). */
   repoFor?: (cwd: string) => string | undefined
+  /** Test seam: the fallback repo when the cwd has no origin (default: OSBORN_FOLLOW_THROUGH_DEFAULT_REPO). */
+  defaultRepo?: string
   now?: number
 }
 
 // Small enough that the route answers inside the client's timeout (it creates issues one by one).
 const MAX_BATCH = 10
 
-export async function flushSession(sessionId: string, cwd: string, deps: FlushDeps = {}): Promise<{ status: FlushStatus; filed: number }> {
+export async function flushSession(sessionId: string, cwd: string, deps: FlushDeps = {}): Promise<{ status: FlushStatus; filed: number; repo?: string; via?: 'origin' | 'default'; detail?: string }> {
   const lockDir = dirname(getLoopsPath(sessionId, cwd))
   if (!acquireLock(lockDir, deps.now ?? Date.now(), LOOPS_LOCK, LOOPS_LOCK_TTL_MS)) return { status: 'locked', filed: 0 }
   try {
     const records = readLoopRecords(sessionId, cwd)
     const open = fileableLoops(records)
     if (!open.length) return { status: 'nothing', filed: 0 }
-    const repo = (deps.repoFor ?? repoFromCwd)(cwd)
+    // The cwd's own origin wins; a multi-project folder with none falls back to the configured default
+    // (validated by the route, whose refusal the worker logs).
+    const origin = (deps.repoFor ?? repoFromCwd)(cwd)
+    const repo = origin ?? deps.defaultRepo ?? (process.env.OSBORN_FOLLOW_THROUGH_DEFAULT_REPO?.trim() || undefined)
+    const via = origin ? 'origin' as const : 'default' as const
     if (!repo) return { status: 'no-repo', filed: 0 }
-    // Once this repo has held an item back it is known public: inferred items are not re-sent
-    // (they would only be held again; if the repo later turns private, this session's inferred
-    // items stay local). Only inferred items are ever held, so this covers every held item.
-    // The user's own asks go first so a long tail of inferred items cannot starve them out.
+    // Once this repo has held an item back it is known public: inferred items, and any ask it held
+    // (a security-sounding one), are not re-sent (they would only be held again; if the repo later
+    // turns private, they stay local). The user's own asks go first so a long tail of inferred
+    // items cannot starve them out.
     const repoKey = repo.toLowerCase()
     const repoPublic = publicRepos(records).has(repoKey)
+    const heldHere = new Set(records.filter((r) => r.kind === 'held' && r.repo?.toLowerCase() === repoKey).map((r) => r.id))
     const items = open
-      .filter((i) => !(repoPublic && i.source !== 'explicit'))
+      .filter((i) => !(repoPublic && i.source !== 'explicit') && !heldHere.has(i.id))
       .sort((a, b) => (a.source === 'explicit' ? 0 : 1) - (b.source === 'explicit' ? 0 : 1))
       .slice(0, MAX_BATCH)
     if (!items.length) return { status: 'nothing', filed: 0 }
@@ -62,8 +69,9 @@ export async function flushSession(sessionId: string, cwd: string, deps: FlushDe
     }
     if (!payload.length) return { status: 'nothing', filed: 0 }
 
-    const results = await postFollowThrough(deps.frontendUrl ?? osbornFrontendUrl(), syncToken, repo, payload, deps.fetchFn)
-    if (results === 'error') return { status: 'error', filed: 0 }
+    let detail: string | undefined
+    const results = await postFollowThrough(deps.frontendUrl ?? osbornFrontendUrl(), syncToken, repo, payload, deps.fetchFn, undefined, (d) => { detail = d })
+    if (results === 'error') return { status: 'error', filed: 0, repo, via, ...(detail ? { detail } : {}) }
     let filed = 0
     for (const r of results) {
       const id = byKey.get(r.key)
@@ -73,7 +81,7 @@ export async function flushSession(sessionId: string, cwd: string, deps: FlushDe
       if (!r.url || (r.action !== 'created' && r.action !== 'skipped')) continue
       if (appendLoopRecord(sessionId, cwd, { kind: 'filed', id, url: r.url })) filed++
     }
-    return { status: 'done', filed }
+    return { status: 'done', filed, repo, via }
   } finally {
     releaseLock(lockDir, LOOPS_LOCK)
   }
