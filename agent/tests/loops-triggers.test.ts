@@ -118,7 +118,7 @@ await t('the abort path records pending permissions and cut-off sub-agents befor
 await t('UserPromptSubmit appends the raw prompt (main thread only)', () => {
   const ups = slice(llm, 'UserPromptSubmit: [{', 'PreCompact: [{')
   assert.match(ups, /const loopRecap = fromSubagent \? '' : this\.#llmRef\.noteUserTurn\(String\(input\?\.prompt \|\| ''\), sid\)/)
-  assert.match(ups, /\[reminder, recalled, loopRecap, machineNudge\]/)
+  assert.match(ups, /\[reminder, recalled, loopRecap, machineNudge[,\]]/)
   assert.match(slice(llm, '  noteUserTurn(', '\n  }\n'), /kind: 'prompt'/)
 })
 
