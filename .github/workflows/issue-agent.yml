@@ -102,11 +102,13 @@ jobs:
               f.write(body)
           PY
           gh issue comment "$ISSUE_NUMBER" --body-file "$RUNNER_TEMP/issue-agent-result.md"
-      # A PR opened with GITHUB_TOKEN starts no pull_request runs, but
-      # workflow_dispatch runs always start, even from GITHUB_TOKEN:
-      # https://docs.github.com/en/actions/using-workflows/triggering-a-workflow#triggering-a-workflow-from-a-workflow
-      # So start the PR checks on the agent's branch here. Keep this list in
-      # step with the workflows that run on pull_request.
+      # The pull_request runs of a PR opened with GITHUB_TOKEN wait for an
+      # "Approve workflows to run" click; workflow_dispatch runs start without one:
+      # https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow#triggering-a-workflow-from-a-workflow
+      # So dispatch, on the agent's own branch, every workflow that runs on
+      # pull_request and whose paths filter matches the PR's files. A PR that
+      # edits a workflow keeps the click, so its new workflow code runs only once
+      # approved.
       - name: Run PR checks on the agent's PR
         if: always()
         env:
@@ -114,14 +116,37 @@ jobs:
           GH_REPO: ${{ github.repository }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
-          branch=$(gh pr list --state open --limit 200 --json headRefName \
-            --jq "map(.headRefName | select(startswith(\"auto/${ISSUE_NUMBER}-\"))) | first // empty")
-          if [ -z "$branch" ]; then
+          pr=$(gh pr list --state open --limit 200 --json number,headRefName,isCrossRepository \
+            --jq "map(select((.isCrossRepository | not) and (.headRefName | startswith(\"auto/${ISSUE_NUMBER}-\")))) | first // empty | \"\(.number) \(.headRefName)\"")
+          if [ -z "$pr" ]; then
             echo "No open PR on an auto/${ISSUE_NUMBER}- branch, so no checks to start."
             exit 0
           fi
+          number=${pr%% *} branch=${pr#* }
+          files=$(gh pr diff "$number" --name-only)
+          if grep -q '^\.github/workflows/' <<< "$files"; then
+            echo "PR #$number edits a workflow: approve its held runs on the PR."
+            exit 0
+          fi
+          # GitHub's "**/" also matches no folder and a case "*" crosses "/", so
+          # "**/" is read as "*": this can only run a check more often, never less.
+          matches() {
+            while IFS= read -r p; do
+              p=${p//\*\*\//*}
+              while IFS= read -r f; do
+                case "$f" in $p) return 0 ;; esac
+              done <<< "$files"
+            done < <(yq '.on.pull_request.paths // ["**"] | .[]' "$1")
+            return 1
+          }
           failed=0
-          for wf in agent-tests.yml frontend-lint.yml ios-build.yml rn-ios-build.yml typecheck.yml; do
-            gh workflow run "$wf" --ref "$branch" || failed=1
+          for wf in .github/workflows/*.yml; do
+            on_pr=$(yq '.on | has("pull_request")' "$wf")
+            [ "$on_pr" = true ] || continue
+            if matches "$wf"; then
+              gh workflow run "${wf##*/}" --ref "$branch" || failed=1
+            else
+              echo "Skipped ${wf##*/}: no changed file matches its paths."
+            fi
           done
           exit "$failed"
