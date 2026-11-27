@@ -5,7 +5,7 @@ import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 
 const r = spawnSync('npx', ['tsx', join(import.meta.dirname, '../scripts/recall-check.ts')], {
-  env: { ...process.env, OPENROUTER_API_KEY: '' }, encoding: 'utf-8' })
+  env: { ...process.env, OSBORN_EMBED: '0' }, encoding: 'utf-8' })
 assert.equal(r.status, 0, r.stdout + r.stderr)
 assert.match(r.stdout, /^keyword /m)
 console.log('recall-check: ok')
