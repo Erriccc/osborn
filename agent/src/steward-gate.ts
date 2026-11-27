@@ -136,8 +136,9 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
     }
     if (name === 'gh') {
       const rest = w.slice(1).filter((x, j, a) => !x.startsWith('-') && !['--repo', '-R', '--hostname'].includes(a[j - 1]))
-      if (rest[0] === 'pr' && rest[1] === 'create') hits.push({ action: 'pr', dir })
-      if ((rest[0] === 'issue' || rest[0] === 'repo') && rest[1] === 'create') hits.push({ action: rest[0] as GhAction, dir, args: w.slice(1) })
+      const create = rest[1] === 'create' || rest[1] === 'new'  // gh's own alias
+      if (rest[0] === 'pr' && create) hits.push({ action: 'pr', dir })
+      if ((rest[0] === 'issue' || rest[0] === 'repo') && create) hits.push({ action: rest[0] as GhAction, dir, args: w.slice(1) })
       return
     }
     if (name !== 'git') return

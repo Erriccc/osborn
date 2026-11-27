@@ -1,8 +1,8 @@
 // Issue-filing gate (#651, privacy mode #663). The agent may file a handoff issue with
 // `gh issue create` only in a project switched to public mode, only on the repo named by
 // the project's own github.com origin, and only through the approval mode (the dialog unless the
-// user chose Allow all). Incognito (the default) keeps the handoff local: nothing leaves the
-// machine. `gh repo create` is refused unless it is private: a new project never gets a public
+// user chose Allow all). Incognito (the default) keeps the handoff local: no issue is filed.
+// `gh repo create` asks (private) or is refused (public): a new project never gets a public
 // repo by default. Like the steward gate it guides the agent and is not a sandbox (`gh api`,
 // `GH_REPO=` are not parsed).
 import { gitActions } from './steward-gate.js'
@@ -21,6 +21,7 @@ function repoArg(args: string[]): string | undefined {
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--repo' || args[i] === '-R') return args[i + 1]
     if (args[i].startsWith('--repo=')) return args[i].slice(7)
+    if (/^-R./.test(args[i])) return args[i].slice(2)
   }
   return undefined
 }
@@ -30,9 +31,12 @@ export function issueGate(cmd: string, cwd: string, deps: IssueGateDeps = {}): I
   let result: IssueGateResult = { decision: 'allow' }
   for (const hit of gitActions(cmd, cwd)) {
     if (hit.action !== 'issue' && hit.action !== 'repo') continue
-    const dir = hit.dir ?? cwd
+    // The shell's directory could not be worked out (`cd $VAR`): never rule on a guess.
+    if (!hit.dir) return { decision: 'deny', message: ISSUE_GATE_DENIED.unknownDir }
+    const dir = hit.dir
     if (hit.action === 'repo') {
-      if (hit.args?.includes('--private')) continue
+      // A private repo may still upload the project: it goes through the approval mode.
+      if (hit.args?.includes('--private')) { result = { decision: 'ask' }; continue }
       return { decision: 'deny', message: ISSUE_GATE_DENIED.publicRepo }
     }
     if (!(deps.publicSince ?? readPublicSince)(dir)) {
