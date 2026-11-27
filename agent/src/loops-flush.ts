@@ -11,7 +11,7 @@ import { dirname } from 'node:path'
 import { acquireLock, releaseLock } from './content/lens-paths.js'
 import { postFollowThrough, type FollowThroughItem } from './follow-through-client.js'
 import {
-  LOOPS_LOCK, LOOPS_LOCK_TTL_MS, appendLoopRecord, fileableLoops, getLoopsPath, loopKey, publicRepos, readLoopRecords, repoFromCwd,
+  LOOPS_LOCK, LOOPS_LOCK_TTL_MS, appendLoopRecord, fileableLoops, getLoopsPath, loopKey, readLoopRecords, repoFromCwd,
 } from './loops-ledger.js'
 import { osbornFrontendUrl } from './pushover.js'
 
@@ -49,8 +49,8 @@ export async function flushSession(sessionId: string, cwd: string, deps: FlushDe
     // turns private, they stay local). The user's own asks go first so a long tail of inferred
     // items cannot starve them out.
     const repoKey = repo.toLowerCase()
-    const repoPublic = publicRepos(records).has(repoKey)
     const heldHere = new Set(records.filter((r) => r.kind === 'held' && r.repo?.toLowerCase() === repoKey).map((r) => r.id))
+    const repoPublic = heldHere.size > 0
     const items = open
       .filter((i) => !(repoPublic && i.source !== 'explicit') && !heldHere.has(i.id))
       .sort((a, b) => (a.source === 'explicit' ? 0 : 1) - (b.source === 'explicit' ? 0 : 1))
