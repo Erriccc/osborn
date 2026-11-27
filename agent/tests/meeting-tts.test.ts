@@ -115,6 +115,16 @@ it('synth: all providers fail → null', async () => {
   assert.equal(await synthMeetingAudio('hi', { env: { SONIOX_API_KEY: 'sk', OPENAI_API_KEY: 'ok' }, fetchImpl: m.f }), null)
   assert.equal(m.calls.length, 2)
 })
+it('synth: soniox 429 is logged as a limit and falls back to openai', async () => {
+  const m = mockFetch((url) => url === SONIOX_TTS_URL ? err(429, 'too many streams') : ok(MP3_BYTES))
+  const warns: string[] = []
+  const ow = console.warn
+  console.warn = (...a: unknown[]) => { warns.push(a.join(' ')) }
+  try {
+    assert.equal((await synthMeetingAudio('hi', { env: { SONIOX_API_KEY: 'sk', OPENAI_API_KEY: 'ok' }, fetchImpl: m.f }))?.provider, 'openai')
+  } finally { console.warn = ow }
+  assert.ok(warns.some(w => w.includes('soniox') && w.includes('RATE/STREAM LIMIT')))
+})
 it('synth: empty 200 body counts as failure', async () => {
   const m = mockFetch((url) => url === SONIOX_TTS_URL ? ok(Buffer.alloc(0)) : ok(MP3_BYTES))
   assert.equal((await synthMeetingAudio('hi', { env: { SONIOX_API_KEY: 'sk', OPENAI_API_KEY: 'ok' }, fetchImpl: m.f }))?.provider, 'openai')
