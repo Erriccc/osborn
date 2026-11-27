@@ -22,13 +22,22 @@ export async function GET(request: Request) {
   return challenge === null ? new NextResponse('forbidden', { status: 403 }) : new NextResponse(challenge)
 }
 
+// One wake per number at a time: a burst of texts or a Meta retry joins the one in flight.
+const waking = new Set<string>()
+
 async function wakeFor(e164: string): Promise<void> {
+  if (waking.has(e164)) return
+  waking.add(e164)
+  try { await wakeOnce(e164) } finally { waking.delete(e164) }
+}
+
+async function wakeOnce(e164: string): Promise<void> {
   const admin = serviceClient()
   if (!admin) return
   const owner = await machineForPhone(admin, e164)
   if (!owner) return
   const { userId, sandboxId, syncToken } = owner
-  const r = await wakeUserAgent(userId, sandboxId, async () => syncToken)
+  const r = await wakeUserAgent(userId, sandboxId, async () => syncToken, undefined, false)
   if (r.ok) touchLastSeen(admin, userId)
   else console.warn(`[whatsapp] could not wake the machine: ${r.reason}`)
 }
@@ -42,7 +51,8 @@ export async function POST(request: Request) {
   try { parsed = JSON.parse(body) } catch { return NextResponse.json({ error: 'invalid payload' }, { status: 400 }) }
   // Meta retries anything but a fast 200, so wake in the background.
   // Verified numbers are US-only (toUsE164, as phone calls and Settings).
-  const senders = Array.from(new Set(textMessages(parsed).map((m) => toUsE164(m.from)).filter((n): n is string => !!n)))
+  // Meta's `from` carries the country code: only 1 + 10 digits is a US number (a bare 10-digit foreign number must not read as one).
+  const senders = Array.from(new Set(textMessages(parsed).filter((m) => /^1\d{10}$/.test(m.from)).map((m) => toUsE164(m.from)).filter((n): n is string => !!n)))
   for (const from of senders) {
     void wakeFor(from).catch((e) => console.error(`[whatsapp] wake failed: ${(e as Error).message}`))
   }
