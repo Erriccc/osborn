@@ -13,12 +13,11 @@ const TOLERANCE = 0.02
 const args = new Set(process.argv.slice(2))
 
 process.env.HOME = mkdtempSync(join(tmpdir(), 'osborn-recall-check-'))
-process.env.OSBORN_EMBED = '0'
 delete process.env.OSBORN_CROSS_PROJECT_RECALL
 
 const { CORPUS, QUESTIONS } = await import('../recall-golden/corpus.js')
 const { getSessionDir } = await import('../src/config.js')
-const { openStore, recall, updateSessionStore, getStorePath } = await import('../src/session-store.js')
+const { openStore, recall, updateSessionStore, getStorePath, rowInScope } = await import('../src/session-store.js')
 
 const A = join(process.env.HOME, 'projA'), B = join(process.env.HOME, 'projB')
 mkdirSync(A, { recursive: true }); mkdirSync(B, { recursive: true })
@@ -66,7 +65,7 @@ async function run(mode: Mode, embed?: any): Promise<Result> {
       const t0 = performance.now()
       const scoped = await recall(db, q.q, { mode, topK: 5, embed, scopeCwd: A })
       ms += performance.now() - t0
-      for (const h of scoped) if (h.cwd && !h.cwd.startsWith(A)) leaks.push(`${q.q} -> ${h.cwd}`)
+      for (const h of scoped) if (!rowInScope(h.cwd, A)) leaks.push(`${q.q} -> ${h.cwd}`)
       if (q.kind === 'other-project') {
         // Must miss while scoped (leaks above) and hit once cross-project recall is on.
         process.env.OSBORN_CROSS_PROJECT_RECALL = 'on'
