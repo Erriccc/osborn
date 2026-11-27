@@ -135,9 +135,7 @@ async function tryProvider(req: ProviderRequest, timeoutMs: number, f: typeof fe
     })
     if (!r.ok) {
       const e = await r.text().catch(() => '')
-      // 429 is Soniox's account-wide cap (3 concurrent streams, 100 req/min), not a bad request (#670).
-      const tag = r.status === 429 ? ' RATE/STREAM LIMIT' : ''
-      console.warn(`⚠️ meeting tts ${req.label} ${r.status}${tag}: ${e.slice(0, 160)}`)
+      console.warn(`⚠️ meeting tts ${req.label} ${r.status}${r.status === 429 ? ' RATE/STREAM LIMIT' : ''}: ${e.slice(0, 160)}`)
       return null
     }
     const buf = Buffer.from(await r.arrayBuffer())
