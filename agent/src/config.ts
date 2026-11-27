@@ -66,8 +66,7 @@ export interface OsbornConfig {
 export function readPublicSince(cwd: string, file = CONFIG_FILE): string | undefined {
   try {
     const m = (parse(readFileSync(file, 'utf-8')) as OsbornConfig | null)?.projectModes?.[resolve(cwd)]
-    const since = m?.mode === 'public' && typeof m.since === 'string' ? new Date(m.since).toISOString() : undefined
-    return since
+    return m?.mode === 'public' && typeof m.since === 'string' ? new Date(m.since).toISOString() : undefined
   } catch {
     return undefined
   }
