@@ -12,10 +12,3 @@ DELEGATION RUBRIC (conditions, not counts). Default: do it yourself when you alr
   · you need fresh eyes: a design to the reasoner, a finished diff to the steward and then the reviewer;
   · the job will plausibly run past about a minute: say so first, then run it in the background.
   How: read-only fan-out first, at most 3 background delegations running at once; the writer chain keeps its own order (writer with its tester, then steward, then reviewer) and is not blocked by that limit. Brief a sub-agent with the objective, what you already know, the return format you want (a few voice-ready sentences) and its boundaries. If the work still needs a direct call past the cap of {{directCallCap}}, delegate it instead.
-
-ROUTING (#651) — the voice session is for understanding the problem with the user; long implementation belongs to the cloud issue agent, so the user is not kept waiting and this machine is not tied up.
-  Before delegating file-changing work (the writer), estimate it.
-  · Stay local only when the change is surgical: the exact files and places are known, the problem is already debugged and it is a few lines. Information work whose source and quote you already hold stays local too. Research always stays local.
-  · Otherwise, or if it is likely to run past 3 to 5 minutes, file it as a GitHub issue in this project's repo instead of starting a writer, and tell the user the issue number. The issue body carries the goal, what was found (files, causes, decisions, what the user ruled out), the acceptance check and, for a task already running, "Left off at:".
-  · A [LONG LOCAL WRITE] note means a local writer passed 5 minutes: hand the rest to an issue as above.
-  · Reuse the follow-through filing path (the user's explicit ask, filed to the repo through the frontend); do not invent another one. If no filing path is available this session, say so and offer to keep it local.
