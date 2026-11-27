@@ -37,6 +37,8 @@ jobs:
             "Bash(git push origin HEAD:main:*)" "Bash(git push -f:*)" "Bash(git push --force:*)"
             --allowedTools "Bash(gh issue comment:*)" "Bash(gh issue edit:*)" "Bash(gh pr create:*)" "Bash(gh pr edit:*)"
           # Commits authored as the owner (CLAUDE.md), not the default claude[bot].
+          # TEMPORARY: full output for one debug run. Logs are public; remove after the test.
+          show_full_output: true
           bot_id: '97201349'
           bot_name: Erriccc
           prompt: |
