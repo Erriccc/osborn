@@ -335,7 +335,7 @@ export async function installSkill(
     }
     writeFileSync(join(tmp, PROVENANCE_FILE), JSON.stringify({
       source: entry.source, repo: entry.repo, sha: entry.sha, path: entry.path, license: entry.license,
-      files: entry.files, scripts: entry.scripts, rev: entry.rev, ...(entry.licenseFile ? { licenseFile: entry.licenseFile } : {}), installedAt: new Date().toISOString(),
+      files: entry.files, scripts: entry.scripts, rev: entry.rev, installedAt: new Date().toISOString(),
     }, null, 2))
     if (!opts.update) { renameSync(tmp, dst); return { ok: true, name } }
     // Swap: the old copy is moved aside first and put back if the new one cannot take its place.
