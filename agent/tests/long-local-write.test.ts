@@ -31,6 +31,10 @@ import { issueGate } from '../src/issue-gate.js'
   assert.equal(issueGate("echo 'gh issue create'", '/x', inc).decision, 'allow', 'quoted text is not a command')
   assert.equal(issueGate('gh repo create foo --public', '/x', pub).decision, 'deny')
   assert.equal(issueGate('gh repo create foo', '/x', pub).decision, 'deny')
-  assert.equal(issueGate('gh repo create foo --private', '/x', pub).decision, 'allow')
+  assert.equal(issueGate('gh repo create foo --private', '/x', pub).decision, 'ask', 'a private repo still uploads: ask')
+  assert.equal(issueGate('gh issue new -t a', '/x', inc).decision, 'deny', 'gh alias')
+  assert.equal(issueGate('gh repo new foo --public', '/x', pub).decision, 'deny', 'gh alias')
+  assert.equal(issueGate('gh issue create -Revil/x -t a', '/x', pub).decision, 'deny', 'attached -R')
+  assert.equal(issueGate('cd "$P" && gh issue create -t a', '/x', pub).decision, 'deny', 'unknown dir')
 }
 console.log('issue-gate ok')
