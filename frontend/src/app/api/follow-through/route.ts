@@ -16,8 +16,8 @@ import { bearerToken, syncTokenUserId } from '@/lib/sync-token-auth'
  * file, and only into a repo the server's GitHub token can push to (403 otherwise); other
  * accounts' items stay on their machine until per-user GitHub (#463). An account sends
  * at most DAILY_ITEM_CAP items to GitHub per rolling 24h (429 once over). Into a public repo
- * (or one whose visibility is unknown) only the user's own explicit asks file, everything
- * else is `held`. Replies `{ results: [{ key, action: 'created'|'skipped'|'held'|'error', url? }] }`,
+ * (or one whose visibility is unknown) only the user's own explicit asks file, and never a
+ * security-sounding one (`looksSecurityRelated`); everything else is `held`. Replies `{ results: [{ key, action: 'created'|'skipped'|'held'|'error', url? }] }`,
  * or 503 when GitHub or Supabase is unavailable. The GitHub token never leaves this server.
  */
 const MAX_BODY = 32 * 1024

@@ -55,7 +55,15 @@ export function cleanItem(raw: unknown): FollowUpItem | null {
   }
 }
 
-/** Into a public (or unknown-visibility) repo only the user's own explicit asks from the mic file. */
+/**
+ * Wording that may describe an undisclosed vulnerability. A deliberately blunt, fail-closed screen
+ * (a false hit only keeps an item local): the app has no private-advisory path, so a security
+ * item must never become a public issue.
+ */
+const SECURITY_RE = /\b(security|vulnerabilit\w*|exploit\w*|cves?(?:-\d+)?|xss|csrf|ssrf|sql injection|rce|privilege escalation|auth(?:entication|orization)? bypass|api[ _-]?keys?|(?:leak(?:ed|s)?|exposed?|hard-?coded|stolen|compromised|plaintext)\s+(?:the\s+|a\s+|an\s+|our\s+)?(?:\w+\s+)?(?:keys?|tokens?|secrets?|passwords?|credentials?)|(?:keys?|tokens?|secrets?|passwords?|credentials?)\s+(?:is |are |was |were )?(?:leak(?:ed|s|ing)|exposed|stolen|compromised|in plaintext)|\w+_(?:key|secret|token|password))\b/i
+const looksSecurityRelated = (text: string): boolean => SECURITY_RE.test(text)
+
+/** Into a public (or unknown-visibility) repo only the user's own explicit asks from the mic file, and never a security one. */
 export function mayFile(item: FollowUpItem, repoPrivate: boolean): boolean {
-  return repoPrivate || isUserExplicit(item)
+  return repoPrivate || (isUserExplicit(item) && !looksSecurityRelated(item.text))
 }
