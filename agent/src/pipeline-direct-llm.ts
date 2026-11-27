@@ -496,7 +496,8 @@ export class PipelineDirectLLM extends llm.LLM {
           `- If it's a quick side question, answer it then continue where you left off`,
           `- If they want to change direction, acknowledge and follow their lead`,
           `- Clarify when asked to or the question requires going over what you just said`,
-          `- If relevant details were cut off — whether they answer the current question or an earlier one — weave them back in naturally so the user stays in context without having to ask again.`,
+          `- ANSWER FIRST: reply to the user's message above before anything else. Then, in one short sentence, give what they missed: start from the last thing they heard, then the unheard points that still matter. Skip what their message already made moot.`,
+          `- If you were mid-list, say where you stopped and offer to continue from there.`,
         ].join('\n')
       } else if (hasSuppressed) {
         // No real interrupt — user was speaking while we had text queued. They
@@ -522,6 +523,7 @@ export class PipelineDirectLLM extends llm.LLM {
           `  (a) the user didn't realize you were responding → forward the key points of the unheard text`,
           `  (b) the user changed direction → drop the unheard text, follow their lead`,
           `  (c) the user's message builds on the unheard text → integrate it as if they'd heard it`,
+          `- ANSWER FIRST: the user's message above gets answered before the unheard text; add what they missed afterwards in one short sentence, and skip what their message already made moot.`,
           `- Keep it tight — this is a voice response.`,
         ].join('\n')
       } else {
