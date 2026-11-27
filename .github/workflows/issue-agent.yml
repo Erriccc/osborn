@@ -48,6 +48,8 @@ jobs:
           # Commits authored as the owner (CLAUDE.md), not the default claude[bot].
           bot_id: '97201349'
           bot_name: Erriccc
+          # On during the testing phase (founder decision): logs are public. Turn off once runs are stable.
+          show_full_output: true
           prompt: |
             Repository: ${{ github.repository }}
             Issue: #${{ github.event.issue.number }}
