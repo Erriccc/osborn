@@ -75,8 +75,11 @@ export function readPublicSince(cwd: string, file = CONFIG_FILE): string | undef
   }
 }
 
+export type ProjectMode = 'incognito' | 'public'
+export const isProjectMode = (m: unknown): m is ProjectMode => m === 'incognito' || m === 'public'
+
 /** The project's privacy mode as the picker shows it (#688): public only when `readPublicSince` says so. */
-export function projectModeOf(cwd: string, file = CONFIG_FILE): 'incognito' | 'public' {
+export function projectModeOf(cwd: string, file = CONFIG_FILE): ProjectMode {
   return readPublicSince(cwd, file) ? 'public' : 'incognito'
 }
 
@@ -146,7 +149,7 @@ export function writeApprovalMode(mode: ApprovalMode, configFile = CONFIG_FILE):
  * Saves a project's privacy mode (#663, #688). Public records `since` now, so switching never back-fills
  * what piled up while incognito; incognito removes the entry, which is the default.
  */
-export function writeProjectMode(cwd: string, mode: 'incognito' | 'public', configFile = CONFIG_FILE, now = new Date()): boolean {
+export function writeProjectMode(cwd: string, mode: ProjectMode, configFile = CONFIG_FILE, now = new Date()): boolean {
   const dir = resolve(cwd)
   return editConfigDoc((doc) => {
     if (mode === 'public') {

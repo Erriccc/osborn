@@ -64,7 +64,7 @@ import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote, getNoiseCancelNote, getDroppedUnspokenNote } from './prompts.js'
-import { MCP_CATALOG, readApprovalMode, projectModeOf, writeApprovalMode, writeProjectMode } from './config.js'
+import { MCP_CATALOG, readApprovalMode, isProjectMode, projectModeOf, writeApprovalMode, writeProjectMode } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled, launchLoopsFlush, flushLastSessionThenExit } from './content/lens-launch.js'
 import { hasContentModelKey } from './content/content-llm.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
@@ -7145,7 +7145,7 @@ async function main() {
       } else if (data.type === 'set_project_mode') {
         // The project's privacy picker (#688, #663). Saved per project folder; echoed so every client shows it.
         let error: string | undefined
-        if (data.mode === 'incognito' || data.mode === 'public') {
+        if (isProjectMode(data.mode)) {
           const saved = writeProjectMode(workingDir, data.mode)
           console.log(`🕶️ Project mode: ${data.mode}${saved ? '' : ' (not saved: config.yaml unreadable)'}`)
           if (!saved) error = 'config.yaml could not be written'
@@ -7290,6 +7290,7 @@ async function main() {
                     sessionId,
                     success: true,
                   })
+                  await sendToFrontend({ type: 'project_mode', mode: projectModeOf(workingDir) })
 
                   const artifacts = listWorkspaceArtifacts(workingDir, sessionId)
                   if (artifacts.length > 0) {

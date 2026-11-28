@@ -3401,12 +3401,12 @@ function VoiceRoomInner({
   // The picker asks the agent to change its saved mode (#364). Nothing changes
   // here until the agent's approval_mode echo, so the picker never shows a mode
   // the agent did not apply (a refused request echoes the current one).
-  const setProjectMode = useCallback((mode: ProjectMode) => {
-    sendToAgent(new TextEncoder().encode(JSON.stringify({ type: 'set_project_mode', mode })), { reliable: true })
-  }, [sendToAgent])
-
   const setApprovalMode = useCallback((mode: ApprovalMode) => {
     sendToAgent(new TextEncoder().encode(JSON.stringify({ type: 'set_approval_mode', mode })), { reliable: true })
+  }, [sendToAgent])
+  // Same for the privacy chip (#688): it shows only what the agent echoes in project_mode.
+  const setProjectMode = useCallback((mode: ProjectMode) => {
+    sendToAgent(new TextEncoder().encode(JSON.stringify({ type: 'set_project_mode', mode })), { reliable: true })
   }, [sendToAgent])
 
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
