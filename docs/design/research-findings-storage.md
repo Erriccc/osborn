@@ -34,7 +34,7 @@ Findings must be durable, indexable and reusable by us and by other people. A se
 ## Reuse (do not rebuild)
 
 - Incognito and public mode: `readPublicSince` (`agent/src/config.ts`), as used by `flushSession` (`agent/src/loops-flush.ts`) and `issueGate` (`agent/src/issue-gate.ts`). The research writer calls the same check, so there is one definition of "may write to GitHub".
-- Repo resolution: `repoFromCwd` and `OSBORN_FOLLOW_THROUGH_DEFAULT_REPO` (`loops-ledger.ts`), same `no-repo` outcome.
+- Repo resolution: `repoFromCwd` (`loops-ledger.ts`) and the `OSBORN_FOLLOW_THROUGH_DEFAULT_REPO` fallback (`loops-flush.ts`), same `no-repo` outcome.
 - Secret scan: `redactSecrets` (`agent/src/content/secret-rules.ts`). The pre-commit guard uses it as a blocker (reject if the redacted text differs), not as a rewriter.
 - Frontend-held GitHub token: `postFollowThrough` goes through `/api/follow-through`. The PR path adds a sibling route with Contents and PRs scope on the linked repo only. Neither the agent nor the model holds the token.
 - Dedup: the #451 fingerprint is the filename-independent key, so a rewritten finding updates its file instead of adding a second one.
@@ -55,7 +55,7 @@ Take the 28 Nov competitor map in a repo that is a clone of a connected repo (it
 ## Open questions
 
 - Where the Private section lives locally (a git-ignored `docs/research/.private/` is the proposal).
-- Personal-data scanning beyond `redactSecrets` (emails and paths are scrubbed by the frontend today; names are not).
+- Personal-data scanning beyond `redactSecrets` (emails and paths are scrubbed by the frontend today, `frontend/src/lib/follow-through.ts`; names are not).
 - Whether INDEX.md rows conflict across concurrent PRs: proposal is one row per file, sorted by date, with the owner resolving on merge.
 
 ## User time
