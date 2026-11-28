@@ -7,7 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { SayPacer, CHARS_PER_SEC } from './say-pacer.js'
+import { SayPacer } from './say-pacer.js'
 import { staleIdOnConsume, isStaleBlock, heardSlice, expiredChars, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
@@ -4169,9 +4169,11 @@ async function main() {
     console.log(`🤐 [suppressed] BUFFERED +${t.length} chars, total ${totalChars(lastInterruption.suppressedBlocks)} (agent: ${agentState}, user: ${userState})`)
   }
 
-  // Just-in-time speech (#694): a sentence chunk is sent to TTS only when the
-  // playing one is nearly done, so a barge-in wastes at most the chunk in flight.
-  type SayItem = { text: string; messageId?: string; chunkIndex?: number; speed?: number }
+  // Just-in-time speech (#694): a sentence chunk is sent to TTS only once the
+  // playing one's first audio frame is out, so a barge-in wastes at most the chunk in flight.
+  type SayItem = { text: string; messageId?: string; chunkIndex?: number; speed?: number; retired?: (id: string) => boolean }
+  // Turns a barge-in cut off: their unsent chunks stay in the next prompt but are never replayed aloud.
+  const cutTurnIds = new Set<string>()
   let currentTts: any = null
   const sayPacer = new SayPacer<SayItem>()
   let sayPumpTimer: NodeJS.Timeout | null = null
@@ -4182,16 +4184,18 @@ async function main() {
       if (lost.length) console.warn(`⚠️ ${lost.length} queued tts_say chunk(s) dropped: currentSession is null`)
       return
     }
-    while (sayPacer.ready(Date.now(), activeSpeechHandles.size)) {
+    while (sayPacer.ready(activeSpeechHandles.size)) {
+      // A live overlap may be a cough the SDK resumes from: wait, never park already-accepted chunks for it.
+      if (userState === 'speaking') break
       if (holdSay()) break
       const next = sayPacer.take()!
       if (!staleSay(next)) issueSay(next)
     }
-    if (sayPacer.size) sayPumpTimer = setTimeout(pumpSay, 250)
+    if (sayPacer.size && userState === 'speaking') sayPumpTimer = setTimeout(pumpSay, 250)
   }
   /** A late block from a turn the user already cut off (#456): dropped, never buffered, or the 1.2s replay could still speak it. */
   function staleSay(d: SayItem): boolean {
-    if (!isStaleBlock(staleTurnId, d.messageId, (id) => !!currentLLM?.isRetiredTurnId(id))) return false
+    if (!isStaleBlock(staleTurnId, d.messageId, (id) => !!d.retired?.(id))) return false
     console.log(`🔇 tts_say dropped (turn was interrupted): "${d.text.slice(0, 60)}"`)
     return true
   }
@@ -4209,14 +4213,18 @@ async function main() {
     return true
   }
   /** Chunks never sent to TTS are unheard text, carried to the next turn. */
-  function parkUnsentSpeech() {
-    for (const d of sayPacer.clear()) appendSuppressedText(d.text, d.messageId)
+  function parkUnsentSpeech(promptOnly = false) {
+    for (const d of sayPacer.clear()) {
+      if (promptOnly && d.messageId) cutTurnIds.add(d.messageId)
+      appendSuppressedText(d.text, d.messageId)
+    }
   }
   /** Teardown (switch, join, disconnect, recovery): the old session's speech is forgotten, never carried. */
   function dropSpeech() {
     currentSpeechHandle = null
     activeSpeechHandles.clear()
     sayPacer.clear()
+    cutTurnIds.clear()
   }
   function issueSay(data: SayItem) {
     const sayId = Date.now() // simple ID to correlate start/end logs
@@ -4242,7 +4250,8 @@ async function main() {
         if (audioOutputRef && typeof audioOutputRef.on === 'function') {
           const onPlaybackStarted = () => {
             playbackStartedAt = Date.now()
-            sayPacer.started(playbackStartedAt, data.text.length)
+            sayPacer.started()
+            pumpSay()
             console.log(`🔊 [${sayId}] audio first frame out (playbackStarted)`)
             markAudio()
             audioOutputRef.off('playbackStarted', onPlaybackStarted)
@@ -4270,6 +4279,7 @@ async function main() {
 
             let spokenText: string
             let method: string
+            const CHARS_PER_SEC = 14  // spoken-rate estimate for the two position-based branches
 
             if (sdkTranscript) {
               // Best case: LiveKit gave us word-accurate transcript (requires alignedTranscript TTS)
@@ -4332,7 +4342,7 @@ async function main() {
    * the next one over the user, who waits for the whole queue to drain.
    */
   function flushQueuedSpeech() {
-    parkUnsentSpeech()
+    parkUnsentSpeech(true)
     if (activeSpeechHandles.size === 0) return
     console.log(`🔇 Flushing ${activeSpeechHandles.size} queued speech handle(s) after barge-in`)
     for (const h of activeSpeechHandles) {
@@ -4347,7 +4357,7 @@ async function main() {
     if (!blocks.length || !currentSession) return
     // Blocks of a turn the user cut off (a phone "stop that" interrupts without a new turn) are never spoken, but stay buffered so the next prompt still carries them; expired ones go.
     const now = Date.now()
-    const { speak, keep, expired } = partitionForReplay(blocks, now, (id) => isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
+    const { speak, keep, expired } = partitionForReplay(blocks, now, (id) => !!id && cutTurnIds.has(id) || isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
     lastInterruption = rest && { ...rest, suppressedBlocks: keep }
     droppedUnspokenChars += expiredChars(blocks, now)
     if (expired) console.log(`🤐 [suppressed] REPLAY EXPIRED ${expired} block(s) older than 60s`)
@@ -5469,7 +5479,8 @@ async function main() {
         return
       }
 
-      if (staleSay(data) || holdSay(data)) return
+      const item: SayItem = { ...data, retired: (id) => directLLM.isRetiredTurnId(id) }
+      if (staleSay(item) || holdSay(item)) return
 
       // CONNECT TIMING: the FIRST real spoken answer (a tts_say from Claude —
       // NOT the hardcoded "Welcome back", which is a direct session.say). Gated
@@ -5486,7 +5497,7 @@ async function main() {
         speakBuffered('ahead of a newer block')
       }
 
-      sayPacer.enqueue(data)
+      sayPacer.enqueue(item)
       pumpSay()
     })
 
