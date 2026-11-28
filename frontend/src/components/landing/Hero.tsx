@@ -52,7 +52,7 @@ export default function Hero() {
             </div>
 
             <p className="mt-6 font-mono text-[11px] md:text-[12px] text-[var(--text-muted)] tracking-[0.02em]">
-              Your code never leaves your machine · Bring your own keys · No lock-in
+              Your code never leaves your machine · Your commits stay yours · Bring your own keys · No lock-in
             </p>
           </div>
 
