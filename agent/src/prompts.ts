@@ -2123,6 +2123,7 @@ export const PHONE_TOOLS_DENIED = 'Tools are off on a phone call: no reading fil
 export const ISSUE_GATE_DENIED = {
   publicRepo: 'A new repository is never public by default. Offer the user a PRIVATE repo (`gh repo create --private`) and ask before creating it.',
   incognito: 'This project is incognito (the default), so nothing is filed on GitHub. Keep the handoff local: write it to the session workspace and tell the user where it is. If the user wants it filed, say the project must be switched to public mode first (the Privacy chip in the web chat’s Activity row, or projectModes in ~/.osborn/config.yaml).',
+  incognitoShip: 'This project is incognito (the default), so nothing is pushed and no pull request is opened. Keep the work in local commits and tell the user. If the user wants it on GitHub, say the project must be switched to public mode first (the Privacy chip in the web chat’s Activity row, or projectModes in ~/.osborn/config.yaml).',
   unknownDir: 'The folder this command runs in cannot be worked out, so no issue is filed. Run `gh issue create` from the project folder itself, without `cd $VAR`.',
   noOrigin: 'This project has no github.com origin to name, so no issue is filed. Keep the handoff local, or offer the user a PRIVATE repo for it.',
   otherRepo: (repo: string, target: string) => `Issues for this project go to ${repo} only; --repo ${target} is refused.`,

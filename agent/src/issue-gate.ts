@@ -1,7 +1,8 @@
-// Issue-filing gate (#651, privacy mode #663). The agent may file a handoff issue with
+// Issue-filing gate (#651, privacy mode #663; `git push` and `gh pr create` since #689). The agent may file a handoff issue with
 // `gh issue create` only in a project switched to public mode, only on the repo named by
 // the project's own github.com origin, and only through the approval mode (the dialog unless the
-// user chose Allow all). Incognito (the default) keeps the handoff local: no issue is filed.
+// user chose Allow all). Incognito (the default) keeps the handoff local: no issue is filed,
+// nothing is pushed and no PR is opened; a public project's push or PR goes through the approval mode.
 // `gh repo create` asks (private) or is refused (public): a new project never gets a public
 // repo by default. Like the steward gate it guides the agent and is not a sandbox (`gh api`,
 // `GH_REPO=` are not parsed).
@@ -30,7 +31,7 @@ function repoArg(args: string[]): string | undefined {
 export function issueGate(cmd: string, cwd: string, deps: IssueGateDeps = {}): IssueGateResult {
   let result: IssueGateResult = { decision: 'allow' }
   for (const hit of gitActions(cmd, cwd)) {
-    if (hit.action !== 'issue' && hit.action !== 'repo') continue
+    if (hit.action === 'commit') continue
     // The shell's directory could not be worked out (`cd $VAR`): never rule on a guess.
     if (!hit.dir) return { decision: 'deny', message: ISSUE_GATE_DENIED.unknownDir }
     const dir = hit.dir
@@ -40,8 +41,10 @@ export function issueGate(cmd: string, cwd: string, deps: IssueGateDeps = {}): I
       return { decision: 'deny', message: ISSUE_GATE_DENIED.publicRepo }
     }
     if (!(deps.publicSince ?? readPublicSince)(dir)) {
-      return { decision: 'deny', message: ISSUE_GATE_DENIED.incognito }
+      return { decision: 'deny', message: hit.action === 'issue' ? ISSUE_GATE_DENIED.incognito : ISSUE_GATE_DENIED.incognitoShip }
     }
+    // A push goes to whatever remote git names; the dialog shows the command, so it is not narrowed to the origin.
+    if (hit.action === 'push') { result = { decision: 'ask' }; continue }
     const repo = (deps.repoFor ?? repoFromCwd)(dir)
     if (!repo) {
       return { decision: 'deny', message: ISSUE_GATE_DENIED.noOrigin }
