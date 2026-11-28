@@ -8,6 +8,7 @@
  */
 import { appendJsonlLine } from './jsonl-sidecar.js'
 import { getSidecarPath } from './session-store.js'
+import { clip } from './content/lens-ingest.js'
 
 export type SpeechOutcome = 'heard' | 'cut' | 'held' | 'stale'
 export type SpeechParts = { messageId?: string; heard?: string; unheard?: string; estimate?: boolean /* `heard` came from a position or timer, not the SDK's synced transcript */ }
@@ -15,14 +16,12 @@ type SpeechRecord = { at: string; outcome: SpeechOutcome } & SpeechParts
 
 const MAX_TEXT = 600
 
-const cap = (s?: string) => (s && s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) + '…' : s)
-
 export function speechRecord(outcome: SpeechOutcome, p: SpeechParts, now = new Date()): SpeechRecord {
   const r: SpeechRecord = { at: now.toISOString(), outcome }
   if (p.messageId) r.messageId = p.messageId
-  if (p.heard) r.heard = cap(p.heard)
+  if (p.heard) r.heard = clip(p.heard, MAX_TEXT)
   const unheard = p.unheard?.trim()
-  if (unheard) r.unheard = cap(unheard)
+  if (unheard) r.unheard = clip(unheard, MAX_TEXT)
   if (p.estimate) r.estimate = true
   return r
 }
