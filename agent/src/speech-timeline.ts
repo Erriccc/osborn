@@ -69,3 +69,22 @@ export class SpeechTimeline {
 }
 
 export const speechTimeline = new SpeechTimeline()
+
+const LONG_TURN_WORDS = 20
+const OVERLAP_TURN_WORDS = 12
+const DANGLING = new Set(['and', 'but', 'or', 'so', 'because', 'that', 'which', 'to', 'of', 'for', 'with', 'in', 'on', 'at', 'the', 'a', 'an', 'if', 'then', 'when', 'is', 'are', 'was', 'i', 'we', 'you', 'it', 'my', 'our', 'as', 'from', 'about', 'also'])
+
+/**
+ * A turn that probably lost its tail (#687): a long turn with no closing punctuation or ending on a
+ * dangling word, or a turn spoken over the agent (`overlapped`) that stops without closing. Returns the
+ * last words heard, or null. A heuristic: a false hit costs one confirming question.
+ */
+export function truncatedInput(text: string, overlapped = false): { lastWords: string } | null {
+  const t = text.trim()
+  const words = t.split(/\s+/).filter(Boolean)
+  if (words.length < (overlapped ? OVERLAP_TURN_WORDS : LONG_TURN_WORDS)) return null
+  const closed = /[.?!…]["')\]]*$/.test(t)
+  const last = (words[words.length - 1] || '').toLowerCase().replace(/[^a-z']/g, '')
+  if (closed && !DANGLING.has(last)) return null
+  return { lastWords: words.slice(-8).join(' ') }
+}

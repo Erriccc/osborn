@@ -183,3 +183,16 @@ assert.equal(steersTurn(getNoiseCancelNote(true)), false); assert.equal(steersTu
 }
 console.log('speech-timeline: ok')
 process.exit(0)
+
+// #687: a long turn that stops mid-sentence is flagged; complete or short ones are not
+{
+  const { truncatedInput } = await import('../src/speech-timeline.js')
+  const long = 'so I want to change how the session list works and also the way the filters apply when we switch projects and then'
+  assert.ok(truncatedInput(long.repeat(1)), 'long dangling')
+  assert.match(truncatedInput(long)!.lastWords, /projects and then$/)
+  assert.equal(truncatedInput('Can you check the tests?'), null)
+  assert.equal(truncatedInput('I want to change how the session list works and also the way the filters apply when we switch projects, then rerun everything.'), null)
+  assert.equal(truncatedInput('one two three four five six seven eight nine ten eleven twelve thirteen'), null)
+  assert.ok(truncatedInput('one two three four five six seven eight nine ten eleven twelve thirteen', true), 'overlap')
+  assert.ok(truncatedInput(long + ' the.'), 'dangling with period')
+}
