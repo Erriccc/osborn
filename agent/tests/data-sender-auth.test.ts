@@ -104,7 +104,7 @@ const src = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'sr
 t('index.ts: handleDataReceived checks the sender before claude_auth_code', () => {
   const start = src.indexOf('const handleDataReceived = async')
   assert.ok(start > 0, 'handleDataReceived not found')
-  const body = src.slice(start, start + 2000)
+  const body = src.slice(start, start + 3000)
   const check = body.indexOf('checkControlSender(')
   const auth = body.indexOf("data.type === 'claude_auth_code'")
   assert.ok(check > 0 && auth > 0 && check < auth, 'checkControlSender must run before the claude_auth_code branch')

@@ -17,6 +17,7 @@ import type { KeyHealthEntry } from '@/lib/agent-health'
 import { fastBrainLabel } from '@/lib/modelBadge'
 import { LogsDrawer, MachineChipBadge, IDE_DOT_CLASS, IDE_STATE_LABEL, CODE_ICON_PATH, type MachineData } from './LogsDrawer'
 import { ApprovalPicker } from './voice/ApprovalPicker'
+import { PrivacyPicker, type ProjectMode } from './voice/PrivacyPicker'
 import { FilesExplorerModal } from './FilesExplorerModal'
 import { uploadFile, isSupabaseConfigured, type UploadResult } from '../lib/supabase'
 import { createSupabaseBrowser } from '../lib/supabase-browser'
@@ -375,6 +376,8 @@ function VoiceRoomInner({
   // disables the agent-side PreToolUse hook / canUseTool gate. A tool the agent
   // denies stays denied in every mode — DENY always wins.
   const [approvalMode, setApprovalModeState] = useState<ApprovalMode | null>(null)
+  // The project's privacy mode (#688, #663), reported by the agent; null until it does (an older agent).
+  const [projectMode, setProjectModeState] = useState<ProjectMode | null>(null)
   // One-time warning the first time "Allow all" auto-approves this session.
   const allowAllWarnedRef = useRef(false)
   // One-time notice the first time "Auto-review" auto-approves a low-risk request.
@@ -1989,6 +1992,7 @@ function VoiceRoomInner({
       if (data.type === 'agent_ready') {
         agentKeepsWorkingRef.current = data.keepWorking === true
         if (data.approvalMode) setApprovalModeState(data.approvalMode as ApprovalMode)
+        if (data.projectMode) setProjectModeState(data.projectMode as ProjectMode)
         const cts = (window as any).__osbornClickTs
         if (cts) console.log(`⏱️ [connect-timing] +${Date.now() - cts}ms agent_ready received → setConnected(true)`)
         setAgentConnected(true)
@@ -2290,6 +2294,9 @@ function VoiceRoomInner({
         // The agent's saved approval mode (#364), echoed after any change (or a refused one).
         if (data.mode) setApprovalModeState(data.mode as ApprovalMode)
         if (typeof data.error === 'string') addMessageRef.current?.('system', `Approval mode not changed: ${data.error}`, undefined, 'log')
+      } else if (data.type === 'project_mode') {
+        if (data.mode) setProjectModeState(data.mode as ProjectMode)
+        if (typeof data.error === 'string') addMessageRef.current?.('system', `Privacy mode not changed: ${data.error}`, undefined, 'log')
       } else if (data.type === 'permission_auto_approved') {
         // The agent's approval mode already approved this request (#364); we
         // only show what ran. 'auto-review' shows the inline card, marked
@@ -3396,6 +3403,10 @@ function VoiceRoomInner({
   // the agent did not apply (a refused request echoes the current one).
   const setApprovalMode = useCallback((mode: ApprovalMode) => {
     sendToAgent(new TextEncoder().encode(JSON.stringify({ type: 'set_approval_mode', mode })), { reliable: true })
+  }, [sendToAgent])
+  // Same for the privacy chip (#688): it shows only what the agent echoes in project_mode.
+  const setProjectMode = useCallback((mode: ProjectMode) => {
+    sendToAgent(new TextEncoder().encode(JSON.stringify({ type: 'set_project_mode', mode })), { reliable: true })
   }, [sendToAgent])
 
   const handlePermissionResponse = useCallback((response: 'allow' | 'deny' | 'always_allow') => {
@@ -4667,7 +4678,7 @@ function VoiceRoomInner({
             // come back — the user must always be able to dismiss a stuck row.
             setBackgroundFlows(prev => prev.filter(f => f.agentId !== agentId))
           }}
-          approvals={approvalMode ? <ApprovalPicker mode={approvalMode} onChange={setApprovalMode} /> : undefined}
+          approvals={approvalMode ? <><ApprovalPicker mode={approvalMode} onChange={setApprovalMode} />{projectMode && <PrivacyPicker mode={projectMode} onChange={setProjectMode} />}</> : undefined}
           machineData={machineData}
           agentMemory={agentMemory}
           onMachineTabActive={setMachineTabActive}
