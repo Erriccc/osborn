@@ -3348,24 +3348,16 @@ async function main() {
       const spoken = currentLLM.recentSpoken?.() ?? []
       for (const d of staleWork(records, now, { sinceMs: ledgerStartedAt, spoken })) currentLLM.recordWork?.({ kind: 'work_dropped', id: d.id, reason: d.reason })
       if (noticeThrottled(records, now, noticeTimes)) return
-      // Work opened before this process started and never answered died with the restart: close it as
-      // interrupted (so it is never silently open) and tell the user once.
-      const cut = interruptedWork(records, ledgerStartedAt)
-      if (cut.length) {
-        noticeTimes.push(now)
-        for (const r of cut) currentLLM.recordWork?.({ kind: 'work_dropped', id: r.id, reason: 'interrupted' })
-        const ictx = new llm.ChatContext()
-        ictx.addMessage({ role: 'user', content: getInterruptedWorkNote(cut) })
-        currentLLM.chat({ chatCtx: ictx })
-        return
-      }
-      const rows = pendingDeliveries(records, now, { sinceMs: ledgerStartedAt, spoken })
-      if (!rows.length) return
+      // Work an earlier process opened with no result died with the restart: closed as interrupted and told once (first).
+      const cut = interruptedWork(records, now, ledgerStartedAt)
+      const rows = cut.length ? [] : pendingDeliveries(records, now, { sinceMs: ledgerStartedAt, spoken })
+      if (!cut.length && !rows.length) return
       // The reply to this notice closes its row (ClaudeLLM.deliverTurnResults); workSpoken is for spoke reports.
       noticeTimes.push(now)
+      for (const r of cut) currentLLM.recordWork?.({ kind: 'work_dropped', id: r.id, reason: 'interrupted' })
       for (const r of rows) currentLLM.recordWork?.({ kind: 'work_surfaced', id: r.id })
       const ctx = new llm.ChatContext()
-      ctx.addMessage({ role: 'user', content: getUndeliveredNote(rows) })
+      ctx.addMessage({ role: 'user', content: cut.length ? getInterruptedWorkNote(cut) : getUndeliveredNote(rows) })
       currentLLM.chat({ chatCtx: ctx })
     } catch (err) { console.warn(`⚠️ Undelivered work surfacing failed: ${(err as Error).message}`) }
   }
