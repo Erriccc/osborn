@@ -1783,6 +1783,11 @@ export function getContinuationNote(continuedAfterMs: number): string {
   return `<system-reminder>\nThe user kept talking about ${s}s after your previous turn started: this message continues that thought. Answer the whole thing; anything you said in reply to the earlier part may not have been heard.\n</system-reminder>`
 }
 
+/** Prepended to a long turn that looks cut off (#687): say what was last heard and ask for the rest before acting. */
+export function getTruncatedInputNote(lastWords: string): string {
+  return `<system-reminder>\nThis message may have been cut off: it is long and ends without finishing ("...${lastWords}"). Do not act on it as if complete. Say in one short sentence what you last heard (those last words) and ask the user for the rest.\n</system-reminder>`
+}
+
 /** The next turn after buffered unspoken reply text expired: the user never heard it. */
 export function getDroppedUnspokenNote(chars: number): string {
   return `<system-reminder>
