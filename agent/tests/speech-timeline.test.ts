@@ -199,6 +199,7 @@ assert.equal(steersTurn(getNoiseCancelNote(true)), false); assert.equal(steersTu
   assert.equal(truncatedInput('one two three four five six seven eight nine ten eleven twelve thirteen'), null)
   assert.ok(truncatedInput('one two three four five six seven eight nine ten eleven twelve thirteen', true), 'overlap')
   assert.ok(truncatedInput(long + ' the.'), 'dangling with period')
+  assert.equal(truncatedInput('So when we switch projects and the cache is cold and the filters reset and the list reloads and the badge flickers, what if?'), null)
   const done = 'I want to change how the session list works and also the way the filters apply when we switch projects'
   assert.equal(truncatedInput(done + ' and then turn it on.'), null, 'a sentence may end on "on"')
   assert.equal(truncatedInput(done + ', thank you.'), null, 'a sentence may end on "you"')
