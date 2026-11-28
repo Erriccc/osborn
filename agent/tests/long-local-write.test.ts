@@ -46,6 +46,7 @@ import { issueGate } from '../src/issue-gate.js'
   assert.equal(issueGate('gh pr create --repo evil/x', '/x', pub).decision, 'deny', 'PR only on the project repo')
   assert.equal(issueGate('gh pr create --fill', '/x', pub).decision, 'ask')
   assert.equal(issueGate('cd "$P" && git push', '/x', pub).decision, 'deny', 'unknown dir')
+  assert.equal(issueGate('cd sub && git push', '/x', { publicSince: (d: string) => d === '/x' ? 'now' : undefined, repoFor: () => 'o/r' }).decision, 'ask', 'a subfolder uses the session folder mode')
   assert.equal(issueGate("echo 'git push'", '/x', inc).decision, 'allow', 'quoted text is not a command')
 }
 console.log('issue-gate ok')

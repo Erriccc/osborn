@@ -3009,6 +3009,13 @@ class ClaudeLLMStream extends llm.LLMStream {
               let stewardNote: string | null = null  // advise mode: rides the allow tail below
               let askUser = false  // issue gate: the call goes to the approval dialog, through the shared tail
               if (toolName === 'Bash') {
+                // First (a refusal here needs no steward run): an issue, PR, push or new repo (#651, #689): incognito keeps the work local; public asks the user.
+                const filing = issueGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
+                if (filing.decision === 'deny') {
+                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: filing.message, agent: agentType ?? 'main' })
+                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: filing.message }
+                }
+                askUser = filing.decision === 'ask'
                 const gate = await stewardGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
                 if (gate.decision !== 'allow') {
                   this.#recordSteward({ gate: gate.decision, message: gate.message ?? '', at: new Date().toISOString() })
@@ -3018,13 +3025,6 @@ class ClaudeLLMStream extends llm.LLMStream {
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
                 }
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
-                // An issue, PR, push or new repo (#651, #689): incognito keeps the work local; public asks the user.
-                const filing = issueGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
-                if (filing.decision === 'deny') {
-                  this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: filing.message, agent: agentType ?? 'main' })
-                  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: filing.message }
-                }
-                askUser = filing.decision === 'ask'
               }
 
               // File-edit access control (agent-store.ts EDIT_TOOLS) — keyed by the agent's ROLE

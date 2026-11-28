@@ -7,6 +7,7 @@
 // `GH_REPO=` are not parsed).
 import { gitActions } from './steward-gate.js'
 import { readPublicSince } from './config.js'
+import { isWithin } from './lib/safe-artifact-path.js'
 import { repoFromCwd } from './loops-ledger.js'
 import type { FlushDeps } from './loops-flush.js'
 import { ISSUE_GATE_DENIED } from './prompts.js'
@@ -39,7 +40,8 @@ export function issueGate(cmd: string, cwd: string, deps: IssueGateDeps = {}): I
       if (hit.args?.includes('--private')) { result = { decision: 'ask' }; continue }
       return { decision: 'deny', message: ISSUE_GATE_DENIED.publicRepo }
     }
-    if (!(deps.publicSince ?? readPublicSince)(dir)) {
+    // The mode is kept for the session folder, so a command run in a folder inside it uses that folder's mode.
+    if (!(deps.publicSince ?? readPublicSince)(isWithin(dir, cwd) ? cwd : dir)) {
       return { decision: 'deny', message: hit.action === 'issue' ? ISSUE_GATE_DENIED.incognito : ISSUE_GATE_DENIED.incognitoShip }
     }
     // A push goes to whatever remote git names; the dialog shows the command, so it is not narrowed to the origin.
