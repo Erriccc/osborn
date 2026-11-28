@@ -73,7 +73,7 @@ export const speechTimeline = new SpeechTimeline()
 const LONG_TURN_WORDS = 20
 const OVERLAP_TURN_WORDS = 12
 /** Words no finished sentence ends on: a period after one is the STT closing a cut-off turn. */
-const DANGLING = new Set(['and', 'but', 'or', 'because', 'the', 'a', 'an', 'my', 'our', 'your', 'if'])
+const DANGLING = new Set(['and', 'but', 'or', 'because', 'the', 'an', 'my', 'our', 'your'])
 
 /**
  * A spoken turn that probably lost its tail (#687): a long turn with no closing punctuation or ending on
@@ -89,6 +89,7 @@ export function truncatedInput(text: string, overlapped = false): { lastWords: s
   if (words.length < (overlapped ? OVERLAP_TURN_WORDS : LONG_TURN_WORDS)) return null
   const closed = /[.?!…]["')\]]*$/.test(t)
   const last = (words[words.length - 1] || '').toLowerCase().replace(/[^a-z']/g, '')
+  if (/[?!]["')\]]*$/.test(t)) return null
   if (closed && !DANGLING.has(last)) return null
   return { lastWords: words.slice(-8).join(' ') }
 }
