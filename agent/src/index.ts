@@ -3352,7 +3352,7 @@ async function main() {
       const cut = interruptedWork(records, now, ledgerStartedAt)
       const rows = cut.length ? [] : pendingDeliveries(records, now, { sinceMs: ledgerStartedAt, spoken })
       if (!cut.length && !rows.length) return
-      // The reply to this notice closes its row (ClaudeLLM.deliverTurnResults); workSpoken is for spoke reports.
+      // A result notice's row is closed by the reply (ClaudeLLM.deliverTurnResults); an interrupted row is closed here, best effort. workSpoken is for spoke reports.
       noticeTimes.push(now)
       for (const r of cut) currentLLM.recordWork?.({ kind: 'work_dropped', id: r.id, reason: 'interrupted' })
       for (const r of rows) currentLLM.recordWork?.({ kind: 'work_surfaced', id: r.id })

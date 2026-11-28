@@ -439,7 +439,7 @@ export function pendingDeliveries(records: LoopRecord[], now: number, opts: { ma
 
 /** True while a new notice would break the limit: one per 5 minutes, three per hour, per process and per session (this session's `work_surfaced` records plus `extraAt`, the times this process sent). */
 export function noticeThrottled(records: LoopRecord[], now: number, extraAt: number[] = []): boolean {
-  const at = [...records.filter((r) => r.kind === 'work_surfaced').map((r) => Date.parse(r.at)), ...extraAt].filter((t) => t <= now)
+  const at = [...records.filter((r) => r.kind === 'work_surfaced' || (r.kind === 'work_dropped' && r.reason === 'interrupted')).map((r) => Date.parse(r.at)), ...extraAt].filter((t) => t <= now)
   if (at.some((t) => now - t < WORK_NOTICE_GAP_MS)) return true
   return at.filter((t) => now - t < 3_600_000).length >= WORK_NOTICE_PER_HOUR
 }
