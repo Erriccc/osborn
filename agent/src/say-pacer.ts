@@ -14,6 +14,8 @@ export class SayPacer<T extends { text: string }> {
   take(): T | undefined { this.#playing = false; return this.#queue.shift() }
   /** The in-flight chunk's first audio frame went out. */
   started() { this.#playing = true }
+  /** The in-flight chunk finished: a later handle's first frame is not known yet. */
+  finished() { this.#playing = false }
   /** Drop everything unsent and return it, oldest first. */
   clear(): T[] { const q = this.#queue; this.#queue = []; this.#playing = false; return q }
   /** May the head chunk go to TTS now? `inFlight` is the number of unfinished speech handles. */

@@ -4215,7 +4215,10 @@ async function main() {
   /** Chunks never sent to TTS are unheard text, carried to the next turn. */
   function parkUnsentSpeech(promptOnly = false) {
     for (const d of sayPacer.clear()) {
-      if (promptOnly && d.messageId) cutTurnIds.add(d.messageId)
+      if (promptOnly && d.messageId) {
+        cutTurnIds.add(d.messageId)
+        if (cutTurnIds.size > 16) cutTurnIds.delete(cutTurnIds.values().next().value)  // buffered blocks expire in 60s; only recent cuts matter
+      }
       appendSuppressedText(d.text, d.messageId)
     }
   }
@@ -4269,6 +4272,7 @@ async function main() {
         }
         handle.addDoneCallback((sh: any) => {
           activeSpeechHandles.delete(sh)
+          sayPacer.finished()
           if (!sh.interrupted) pumpSay()  // before the settle below: a next chunk becomes currentSpeechHandle
           if (sh.interrupted) {
             console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
@@ -4379,7 +4383,7 @@ async function main() {
             // Cut off before it was heard (the user's own turn committed): back into the buffer so the next prompt carries it, as when it was first suppressed.
             lastInterruption = putBack(lastInterruption, speak, Date.now())
             console.log(`🤐 [suppressed] REPLAY CUT OFF, ${text.length} chars back in the buffer`)
-          }
+          } else pumpSay()  // a chunk queued behind the replay goes now
           replayTimer.arm()
         })
       }
