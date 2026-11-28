@@ -4141,7 +4141,7 @@ async function main() {
     // Preserve any already-buffered suppressed blocks (the user may have started speaking
     // BEFORE the previous TTS completed, and we may have already suppressed in-flight
     // tts_say events that arrived during that overlap).
-    droppedUnspokenChars += expiredChars(lastInterruption?.suppressedBlocks ?? [], Date.now())
+    dropExpired(lastInterruption?.suppressedBlocks ?? [], Date.now())
     const carriedSuppressed = liveBlocks(lastInterruption?.suppressedBlocks ?? [], Date.now())  // original ages kept
     lastInterruption = {
       spokenText: fullText,
@@ -4202,6 +4202,11 @@ async function main() {
       if (sid) appendSpeechRecord(sid, workingDir, speechRecord(outcome, p))
     } catch (e) { console.warn('speech record persist failed:', e instanceof Error ? e.message : e) }
   }
+  /** Buffered blocks past the max age will never be spoken: counted for the next turn's note and recorded as stale. */
+  function dropExpired(blocks: SuppressedBlock[], now: number) {
+    droppedUnspokenChars += expiredChars(blocks, now)
+    for (const b of blocks) if (isExpired(b.at, now)) recordSpeech('stale', { messageId: b.turnId, unheard: b.text })
+  }
   /** A late block from a turn the user already cut off (#456): dropped, never buffered, or the 1.2s replay could still speak it. */
   function staleSay(d: SayItem): boolean {
     if (!isStaleBlock(staleTurnId, d.messageId, (id) => !!d.retired?.(id))) return false
@@ -4240,7 +4245,6 @@ async function main() {
     cutTurnIds.clear()
   }
   function issueSay(data: SayItem) {
-    if (userState === 'speaking') { appendSuppressedText(data.text, data.messageId); return }  // no TTS request while the user talks, whoever called
     const sayId = Date.now() // simple ID to correlate start/end logs
     markSay()
     console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
@@ -4370,17 +4374,15 @@ async function main() {
 
   /** Speak buffered reply text (#539 A/B); tracked so 'agent speaking' sees it and a barge-in flushes it. */
   function speakBuffered(why: string) {
-    if (userState === 'speaking') return  // never start speech, or its TTS, over the user; the replay timer comes back when they are quiet
     const { blocks, rest } = takePending(lastInterruption)
     if (!blocks.length || !currentSession) return
     // Blocks of a turn the user cut off (a phone "stop that" interrupts without a new turn) are never spoken, but stay buffered so the next prompt still carries them; expired ones go.
     const now = Date.now()
     const { speak, keep, expired } = partitionForReplay(blocks, now, (id) => !!id && cutTurnIds.has(id) || isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
     lastInterruption = rest && { ...rest, suppressedBlocks: keep }
-    droppedUnspokenChars += expiredChars(blocks, now)
+    dropExpired(blocks, now)
     if (expired) console.log(`🤐 [suppressed] REPLAY EXPIRED ${expired} block(s) older than 60s`)
     if (keep.length) console.log(`🔇 [suppressed] REPLAY DROPPED ${keep.length} block(s), ${totalChars(keep)} chars (their turn was interrupted)`)
-    for (const b of keep) recordSpeech('stale', { messageId: b.turnId, unheard: b.text })
     if (!speak.length) return
     const text = joinBlocks(speak)
     console.log(`🔁 [suppressed] REPLAY ${text.length} chars (${why})`)
@@ -4423,7 +4425,7 @@ async function main() {
       const d = expireDecision(lastInterruption, Date.now())
       if (d === 'clear') clearInterruption('expired 60s')
       else if (d === 'drop-blocks') {
-        droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
+        dropExpired(lastInterruption.suppressedBlocks, Date.now())  // every block is past the max age here
         console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (expired 60s, heard context kept)`)
         lastInterruption = { ...lastInterruption, suppressedBlocks: [] }
       }
@@ -4434,7 +4436,7 @@ async function main() {
   /** Clear lastInterruption, logging any suppressed reply text that was never spoken (#539 diagnostics). */
   function clearInterruption(why: string, reset = false) {
     if (reset) { droppedUnspokenChars = 0; bargeInPausedAt = null }
-    else if (lastInterruption?.suppressedBlocks.length) droppedUnspokenChars += expiredChars(lastInterruption.suppressedBlocks, Date.now())
+    else if (lastInterruption?.suppressedBlocks.length) dropExpired(lastInterruption.suppressedBlocks, Date.now())
     if (lastInterruption?.suppressedBlocks.length) console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (${why}, agent: ${agentState}, user: ${userState})`)
     lastInterruption = null
   }
@@ -4467,7 +4469,7 @@ async function main() {
       clearInterruption('expired 60s')
       return null
     }
-    droppedUnspokenChars += expiredChars(lastInterruption.suppressedBlocks, now)
+    dropExpired(lastInterruption.suppressedBlocks, now)
     const ctx = {
       spokenText: heard ? lastInterruption.spokenText : '',
       recentMessages: heard ? lastInterruption.recentMessages : '',
