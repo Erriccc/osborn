@@ -95,13 +95,13 @@ export function readApprovalMode(file = CONFIG_FILE): ApprovalMode {
 }
 
 /**
- * Saves the approval mode into config.yaml. The YAML document is edited in
+ * Edits config.yaml through `edit`. The YAML document is edited in
  * place, so every other key and its comments survive, and the file keeps its
  * permissions. Written to a temp file and renamed, so a crash never leaves a
  * half-written config. Refuses (false) when the existing file cannot be
  * parsed or is not a mapping, rather than overwrite it.
  */
-export function writeApprovalMode(mode: ApprovalMode, configFile = CONFIG_FILE): boolean {
+function editConfigDoc(edit: (doc: Document) => void, what: string, configFile = CONFIG_FILE): boolean {
   try {
     // A symlinked config (dotfiles repo) is written through to its target; the link stays.
     let file = configFile
@@ -121,16 +121,36 @@ export function writeApprovalMode(mode: ApprovalMode, configFile = CONFIG_FILE):
     } else {
       mkdirSync(dirname(file), { recursive: true })
     }
-    doc.set('approvalMode', mode)
+    edit(doc)
     const tmp = `${file}.tmp-${process.pid}`
     writeFileSync(tmp, String(doc), { encoding: 'utf-8', mode: fileMode })
     chmodSync(tmp, fileMode)
     renameSync(tmp, file)
     return true
   } catch (err) {
-    console.error(`❌ Failed to save approval mode: ${(err as Error).message}`)
+    console.error(`❌ Failed to save ${what}: ${(err as Error).message}`)
     return false
   }
+}
+
+export function writeApprovalMode(mode: ApprovalMode, configFile = CONFIG_FILE): boolean {
+  return editConfigDoc((doc) => doc.set('approvalMode', mode), 'approval mode', configFile)
+}
+
+/**
+ * Saves a project's privacy mode (#663, #688). Public records `since` now, so switching never back-fills
+ * what piled up while incognito; incognito removes the entry, which is the default.
+ */
+export function writeProjectMode(cwd: string, mode: 'incognito' | 'public', configFile = CONFIG_FILE, now = new Date()): boolean {
+  const dir = resolve(cwd)
+  return editConfigDoc((doc) => {
+    if (mode === 'public') {
+      if (readPublicSince(dir, configFile)) return
+      doc.setIn(['projectModes', dir], doc.createNode({ mode: 'public', since: now.toISOString() }))
+    } else if (doc.hasIn(['projectModes', dir])) {
+      doc.deleteIn(['projectModes', dir])
+    }
+  }, 'project privacy mode', configFile)
 }
 
 interface McpServerConfigYaml {
