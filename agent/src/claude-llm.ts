@@ -2227,6 +2227,7 @@ export class ClaudeLLM extends llm.LLM {
     // permission closed by the abort was never answered. Both stay open in the ledger.
     for (const [agentId, type] of this.#typeByAgentId) {
       this.recordLoop({ kind: 'dispatch_severed', id: loopIds.dispatch(agentId), text: `Unfinished ${type} run (cut off)`, source: 'inferred', origin: 'tool' })
+      this.recordWork({ kind: 'work_dropped', id: loopIds.work(agentId), reason: 'severed' })  // stopped on purpose: never later called a restart casualty
     }
     this.#workResultTurn.clear()
     if (this.#pendingPermission) {
