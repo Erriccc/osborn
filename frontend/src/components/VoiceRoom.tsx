@@ -3261,7 +3261,7 @@ function VoiceRoomInner({
           if (result.success && result.url) {
             const uploadedPayload = JSON.stringify({
               type: 'user_text',
-              content: text.substring(0, 200) + (text.length > 200 ? '...[full content in attached file]' : ''),
+              content: addTimeTag() + text.substring(0, 200) + (text.length > 200 ? '...[full content in attached file]' : ''),
               files: [{ name: uploadFile_.name, type: 'text', content: '', url: result.url }],
               clientMsgId,
             })
@@ -3276,7 +3276,7 @@ function VoiceRoomInner({
       }
       // Fallback: truncate with clear error
       addMessageRef.current?.('system', `Message too large for data channel (${(payloadStr.length / 1024).toFixed(0)} KB). Configure Supabase Storage to enable large messages.`)
-      const truncated = text.substring(0, 50000) + '\n...[truncated — message exceeded size limit]'
+      const truncated = addTimeTag() + text.substring(0, 50000) + '\n...[truncated — message exceeded size limit]'
       const smallPayload = JSON.stringify({ type: 'user_text', content: truncated, clientMsgId })
       const encoder = new TextEncoder()
       sendUserText?.(text, encoder.encode(smallPayload))

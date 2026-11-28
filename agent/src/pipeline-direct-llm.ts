@@ -18,8 +18,8 @@ import { noiseGate, GATE_CONTEXT_TURNS } from './noise-gate.js'
 import { cleanTurnText, redactSecrets, isAmbientTurn } from './content/transcript-sanitizer.js'
 import { EventEmitter } from 'events'
 import { markChat } from './turn-timing.js'
-import { speechTimeline, speechTimelineHold } from './speech-timeline.js'
-import { getContinuationNote, getInterruptedNote, getSuppressedNote } from './prompts.js'
+import { speechTimeline, speechTimelineHold, truncatedInput } from './speech-timeline.js'
+import { getContinuationNote, getTruncatedInputNote, getInterruptedNote, getSuppressedNote } from './prompts.js'
 
 // Bypass marker for gate-approved contexts: the deferred gate stream re-enters
 // chat() with the SAME chatCtx after a forward verdict; the marker makes the
@@ -488,6 +488,13 @@ export class PipelineDirectLLM extends llm.LLM {
     if (continued && speechTimelineHold()) {
       console.log(`🧩 [pipeline] user kept talking after the previous turn started (${Math.round(continued.continuedAfterMs / 1000)}s)`)
       ctxForClaude = withNotePrepended(ctxForClaude, getContinuationNote(continued.continuedAfterMs))
+    }
+
+    const cutOff = userTurn && !continued && speechTimelineHold()
+      ? truncatedInput(userText, !!interruptCtx?.spokenText) : null
+    if (cutOff) {
+      console.log(`✂️ [pipeline] turn looks cut off, last words: "${cutOff.lastWords}"`)
+      ctxForClaude = withNotePrepended(ctxForClaude, getTruncatedInputNote(cutOff.lastWords))
     }
 
     // Client notices (favorite_changed, L2b) and the dropped-reply note: context, not a

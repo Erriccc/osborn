@@ -410,6 +410,15 @@ export function staleWork(records: LoopRecord[], now: number, opts: { sinceMs?: 
   return out
 }
 
+/** Work opened by an earlier agent process (before `sinceMs`) that never returned a result: its worker died with the restart. Not past the TTL (expiredWork drops those). Oldest first, bounded. */
+export function interruptedWork(records: LoopRecord[], now: number, sinceMs: number, max = 3): LoopItem[] {
+  const expired = new Set(expiredWork(records, now))
+  return [...foldLoops(records).values()]
+    .filter((i) => i.fg && i.open && i.state === 'opened' && Date.parse(i.at) < sinceMs && !expired.has(i.id))
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .slice(0, max)
+}
+
 /** Work rows whose result exists but was never delivered, oldest first, bounded: what to surface at the next idle moment. */
 export function pendingDeliveries(records: LoopRecord[], now: number, opts: { max?: number; ttlMs?: number; sinceMs?: number; spoken?: SpokenLine[] } = {}): LoopItem[] {
   const ttl = opts.ttlMs ?? WORK_TTL_MS
@@ -430,7 +439,7 @@ export function pendingDeliveries(records: LoopRecord[], now: number, opts: { ma
 
 /** True while a new notice would break the limit: one per 5 minutes, three per hour, per process and per session (this session's `work_surfaced` records plus `extraAt`, the times this process sent). */
 export function noticeThrottled(records: LoopRecord[], now: number, extraAt: number[] = []): boolean {
-  const at = [...records.filter((r) => r.kind === 'work_surfaced').map((r) => Date.parse(r.at)), ...extraAt].filter((t) => t <= now)
+  const at = [...records.filter((r) => r.kind === 'work_surfaced' || (r.kind === 'work_dropped' && r.reason === 'interrupted')).map((r) => Date.parse(r.at)), ...extraAt].filter((t) => t <= now)
   if (at.some((t) => now - t < WORK_NOTICE_GAP_MS)) return true
   return at.filter((t) => now - t < 3_600_000).length >= WORK_NOTICE_PER_HOUR
 }

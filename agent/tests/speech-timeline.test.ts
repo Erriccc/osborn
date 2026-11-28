@@ -133,6 +133,13 @@ for (const v of ['on', '1', 'TRUE', 'yes', '']) assert.equal(speechTimelineHold(
   }
   process.env.OSBORN_SPEECH_TIMELINE_HOLD = 'on'
   say('x y z'); assert.equal(seen.at(-1), 'x y z', 'explicit on behaves as on (no pending speech here)')
+  const cut = 'so I want to change how the session list works and also the way the filters apply when we switch projects and then'
+  speechTimeline.reset()
+  say(cut)
+  assert.match(seen.at(-1)!, /^<system-reminder>\nThis message may have been cut off[^\n]*"\.\.\.[^"]*projects and then"\)[^\n]*\n<\/system-reminder>\n\n/, '#687 note on a cut-off turn')
+  assert.equal(cleanTurnText(seen.at(-1)!), cut, 'history strips the cut-off note')
+  process.env.OSBORN_SPEECH_TIMELINE_HOLD = 'off'
+  say(cut); assert.equal(seen.at(-1), cut, 'kill switch: no cut-off note')
   delete process.env.OSBORN_SPEECH_TIMELINE_HOLD
 }
 // pending speech: expires with the window, reset drops it
@@ -180,6 +187,24 @@ assert.equal(steersTurn(getNoiseCancelNote(true)), false); assert.equal(steersTu
   assert.ok(/noiseGate\.on\('drop'[\s\S]{0,400}?speechTimeline\.reset\(\)[\s\S]{0,200}?replayTimer\.arm\(\)/.test(ix), 'a gate drop resets the timeline before the replay')
   assert.ok(/setNoiseGate\(true, \{ quiet: true \}\)\s*\n\s*return noiseGate\.enabled/.test(ix), 'shh is forwarded when the gate cannot turn on')
   assert.equal((ix.match(/noiseGate\.setEnabled\([^)]*'ui'\)/g) || []).length, 1, 'the UI toggle and shh share setNoiseGate')
+}
+// #687: a long turn that stops mid-sentence is flagged; complete or short ones are not
+{
+  const { truncatedInput } = await import('../src/speech-timeline.js')
+  const long = 'so I want to change how the session list works and also the way the filters apply when we switch projects and then'
+  assert.ok(truncatedInput(long), 'long dangling')
+  assert.match(truncatedInput(long)!.lastWords, /projects and then$/)
+  assert.equal(truncatedInput('Can you check the tests?'), null)
+  assert.equal(truncatedInput('I want to change how the session list works and also the way the filters apply when we switch projects, then rerun everything.'), null)
+  assert.equal(truncatedInput('one two three four five six seven eight nine ten eleven twelve thirteen'), null)
+  assert.ok(truncatedInput('one two three four five six seven eight nine ten eleven twelve thirteen', true), 'overlap')
+  assert.ok(truncatedInput(long + ' the.'), 'dangling with period')
+  assert.equal(truncatedInput('So when we switch projects and the cache is cold and the filters reset and the list reloads and the badge flickers, what if?'), null)
+  const done = 'I want to change how the session list works and also the way the filters apply when we switch projects'
+  assert.equal(truncatedInput(done + ' and then turn it on.'), null, 'a sentence may end on "on"')
+  assert.equal(truncatedInput(done + ', thank you.'), null, 'a sentence may end on "you"')
+  assert.equal(truncatedInput('[time: 2026-11-28 10:00 local] ' + long), null, 'a typed turn is never flagged')
+  assert.equal(truncatedInput('[SYSTEM] ' + long), null, 'an injected note is never flagged')
 }
 console.log('speech-timeline: ok')
 process.exit(0)
