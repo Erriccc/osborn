@@ -43,7 +43,7 @@ Two axes are kept apart throughout: **project mode** (#663: incognito or public,
 
 ## Gaps to close first
 
-- #663 does not yet gate `git push` or `gh pr create`, and the model has the user's own git credentials. "Zero GitHub write calls" in incognito holds for the research writer only; for the whole session it needs those gated (extend `issueGate`).
+- `git push` and `gh pr create` are gated by `issueGate` (#689): refused in incognito, approval mode in public. It guides the agent and is not a sandbox (`gh api`, `GH_REPO=` and a push from a script are not parsed), and the model has the user's own git credentials.
 - The session panel has no artifact-status surface today; showing the PR or file link and its status is new UI work.
 
 ## v1 acceptance
