@@ -304,10 +304,12 @@ t('stale/redundant rows produce zero notices; unsurfaced moved-on rows stay pend
 
 t('interruptedWork: only rows opened before this process with no result; closes as dropped', () => {
   const later = T0 + 3_600_000
-  assert.deepEqual(L.interruptedWork([opened], later).map((i) => i.id), [id])
-  assert.equal(L.interruptedWork([opened], T0).length, 0)  // opened by this process
-  assert.equal(L.interruptedWork([opened, result], later).length, 0)  // has a result: pendingDeliveries owns it
-  assert.equal(L.interruptedWork([opened, rec(5, { kind: 'work_dropped', id, reason: 'interrupted' })], later).length, 0)
+  assert.deepEqual(L.interruptedWork([opened], later, later).map((i) => i.id), [id])
+  assert.equal(L.interruptedWork([opened], later, T0).length, 0)  // opened by this process
+  assert.equal(L.interruptedWork([opened, result], later, later).length, 0)  // has a result: pendingDeliveries owns it
+  assert.equal(L.interruptedWork([opened, rec(5, { kind: 'work_dropped', id, reason: 'interrupted' })], later, later).length, 0)
+  const pastTtl = T0 + L.WORK_TTL_MS + 60_000
+  assert.equal(L.interruptedWork([opened], pastTtl, pastTtl).length, 0)  // expiredWork drops it as ttl; never told as interrupted
   const note = getInterruptedWorkNote([{ text: 'writer: fix login', owner: 'local:writer' }])
   assert.ok(note.includes('writer: fix login') && note.includes('interrupted'))
 })

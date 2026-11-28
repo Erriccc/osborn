@@ -410,10 +410,11 @@ export function staleWork(records: LoopRecord[], now: number, opts: { sinceMs?: 
   return out
 }
 
-/** Work opened by an earlier agent process (before `sinceMs`) that never returned a result: its worker died with the restart. Oldest first, bounded. */
-export function interruptedWork(records: LoopRecord[], sinceMs: number, max = 3): LoopItem[] {
+/** Work opened by an earlier agent process (before `sinceMs`) that never returned a result: its worker died with the restart. Not past the TTL (expiredWork drops those). Oldest first, bounded. */
+export function interruptedWork(records: LoopRecord[], now: number, sinceMs: number, max = 3): LoopItem[] {
+  const expired = new Set(expiredWork(records, now))
   return [...foldLoops(records).values()]
-    .filter((i) => i.fg && i.open && i.state === 'opened' && Date.parse(i.at) < sinceMs)
+    .filter((i) => i.fg && i.open && i.state === 'opened' && Date.parse(i.at) < sinceMs && !expired.has(i.id))
     .sort((a, b) => a.at.localeCompare(b.at))
     .slice(0, max)
 }
