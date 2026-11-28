@@ -4183,6 +4183,7 @@ async function main() {
     if (sayPumpTimer) { clearTimeout(sayPumpTimer); sayPumpTimer = null }
     if (!currentSession) {
       const lost = sayPacer.clear()
+      for (const d of lost) recordSpeech('stale', { messageId: d.messageId, unheard: d.text })
       if (lost.length) console.warn(`⚠️ ${lost.length} queued tts_say chunk(s) dropped: currentSession is null`)
       return
     }
