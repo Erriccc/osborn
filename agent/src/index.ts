@@ -59,11 +59,11 @@ import type { FastBrainPanelResult } from './pipeline-direct-llm.js'
 import { ensureClaudeAuth, applyAuthFallback, replayInFlightAuth, startClaudeAuthOnDemand, isOnDemandAuthInFlight, probeActiveProviderKey, type ActiveProvider, type KeyHealthEntry } from './claude-auth.js'
 import { statusManager } from './status-manager.js'
 import { outboundText } from './follow-through-client.js'
-import { loopIds, noticeThrottled, appendLoopRecord, appendQueuedLoop, markQueuedStarted, pendingDeliveries, staleWork, expiredWork, readLoopRecords, workLedgerEnabled } from './loops-ledger.js'
+import { loopIds, noticeThrottled, appendLoopRecord, appendQueuedLoop, markQueuedStarted, pendingDeliveries, staleWork, expiredWork, interruptedWork, readLoopRecords, workLedgerEnabled } from './loops-ledger.js'
 import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
-import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote, getNoiseCancelNote, getDroppedUnspokenNote } from './prompts.js'
+import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote, getInterruptedWorkNote, getNoiseCancelNote, getDroppedUnspokenNote } from './prompts.js'
 import { MCP_CATALOG, readApprovalMode, writeApprovalMode } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled, launchLoopsFlush, flushLastSessionThenExit } from './content/lens-launch.js'
 import { hasContentModelKey } from './content/content-llm.js'
@@ -3348,6 +3348,17 @@ async function main() {
       const spoken = currentLLM.recentSpoken?.() ?? []
       for (const d of staleWork(records, now, { sinceMs: ledgerStartedAt, spoken })) currentLLM.recordWork?.({ kind: 'work_dropped', id: d.id, reason: d.reason })
       if (noticeThrottled(records, now, noticeTimes)) return
+      // Work opened before this process started and never answered died with the restart: close it as
+      // interrupted (so it is never silently open) and tell the user once.
+      const cut = interruptedWork(records, ledgerStartedAt)
+      if (cut.length) {
+        noticeTimes.push(now)
+        for (const r of cut) currentLLM.recordWork?.({ kind: 'work_dropped', id: r.id, reason: 'interrupted' })
+        const ictx = new llm.ChatContext()
+        ictx.addMessage({ role: 'user', content: getInterruptedWorkNote(cut) })
+        currentLLM.chat({ chatCtx: ictx })
+        return
+      }
       const rows = pendingDeliveries(records, now, { sinceMs: ledgerStartedAt, spoken })
       if (!rows.length) return
       // The reply to this notice closes its row (ClaudeLLM.deliverTurnResults); workSpoken is for spoke reports.
