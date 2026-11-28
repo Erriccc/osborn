@@ -4236,7 +4236,7 @@ async function main() {
   function dropSpeech() {
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    sayPacer.clear()
+    for (const d of sayPacer.clear()) recordSpeech('stale', { messageId: d.messageId, unheard: d.text })
     cutTurnIds.clear()
   }
   function issueSay(data: SayItem) {
@@ -4433,7 +4433,10 @@ async function main() {
 
   /** Clear lastInterruption, logging any suppressed reply text that was never spoken (#539 diagnostics). */
   function clearInterruption(why: string, reset = false) {
-    if (reset) { droppedUnspokenChars = 0; bargeInPausedAt = null }
+    if (reset) {
+      for (const b of lastInterruption?.suppressedBlocks ?? []) recordSpeech('stale', { messageId: b.turnId, unheard: b.text })
+      droppedUnspokenChars = 0; bargeInPausedAt = null
+    }
     else if (lastInterruption?.suppressedBlocks.length) dropExpired(lastInterruption.suppressedBlocks, Date.now())
     if (lastInterruption?.suppressedBlocks.length) console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (${why}, agent: ${agentState}, user: ${userState})`)
     lastInterruption = null

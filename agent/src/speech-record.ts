@@ -4,7 +4,7 @@
  *   heard  - a chunk played to the end
  *   cut    - a barge-in stopped it: `heard` is the part that played, `unheard` the rest
  *   held   - not sent to TTS (the user was speaking or kept talking after the turn, or a barge-in flushed the queue); carried to the next prompt
- *   stale  - never spoken: a late chunk of a turn the user cut off, or held text that waited past the replay limit
+ *   stale  - never spoken: a late chunk of a turn the user cut off, held text that waited past the replay limit, or text dropped at teardown (hang-up, session switch)
  */
 import { appendJsonlLine } from './jsonl-sidecar.js'
 import { getSidecarPath } from './session-store.js'
