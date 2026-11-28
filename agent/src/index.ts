@@ -8,7 +8,7 @@ import './boot-secrets.js'
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
 import { SayPacer } from './say-pacer.js'
-import { speechRecord, appendSpeechRecord, type SpeechOutcome } from './speech-record.js'
+import { speechRecord, appendSpeechRecord, type SpeechOutcome, type SpeechParts } from './speech-record.js'
 import { staleIdOnConsume, isStaleBlock, heardSlice, expiredChars, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
@@ -4195,13 +4195,8 @@ async function main() {
     }
     if (sayPacer.size && userState === 'speaking') sayPumpTimer = setTimeout(pumpSay, 250)
   }
-  /** One line per outcome in the session's speech.jsonl (#694); a failed write never touches speech. */
-  function recordSpeech(outcome: SpeechOutcome, p: { messageId?: string; heard?: string; unheard?: string; estimate?: boolean }) {
-    try {
-      const sid = currentLLM?.sessionId
-      if (sid) appendSpeechRecord(sid, workingDir, speechRecord(outcome, p))
-    } catch (e) { console.warn('speech record persist failed:', e instanceof Error ? e.message : e) }
-  }
+  /** One line per outcome in the session's speech.jsonl (#694). */
+  function recordSpeech(outcome: SpeechOutcome, p: SpeechParts) { appendSpeechRecord(currentLLM?.sessionId, workingDir, speechRecord(outcome, p)) }
   /** Buffered blocks past the max age will never be spoken: counted for the next turn's note and recorded as stale. */
   function dropExpired(blocks: SuppressedBlock[], now: number) {
     droppedUnspokenChars += expiredChars(blocks, now)
@@ -4400,7 +4395,7 @@ async function main() {
             // Cut off before it was heard (the user's own turn committed): back into the buffer so the next prompt carries it, as when it was first suppressed.
             lastInterruption = putBack(lastInterruption, speak, Date.now())
             console.log(`🤐 [suppressed] REPLAY CUT OFF, ${text.length} chars back in the buffer`)
-          } else pumpSay()  // a chunk queued behind the replay goes now
+          } else { recordSpeech('heard', { heard: text }); pumpSay() }  // a chunk queued behind the replay goes now
           replayTimer.arm()
         })
       }

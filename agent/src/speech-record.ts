@@ -19,11 +19,13 @@ export interface SpeechRecord {
   estimate?: boolean  // `heard` came from a position or timer, not the SDK's synced transcript
 }
 
+export type SpeechParts = { messageId?: string; heard?: string; unheard?: string; estimate?: boolean }
+
 const MAX_TEXT = 600
 
 const cap = (s?: string) => (s && s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) + '…' : s)
 
-export function speechRecord(outcome: SpeechOutcome, p: { messageId?: string; heard?: string; unheard?: string; estimate?: boolean }, now = new Date()): SpeechRecord {
+export function speechRecord(outcome: SpeechOutcome, p: SpeechParts, now = new Date()): SpeechRecord {
   const r: SpeechRecord = { at: now.toISOString(), outcome }
   if (p.messageId) r.messageId = p.messageId
   if (p.heard) r.heard = cap(p.heard)
@@ -33,6 +35,9 @@ export function speechRecord(outcome: SpeechOutcome, p: { messageId?: string; he
   return r
 }
 
-export function appendSpeechRecord(sessionId: string, workingDir: string, r: SpeechRecord): void {
-  appendJsonlLine(getSidecarPath(sessionId, workingDir, 'speech.jsonl'), JSON.stringify(r))
+/** No session id yet: nothing is written. A failed write is logged, never thrown, so it never touches speech. */
+export function appendSpeechRecord(sessionId: string | undefined, workingDir: string, r: SpeechRecord): void {
+  if (!sessionId) return
+  try { appendJsonlLine(getSidecarPath(sessionId, workingDir, 'speech.jsonl'), JSON.stringify(r)) }
+  catch (e) { console.warn('speech record persist failed:', e instanceof Error ? e.message : e) }
 }

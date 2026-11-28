@@ -15,5 +15,6 @@ assert.equal('unheard' in speechRecord('heard', { heard: 'x', unheard: '  ' }, t
 assert.ok(speechRecord('held', { unheard: 'x'.repeat(5000) }, t).unheard!.length < 700, 'long text is capped')
 appendSpeechRecord('s1', '/tmp/proj', cut)
 appendSpeechRecord('s1', '/tmp/proj', speechRecord('stale', { unheard: 'z' }, t))
+appendSpeechRecord(undefined, '/tmp/proj', cut)  // no session yet: nothing written
 assert.deepEqual((readJsonlLines(getSidecarPath('s1', '/tmp/proj', 'speech.jsonl')) as any[]).map((r) => r.outcome), ['cut', 'stale'])
 console.log('speech-record ok')
