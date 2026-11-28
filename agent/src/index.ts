@@ -4196,7 +4196,7 @@ async function main() {
     if (sayPacer.size && userState === 'speaking') sayPumpTimer = setTimeout(pumpSay, 250)
   }
   /** One line per outcome in the session's speech.jsonl (#694). */
-  function recordSpeech(outcome: SpeechOutcome, p: SpeechParts) { appendSpeechRecord(currentLLM?.sessionId, workingDir, speechRecord(outcome, p)) }
+  function recordSpeech(outcome: SpeechOutcome, p: SpeechParts) { appendSpeechRecord(currentLLM?.sessionId, currentLLM?.workingDirectory || workingDir, speechRecord(outcome, p)) }
   /** Buffered blocks past the max age will never be spoken: counted for the next turn's note and recorded as stale. */
   function dropExpired(blocks: SuppressedBlock[], now: number) {
     droppedUnspokenChars += expiredChars(blocks, now)
@@ -4323,7 +4323,9 @@ async function main() {
               fullChars: data.text.length,
               heard: spokenText.slice(0, 80) + (spokenText.length > 80 ? '...' : '')
             }))
-            recordSpeech('cut', { messageId: data.messageId, heard: spokenText, unheard: data.text.startsWith(spokenText) ? data.text.slice(spokenText.length) : data.text, estimate: !sdkTranscript })
+            // A chunk that never reached its first frame was not heard at all: the SDK's last playback belongs to the one before it.
+            if (playbackStartedAt === null) recordSpeech('cut', { messageId: data.messageId, unheard: data.text })
+            else recordSpeech('cut', { messageId: data.messageId, heard: spokenText, unheard: data.text.startsWith(spokenText) ? data.text.slice(spokenText.length) : data.text, estimate: !sdkTranscript })
             handleSpeechDone(sh, spokenText, data.text, data.messageId, !sdkTranscript)
           } else {
             bargeInPausedAt = null
@@ -4393,9 +4395,10 @@ async function main() {
           if (sh?.interrupted) {
             flushQueuedSpeech()  // a newer block queued behind it must not start over the user
             // Cut off before it was heard (the user's own turn committed): back into the buffer so the next prompt carries it, as when it was first suppressed.
+            for (const b of speak) recordSpeech('cut', { messageId: b.turnId, unheard: b.text })
             lastInterruption = putBack(lastInterruption, speak, Date.now())
             console.log(`🤐 [suppressed] REPLAY CUT OFF, ${text.length} chars back in the buffer`)
-          } else { recordSpeech('heard', { heard: text }); pumpSay() }  // a chunk queued behind the replay goes now
+          } else { for (const b of speak) recordSpeech('heard', { messageId: b.turnId, heard: b.text }); pumpSay() }  // a chunk queued behind the replay goes now
           replayTimer.arm()
         })
       }

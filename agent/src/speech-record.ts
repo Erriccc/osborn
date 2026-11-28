@@ -10,16 +10,8 @@ import { appendJsonlLine } from './jsonl-sidecar.js'
 import { getSidecarPath } from './session-store.js'
 
 export type SpeechOutcome = 'heard' | 'cut' | 'held' | 'stale'
-export interface SpeechRecord {
-  at: string
-  outcome: SpeechOutcome
-  messageId?: string
-  heard?: string
-  unheard?: string
-  estimate?: boolean  // `heard` came from a position or timer, not the SDK's synced transcript
-}
-
-export type SpeechParts = { messageId?: string; heard?: string; unheard?: string; estimate?: boolean }
+export type SpeechParts = { messageId?: string; heard?: string; unheard?: string; estimate?: boolean /* `heard` came from a position or timer, not the SDK's synced transcript */ }
+type SpeechRecord = { at: string; outcome: SpeechOutcome } & SpeechParts
 
 const MAX_TEXT = 600
 
