@@ -490,7 +490,7 @@ export class PipelineDirectLLM extends llm.LLM {
       ctxForClaude = withNotePrepended(ctxForClaude, getContinuationNote(continued.continuedAfterMs))
     }
 
-    const cutOff = userTurn && !isMeetingChunkEarly && !continued && speechTimelineHold()
+    const cutOff = userTurn && !continued && speechTimelineHold()
       ? truncatedInput(userText, !!interruptCtx?.spokenText) : null
     if (cutOff) {
       console.log(`✂️ [pipeline] turn looks cut off, last words: "${cutOff.lastWords}"`)
