@@ -7,6 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
+import { SayPacer } from './say-pacer.js'
 import { staleIdOnConsume, isStaleBlock, heardSlice, expiredChars, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
@@ -4168,11 +4169,151 @@ async function main() {
     console.log(`🤐 [suppressed] BUFFERED +${t.length} chars, total ${totalChars(lastInterruption.suppressedBlocks)} (agent: ${agentState}, user: ${userState})`)
   }
 
+  // Just-in-time speech (#694): a sentence chunk is sent to TTS only when the
+  // playing one is nearly done, so a barge-in wastes at most the chunk in flight.
+  let currentTts: any = null
+  const sayPacer = new SayPacer<{ text: string; messageId?: string; chunkIndex?: number; speed?: number }>()
+  let sayPumpTimer: NodeJS.Timeout | null = null
+  function pumpSay() {
+    if (sayPumpTimer) { clearTimeout(sayPumpTimer); sayPumpTimer = null }
+    if (!currentSession) { sayPacer.clear(); return }
+    let guard = 0
+    while (sayPacer.size && guard++ < 20) {
+      if (!sayPacer.ready(Date.now(), activeSpeechHandles.size)) break
+      const next = sayPacer.take()!
+      if (isStaleBlock(staleTurnId, next.messageId, (id) => !!currentLLM?.isRetiredTurnId(id))) {
+        console.log(`🔇 tts_say dropped (turn was interrupted): "${next.text.slice(0, 60)}"`)
+        continue
+      }
+      if (userState === 'speaking' || speechTimeline.shouldHold()) {
+        appendSuppressedText(next.text, next.messageId)
+        if (userState !== 'speaking') replayTimer.arm()
+        continue
+      }
+      issueSay(next)
+    }
+    if (sayPacer.size) sayPumpTimer = setTimeout(pumpSay, 250)
+  }
+  /** After a barge-in: chunks never sent to TTS are unheard text, carried to the next turn. */
+  function parkUnsentSpeech() {
+    for (const d of sayPacer.clear()) appendSuppressedText(d.text, d.messageId)
+  }
+  function issueSay(data: { text: string; messageId?: string; chunkIndex?: number; speed?: number }) {
+    const sayId = Date.now() // simple ID to correlate start/end logs
+    markSay()
+    console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
+
+    // Apply agent-requested speed (e.g. [SPEED:0.85] stripped from response text)
+    if ((data as any).speed !== undefined) {
+      try { (currentTts as any)?.updateOptions?.({ speed: (data as any).speed }) } catch {}
+    }
+
+    try {
+      const handle = (currentSession as any).say(data.text)
+
+      if (handle && typeof handle.addDoneCallback === 'function') {
+        // SpeechHandle — track it and register interruption callback
+        currentSpeechHandle = handle
+        activeSpeechHandles.add(handle)
+        // Wall-clock timer: capture when audio actually starts playing (first frame)
+        // Used as fallback if LiveKit's playbackPosition is 0 (race condition)
+        let playbackStartedAt: number | null = null
+        const audioOutputRef = (currentSession as any)?.output?.audio
+        if (audioOutputRef && typeof audioOutputRef.on === 'function') {
+          const onPlaybackStarted = () => {
+            playbackStartedAt = Date.now()
+        sayPacer.started(Date.now(), data.text.length)
+            console.log(`🔊 [${sayId}] audio first frame out (playbackStarted)`)
+            markAudio()
+            audioOutputRef.off('playbackStarted', onPlaybackStarted)
+            // Notify frontend that this TTS chunk is now audibly playing
+            if (data.messageId != null && data.chunkIndex != null) {
+              sendToFrontend({
+                type: 'tts_chunk_playing',
+                messageId: data.messageId,
+                chunkIndex: data.chunkIndex,
+                text: data.text,
+              })
+            }
+          }
+          audioOutputRef.on('playbackStarted', onPlaybackStarted)
+        }
+        handle.addDoneCallback((sh: any) => {
+          activeSpeechHandles.delete(sh)
+        if (!sh.interrupted) pumpSay()
+          if (sh.interrupted) {
+            console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
+            flushQueuedSpeech()
+            const audioOutput = (currentSession as any)?.output?.audio
+            const sdkTranscript = audioOutput?.lastPlaybackEvent?.synchronizedTranscript
+            const sdkPlaybackSec = audioOutput?.lastPlaybackEvent?.playbackPosition ?? 0
+
+            let spokenText: string
+            let method: string
+            const CHARS_PER_SEC = 14  // spoken-rate estimate for the two position-based branches
+
+            if (sdkTranscript) {
+              // Best case: LiveKit gave us word-accurate transcript (requires alignedTranscript TTS)
+              spokenText = sdkTranscript
+              method = 'sdk-transcript'
+            } else if (sdkPlaybackSec > 0) {
+              // Second: LiveKit gave us playback duration — estimate chars from it
+              spokenText = heardSlice(data.text, sdkPlaybackSec * CHARS_PER_SEC)
+              method = 'sdk-position'
+            } else if (playbackStartedAt !== null) {
+              // Third: use our wall-clock timer from first audio frame
+              const elapsedSec = (Date.now() - playbackStartedAt) / 1000
+              spokenText = heardSlice(data.text, elapsedSec * CHARS_PER_SEC)
+              method = 'wall-clock'
+            } else {
+              // Fallback: interrupt fired before first frame — nothing played yet: the opening word at most (#675)
+              spokenText = heardSlice(data.text, 0)
+              method = 'before-first-frame'
+            }
+
+            console.log('🔇 Interruption estimate:', JSON.stringify({
+              method,
+              sdkPlaybackSec,
+              isSynced: !!sdkTranscript,
+              syncLost: sdkTranscript ? undefined : audioOutput?.lastPlaybackEvent ? 'lastPlaybackEvent had no synchronizedTranscript (TTS gave no aligned transcript)' : 'no lastPlaybackEvent on the audio output',
+              spokenChars: spokenText.length,
+              fullChars: data.text.length,
+              heard: spokenText.slice(0, 80) + (spokenText.length > 80 ? '...' : '')
+            }))
+            handleSpeechDone(sh, spokenText, data.text, data.messageId, !sdkTranscript)
+          } else {
+            bargeInPausedAt = null
+            console.log(`✅ [${sayId}] session.say DONE`)
+            if (currentSpeechHandle === sh) {
+              // Text buffered after this say started was never covered by it (#539 C).
+              const kept = settleAfterSay(lastInterruption)
+              if (kept) {
+                lastInterruption = kept
+                console.log(`🤐 [suppressed] KEPT ${totalChars(kept.suppressedBlocks)} chars pending after an uninterrupted say`)
+                replayTimer.arm()
+              } else clearInterruption('uninterrupted say finished')
+            }
+          }
+        })
+        console.log(`🗣️ [${sayId}] session.say queued (SpeechHandle tracked)`)
+      } else if (handle && typeof handle.then === 'function') {
+        // Promise-based fallback (older SDK path)
+        handle
+          .then(() => console.log(`✅ [${sayId}] session.say DONE`))
+          .catch((err: any) => console.error(`❌ [${sayId}] session.say FAILED:`, err?.message || err))
+      }
+    } catch (err: any) {
+      // Catch synchronous "AgentSession is not running" errors
+      console.warn(`⚠️ [${sayId}] session.say threw — session likely dead: ${err?.message}`)
+    }
+  }
+
   /**
    * Cancel every queued handle after a barge-in: LiveKit otherwise auto-starts
    * the next one over the user, who waits for the whole queue to drain.
    */
   function flushQueuedSpeech() {
+    parkUnsentSpeech()
     if (activeSpeechHandles.size === 0) return
     console.log(`🔇 Flushing ${activeSpeechHandles.size} queued speech handle(s) after barge-in`)
     for (const h of activeSpeechHandles) {
@@ -4960,6 +5101,7 @@ async function main() {
 
     const stt = createSTT(directConfig.stt as import('./voice-io.js').STTConfig)
     const tts = createTTS(directConfig.tts as import('./voice-io.js').TTSConfig)
+    currentTts = tts
 
     // Create Claude LLM wrapper — direct mode uses speech-optimized system prompt
     // skipTTSQueue: bypass LiveKit's BufferedTokenStream, use session.say() instead
@@ -5342,111 +5484,8 @@ async function main() {
         speakBuffered('ahead of a newer block')
       }
 
-      const sayId = Date.now() // simple ID to correlate start/end logs
-      markSay()
-      console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
-
-      // Apply agent-requested speed (e.g. [SPEED:0.85] stripped from response text)
-      if ((data as any).speed !== undefined) {
-        try { (tts as any).updateOptions?.({ speed: (data as any).speed }) } catch {}
-      }
-
-      try {
-        const handle = (currentSession as any).say(data.text)
-
-        if (handle && typeof handle.addDoneCallback === 'function') {
-          // SpeechHandle — track it and register interruption callback
-          currentSpeechHandle = handle
-          activeSpeechHandles.add(handle)
-          // Wall-clock timer: capture when audio actually starts playing (first frame)
-          // Used as fallback if LiveKit's playbackPosition is 0 (race condition)
-          let playbackStartedAt: number | null = null
-          const audioOutputRef = (currentSession as any)?.output?.audio
-          if (audioOutputRef && typeof audioOutputRef.on === 'function') {
-            const onPlaybackStarted = () => {
-              playbackStartedAt = Date.now()
-              console.log(`🔊 [${sayId}] audio first frame out (playbackStarted)`)
-              markAudio()
-              audioOutputRef.off('playbackStarted', onPlaybackStarted)
-              // Notify frontend that this TTS chunk is now audibly playing
-              if (data.messageId != null && data.chunkIndex != null) {
-                sendToFrontend({
-                  type: 'tts_chunk_playing',
-                  messageId: data.messageId,
-                  chunkIndex: data.chunkIndex,
-                  text: data.text,
-                })
-              }
-            }
-            audioOutputRef.on('playbackStarted', onPlaybackStarted)
-          }
-          handle.addDoneCallback((sh: any) => {
-            activeSpeechHandles.delete(sh)
-            if (sh.interrupted) {
-              console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
-              flushQueuedSpeech()
-              const audioOutput = (currentSession as any)?.output?.audio
-              const sdkTranscript = audioOutput?.lastPlaybackEvent?.synchronizedTranscript
-              const sdkPlaybackSec = audioOutput?.lastPlaybackEvent?.playbackPosition ?? 0
-
-              let spokenText: string
-              let method: string
-              const CHARS_PER_SEC = 14  // spoken-rate estimate for the two position-based branches
-
-              if (sdkTranscript) {
-                // Best case: LiveKit gave us word-accurate transcript (requires alignedTranscript TTS)
-                spokenText = sdkTranscript
-                method = 'sdk-transcript'
-              } else if (sdkPlaybackSec > 0) {
-                // Second: LiveKit gave us playback duration — estimate chars from it
-                spokenText = heardSlice(data.text, sdkPlaybackSec * CHARS_PER_SEC)
-                method = 'sdk-position'
-              } else if (playbackStartedAt !== null) {
-                // Third: use our wall-clock timer from first audio frame
-                const elapsedSec = (Date.now() - playbackStartedAt) / 1000
-                spokenText = heardSlice(data.text, elapsedSec * CHARS_PER_SEC)
-                method = 'wall-clock'
-              } else {
-                // Fallback: interrupt fired before first frame — nothing played yet: the opening word at most (#675)
-                spokenText = heardSlice(data.text, 0)
-                method = 'before-first-frame'
-              }
-
-              console.log('🔇 Interruption estimate:', JSON.stringify({
-                method,
-                sdkPlaybackSec,
-                isSynced: !!sdkTranscript,
-                syncLost: sdkTranscript ? undefined : audioOutput?.lastPlaybackEvent ? 'lastPlaybackEvent had no synchronizedTranscript (TTS gave no aligned transcript)' : 'no lastPlaybackEvent on the audio output',
-                spokenChars: spokenText.length,
-                fullChars: data.text.length,
-                heard: spokenText.slice(0, 80) + (spokenText.length > 80 ? '...' : '')
-              }))
-              handleSpeechDone(sh, spokenText, data.text, data.messageId, !sdkTranscript)
-            } else {
-              bargeInPausedAt = null
-              console.log(`✅ [${sayId}] session.say DONE`)
-              if (currentSpeechHandle === sh) {
-                // Text buffered after this say started was never covered by it (#539 C).
-                const kept = settleAfterSay(lastInterruption)
-                if (kept) {
-                  lastInterruption = kept
-                  console.log(`🤐 [suppressed] KEPT ${totalChars(kept.suppressedBlocks)} chars pending after an uninterrupted say`)
-                  replayTimer.arm()
-                } else clearInterruption('uninterrupted say finished')
-              }
-            }
-          })
-          console.log(`🗣️ [${sayId}] session.say queued (SpeechHandle tracked)`)
-        } else if (handle && typeof handle.then === 'function') {
-          // Promise-based fallback (older SDK path)
-          handle
-            .then(() => console.log(`✅ [${sayId}] session.say DONE`))
-            .catch((err: any) => console.error(`❌ [${sayId}] session.say FAILED:`, err?.message || err))
-        }
-      } catch (err: any) {
-        // Catch synchronous "AgentSession is not running" errors
-        console.warn(`⚠️ [${sayId}] session.say threw — session likely dead: ${err?.message}`)
-      }
+      sayPacer.enqueue(data)
+      pumpSay()
     })
 
     // Wire up session resume failure - notify frontend when SDK creates new session instead
