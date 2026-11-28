@@ -7,7 +7,7 @@ import './boot-secrets.js'
 
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
-import { SayPacer } from './say-pacer.js'
+import { SayPacer, CHARS_PER_SEC } from './say-pacer.js'
 import { staleIdOnConsume, isStaleBlock, heardSlice, expiredChars, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
@@ -4171,41 +4171,61 @@ async function main() {
 
   // Just-in-time speech (#694): a sentence chunk is sent to TTS only when the
   // playing one is nearly done, so a barge-in wastes at most the chunk in flight.
+  type SayItem = { text: string; messageId?: string; chunkIndex?: number; speed?: number }
   let currentTts: any = null
-  const sayPacer = new SayPacer<{ text: string; messageId?: string; chunkIndex?: number; speed?: number }>()
+  const sayPacer = new SayPacer<SayItem>()
   let sayPumpTimer: NodeJS.Timeout | null = null
   function pumpSay() {
     if (sayPumpTimer) { clearTimeout(sayPumpTimer); sayPumpTimer = null }
-    if (!currentSession) { sayPacer.clear(); return }
-    let guard = 0
-    while (sayPacer.size && guard++ < 20) {
-      if (!sayPacer.ready(Date.now(), activeSpeechHandles.size)) break
+    if (!currentSession) {
+      const lost = sayPacer.clear()
+      if (lost.length) console.warn(`⚠️ ${lost.length} queued tts_say chunk(s) dropped: currentSession is null`)
+      return
+    }
+    while (sayPacer.ready(Date.now(), activeSpeechHandles.size)) {
+      if (holdSay()) break
       const next = sayPacer.take()!
-      if (isStaleBlock(staleTurnId, next.messageId, (id) => !!currentLLM?.isRetiredTurnId(id))) {
-        console.log(`🔇 tts_say dropped (turn was interrupted): "${next.text.slice(0, 60)}"`)
-        continue
-      }
-      if (userState === 'speaking' || speechTimeline.shouldHold()) {
-        appendSuppressedText(next.text, next.messageId)
-        if (userState !== 'speaking') replayTimer.arm()
-        continue
-      }
-      issueSay(next)
+      if (!staleSay(next)) issueSay(next)
     }
     if (sayPacer.size) sayPumpTimer = setTimeout(pumpSay, 250)
   }
-  /** After a barge-in: chunks never sent to TTS are unheard text, carried to the next turn. */
+  /** A late block from a turn the user already cut off (#456): dropped, never buffered, or the 1.2s replay could still speak it. */
+  function staleSay(d: SayItem): boolean {
+    if (!isStaleBlock(staleTurnId, d.messageId, (id) => !!currentLLM?.isRetiredTurnId(id))) return false
+    console.log(`🔇 tts_say dropped (turn was interrupted): "${d.text.slice(0, 60)}"`)
+    return true
+  }
+  /**
+   * Suppress while the user is mid-utterance, so reply text generated in parallel never plays over them; it is folded
+   * into lastInterruption so the next chat() says "you wrote this but the user did not hear it". Unless
+   * OSBORN_SPEECH_TIMELINE_HOLD is off, also held when the user spoke again after this turn was committed (#581): the
+   * next chunk's turn carries it, else the replay speaks it. Unsent queued chunks go first, so order is kept (#539 B).
+   */
+  function holdSay(d?: SayItem): boolean {
+    if (userState !== 'speaking' && !speechTimeline.shouldHold()) return false
+    parkUnsentSpeech()
+    if (d) appendSuppressedText(d.text, d.messageId)
+    if (userState !== 'speaking') replayTimer.arm()
+    return true
+  }
+  /** Chunks never sent to TTS are unheard text, carried to the next turn. */
   function parkUnsentSpeech() {
     for (const d of sayPacer.clear()) appendSuppressedText(d.text, d.messageId)
   }
-  function issueSay(data: { text: string; messageId?: string; chunkIndex?: number; speed?: number }) {
+  /** Teardown (switch, join, disconnect, recovery): the old session's speech is forgotten, never carried. */
+  function dropSpeech() {
+    currentSpeechHandle = null
+    activeSpeechHandles.clear()
+    sayPacer.clear()
+  }
+  function issueSay(data: SayItem) {
     const sayId = Date.now() // simple ID to correlate start/end logs
     markSay()
     console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
 
     // Apply agent-requested speed (e.g. [SPEED:0.85] stripped from response text)
-    if ((data as any).speed !== undefined) {
-      try { (currentTts as any)?.updateOptions?.({ speed: (data as any).speed }) } catch {}
+    if (data.speed !== undefined) {
+      try { currentTts?.updateOptions?.({ speed: data.speed }) } catch {}
     }
 
     try {
@@ -4222,7 +4242,7 @@ async function main() {
         if (audioOutputRef && typeof audioOutputRef.on === 'function') {
           const onPlaybackStarted = () => {
             playbackStartedAt = Date.now()
-        sayPacer.started(Date.now(), data.text.length)
+            sayPacer.started(playbackStartedAt, data.text.length)
             console.log(`🔊 [${sayId}] audio first frame out (playbackStarted)`)
             markAudio()
             audioOutputRef.off('playbackStarted', onPlaybackStarted)
@@ -4240,7 +4260,7 @@ async function main() {
         }
         handle.addDoneCallback((sh: any) => {
           activeSpeechHandles.delete(sh)
-        if (!sh.interrupted) pumpSay()
+          if (!sh.interrupted) pumpSay()  // before the settle below: a next chunk becomes currentSpeechHandle
           if (sh.interrupted) {
             console.log(`🔇 [${sayId}] session.say INTERRUPTED`)
             flushQueuedSpeech()
@@ -4250,7 +4270,6 @@ async function main() {
 
             let spokenText: string
             let method: string
-            const CHARS_PER_SEC = 14  // spoken-rate estimate for the two position-based branches
 
             if (sdkTranscript) {
               // Best case: LiveKit gave us word-accurate transcript (requires alignedTranscript TTS)
@@ -4783,8 +4802,7 @@ async function main() {
       try { currentSession?.interrupt() } catch {}
       voiceQueue.length = 0
       isProcessingQueue = false
-      currentSpeechHandle = null
-      activeSpeechHandles.clear()
+      dropSpeech()
       clearInterruption('performSessionSwitch', true); speechTimeline.reset()
       if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
       stopProactiveLoop()
@@ -5451,23 +5469,7 @@ async function main() {
         return
       }
 
-      // A late block from a turn the user already cut off (#456): dropped, never
-      // buffered, or the 1.2s replay below could still speak it.
-      if (isStaleBlock(staleTurnId, data.messageId, (id) => directLLM.isRetiredTurnId(id))) {
-        console.log(`🔇 tts_say dropped (turn was interrupted): "${data.text.slice(0, 60)}"`)
-        return
-      }
-      // Suppress while the user is mid-utterance. Without this, agent text generated
-      // in parallel by the Claude SDK plays right over the user — same problem as
-      // pre-interrupt overlap, but at the *output* side. The suppressed text gets
-      // folded into lastInterruption so the next chat() to Claude carries it as
-      // "you wrote this but the user did not hear it — re-articulate if relevant."
-      // Unless OSBORN_SPEECH_TIMELINE_HOLD is off, also held when the user spoke again after this turn was committed (#581): the next chunk's turn carries it, else the replay speaks it.
-      if (userState === 'speaking' || speechTimeline.shouldHold()) {
-        appendSuppressedText(data.text, data.messageId)
-        if (userState !== 'speaking') replayTimer.arm()
-        return
-      }
+      if (staleSay(data) || holdSay(data)) return
 
       // CONNECT TIMING: the FIRST real spoken answer (a tts_say from Claude —
       // NOT the hardcoded "Welcome back", which is a direct session.say). Gated
@@ -5741,8 +5743,7 @@ async function main() {
     // Clean up active research and voice queue
     voiceQueue.length = 0
     isProcessingQueue = false
-    currentSpeechHandle = null
-    activeSpeechHandles.clear()
+    dropSpeech()
     clearInterruption('room-disconnect', true); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
@@ -5990,8 +5991,7 @@ async function main() {
     // Clean up any existing session before creating a new one
     voiceQueue.length = 0
     isProcessingQueue = false
-    currentSpeechHandle = null
-    activeSpeechHandles.clear()
+    dropSpeech()
     clearInterruption('room-join', true); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
@@ -6657,6 +6657,7 @@ async function main() {
           // Clear stale state from crashed session
           voiceQueue.length = 0
           isProcessingQueue = false
+          dropSpeech()  // the dead session's handles never finish; left in, they would hold the say pacer shut
           haikuInFlight = null
           if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }
           stopProactiveLoop()
@@ -6976,8 +6977,7 @@ async function main() {
     // Full cleanup — stop all background work to avoid accumulating API usage
     voiceQueue.length = 0
     isProcessingQueue = false
-    currentSpeechHandle = null
-    activeSpeechHandles.clear()
+    dropSpeech()
     clearInterruption('participant-disconnect', true); speechTimeline.reset()
 
     if (researchBatchTimer) { clearTimeout(researchBatchTimer); researchBatchTimer = null }

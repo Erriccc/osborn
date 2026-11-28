@@ -5,7 +5,7 @@
  * length), so the next starts without a gap. A barge-in then wastes at most the
  * chunk already in flight; the rest come back through `clear()` as unheard text.
  */
-export const CHARS_PER_SEC = 14
+export const CHARS_PER_SEC = 14  // spoken-rate estimate; also sizes the heard slice on a barge-in (index.ts)
 export const LEAD_MS = 1500
 
 export class SayPacer<T extends { text: string }> {
