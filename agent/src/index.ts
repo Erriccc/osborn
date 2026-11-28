@@ -8,6 +8,7 @@ import './boot-secrets.js'
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
 import { SayPacer } from './say-pacer.js'
+import { speechRecord, appendSpeechRecord, type SpeechOutcome, type SpeechParts } from './speech-record.js'
 import { staleIdOnConsume, isStaleBlock, heardSlice, expiredChars, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
@@ -4140,7 +4141,7 @@ async function main() {
     // Preserve any already-buffered suppressed blocks (the user may have started speaking
     // BEFORE the previous TTS completed, and we may have already suppressed in-flight
     // tts_say events that arrived during that overlap).
-    droppedUnspokenChars += expiredChars(lastInterruption?.suppressedBlocks ?? [], Date.now())
+    dropExpired(lastInterruption?.suppressedBlocks ?? [], Date.now())
     const carriedSuppressed = liveBlocks(lastInterruption?.suppressedBlocks ?? [], Date.now())  // original ages kept
     lastInterruption = {
       spokenText: fullText,
@@ -4166,6 +4167,7 @@ async function main() {
     const t = text.trim()
     if (!t) return
     lastInterruption = appendBlock(lastInterruption, t, messageId, Date.now())
+    recordSpeech('held', { messageId, unheard: t })
     console.log(`🤐 [suppressed] BUFFERED +${t.length} chars, total ${totalChars(lastInterruption.suppressedBlocks)} (agent: ${agentState}, user: ${userState})`)
   }
 
@@ -4181,6 +4183,7 @@ async function main() {
     if (sayPumpTimer) { clearTimeout(sayPumpTimer); sayPumpTimer = null }
     if (!currentSession) {
       const lost = sayPacer.clear()
+      for (const d of lost) recordSpeech('stale', { messageId: d.messageId, unheard: d.text })
       if (lost.length) console.warn(`⚠️ ${lost.length} queued tts_say chunk(s) dropped: currentSession is null`)
       return
     }
@@ -4193,10 +4196,18 @@ async function main() {
     }
     if (sayPacer.size && userState === 'speaking') sayPumpTimer = setTimeout(pumpSay, 250)
   }
+  /** One line per outcome in the session's speech.jsonl (#694). */
+  function recordSpeech(outcome: SpeechOutcome, p: SpeechParts) { appendSpeechRecord(currentLLM?.sessionId, currentLLM?.workingDirectory || workingDir, speechRecord(outcome, p)) }
+  /** Buffered blocks past the max age will never be spoken: counted for the next turn's note and recorded as stale. */
+  function dropExpired(blocks: SuppressedBlock[], now: number) {
+    droppedUnspokenChars += expiredChars(blocks, now)
+    for (const b of blocks) if (isExpired(b.at, now)) recordSpeech('stale', { messageId: b.turnId, unheard: b.text })
+  }
   /** A late block from a turn the user already cut off (#456): dropped, never buffered, or the 1.2s replay could still speak it. */
   function staleSay(d: SayItem): boolean {
     if (!isStaleBlock(staleTurnId, d.messageId, (id) => !!d.retired?.(id))) return false
     console.log(`🔇 tts_say dropped (turn was interrupted): "${d.text.slice(0, 60)}"`)
+    recordSpeech('stale', { messageId: d.messageId, unheard: d.text })
     return true
   }
   /**
@@ -4226,7 +4237,7 @@ async function main() {
   function dropSpeech() {
     currentSpeechHandle = null
     activeSpeechHandles.clear()
-    sayPacer.clear()
+    for (const d of sayPacer.clear()) recordSpeech('stale', { messageId: d.messageId, unheard: d.text })
     cutTurnIds.clear()
   }
   function issueSay(data: SayItem) {
@@ -4313,10 +4324,14 @@ async function main() {
               fullChars: data.text.length,
               heard: spokenText.slice(0, 80) + (spokenText.length > 80 ? '...' : '')
             }))
+            // A chunk that never reached its first frame was not heard at all: the SDK's last playback belongs to the one before it.
+            if (playbackStartedAt === null) recordSpeech('cut', { messageId: data.messageId, unheard: data.text })
+            else recordSpeech('cut', { messageId: data.messageId, heard: spokenText, unheard: data.text.startsWith(spokenText) ? data.text.slice(spokenText.length) : data.text, estimate: !sdkTranscript })
             handleSpeechDone(sh, spokenText, data.text, data.messageId, !sdkTranscript)
           } else {
             bargeInPausedAt = null
             console.log(`✅ [${sayId}] session.say DONE`)
+            recordSpeech('heard', { messageId: data.messageId, heard: data.text })
             if (currentSpeechHandle === sh) {
               // Text buffered after this say started was never covered by it (#539 C).
               const kept = settleAfterSay(lastInterruption)
@@ -4363,7 +4378,7 @@ async function main() {
     const now = Date.now()
     const { speak, keep, expired } = partitionForReplay(blocks, now, (id) => !!id && cutTurnIds.has(id) || isStaleBlock(staleTurnId, id, (t) => !!currentLLM?.isRetiredTurnId(t)))
     lastInterruption = rest && { ...rest, suppressedBlocks: keep }
-    droppedUnspokenChars += expiredChars(blocks, now)
+    dropExpired(blocks, now)
     if (expired) console.log(`🤐 [suppressed] REPLAY EXPIRED ${expired} block(s) older than 60s`)
     if (keep.length) console.log(`🔇 [suppressed] REPLAY DROPPED ${keep.length} block(s), ${totalChars(keep)} chars (their turn was interrupted)`)
     if (!speak.length) return
@@ -4381,9 +4396,10 @@ async function main() {
           if (sh?.interrupted) {
             flushQueuedSpeech()  // a newer block queued behind it must not start over the user
             // Cut off before it was heard (the user's own turn committed): back into the buffer so the next prompt carries it, as when it was first suppressed.
+            for (const b of speak) recordSpeech('cut', { messageId: b.turnId, unheard: b.text })
             lastInterruption = putBack(lastInterruption, speak, Date.now())
             console.log(`🤐 [suppressed] REPLAY CUT OFF, ${text.length} chars back in the buffer`)
-          } else pumpSay()  // a chunk queued behind the replay goes now
+          } else { for (const b of speak) recordSpeech('heard', { messageId: b.turnId, heard: b.text }); pumpSay() }  // a chunk queued behind the replay goes now
           replayTimer.arm()
         })
       }
@@ -4408,7 +4424,7 @@ async function main() {
       const d = expireDecision(lastInterruption, Date.now())
       if (d === 'clear') clearInterruption('expired 60s')
       else if (d === 'drop-blocks') {
-        droppedUnspokenChars += totalChars(lastInterruption.suppressedBlocks)
+        dropExpired(lastInterruption.suppressedBlocks, Date.now())  // every block is past the max age here
         console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (expired 60s, heard context kept)`)
         lastInterruption = { ...lastInterruption, suppressedBlocks: [] }
       }
@@ -4418,8 +4434,11 @@ async function main() {
 
   /** Clear lastInterruption, logging any suppressed reply text that was never spoken (#539 diagnostics). */
   function clearInterruption(why: string, reset = false) {
-    if (reset) { droppedUnspokenChars = 0; bargeInPausedAt = null }
-    else if (lastInterruption?.suppressedBlocks.length) droppedUnspokenChars += expiredChars(lastInterruption.suppressedBlocks, Date.now())
+    if (reset) {
+      for (const b of lastInterruption?.suppressedBlocks ?? []) recordSpeech('stale', { messageId: b.turnId, unheard: b.text })
+      droppedUnspokenChars = 0; bargeInPausedAt = null
+    }
+    else if (lastInterruption?.suppressedBlocks.length) dropExpired(lastInterruption.suppressedBlocks, Date.now())
     if (lastInterruption?.suppressedBlocks.length) console.warn(`🤐 [suppressed] DISCARDED ${totalChars(lastInterruption.suppressedBlocks)} chars unspoken (${why}, agent: ${agentState}, user: ${userState})`)
     lastInterruption = null
   }
@@ -4452,7 +4471,7 @@ async function main() {
       clearInterruption('expired 60s')
       return null
     }
-    droppedUnspokenChars += expiredChars(lastInterruption.suppressedBlocks, now)
+    dropExpired(lastInterruption.suppressedBlocks, now)
     const ctx = {
       spokenText: heard ? lastInterruption.spokenText : '',
       recentMessages: heard ? lastInterruption.recentMessages : '',

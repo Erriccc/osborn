@@ -1,6 +1,6 @@
 /**
  * jsonl-sidecar.ts — append-only JSONL sidecars beside session.db
- * (compactions.jsonl, steward.jsonl, loops.jsonl).
+ * (compactions.jsonl, steward.jsonl, loops.jsonl, speech.jsonl).
  *
  * A crash can leave a torn final line with no trailing newline. Reads skip any
  * line that does not parse. Appends check the last byte first and start a fresh

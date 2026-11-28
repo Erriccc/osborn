@@ -105,7 +105,7 @@ export function getStorePath(sessionId: string, workingDir: string): string {
   return join(getOsbDir(sessionId, workingDir), 'session.db')
 }
 
-/** A sidecar file beside session.db (compactions.jsonl, steward.jsonl, loops.jsonl). */
+/** A sidecar file beside session.db (compactions.jsonl, steward.jsonl, loops.jsonl, speech.jsonl). */
 export function getSidecarPath(sessionId: string, workingDir: string, name: string): string {
   return join(getOsbDir(sessionId, workingDir), name)
 }
