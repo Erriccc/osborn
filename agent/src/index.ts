@@ -64,7 +64,7 @@ import { makeOfferer } from './loops-offer.js'
 import { decideNextSession, planSwitch, resolveSessionCwd, keepNonConversationItems, recoverySessionId as pickRecoverySessionId, warmParkKey, sessionMessagesDir, createSwitchGuard, scanSlugCwd, connectWorkingDir } from './session-switch.js'
 import { createSmitheryProxy, destroySmitheryProxy, parseSmitheryUrl, isSmitheryUrl, SmitheryAuthorizationError } from './smithery-proxy.js'
 import { DIRECT_MODE_PROMPT, PHONE_PERMISSION_DENIED, getSpokeReport, getUndeliveredNote, getNoiseCancelNote, getDroppedUnspokenNote } from './prompts.js'
-import { MCP_CATALOG, readApprovalMode, readPublicSince, writeApprovalMode, writeProjectMode } from './config.js'
+import { MCP_CATALOG, readApprovalMode, projectModeOf, writeApprovalMode, writeProjectMode } from './config.js'
 import { launchLibraryOnSessionEnd, launchLibrarySweep, librarySweepHealth, setLibraryLiveSessions, isContentLensEnabled, launchLoopsFlush, flushLastSessionThenExit } from './content/lens-launch.js'
 import { hasContentModelKey } from './content/content-llm.js'
 import { resolveIngestConfig } from './content/lens-ingest.js'
@@ -4706,6 +4706,8 @@ async function main() {
       const told = await sendToFrontend({ ...switched, summary, conversationHistory })
         || await sendToFrontend(switched)
       if (!told) console.warn(`⚠️ Switch to ${target.slice(0, 8)}: the UI was not told (no room or publish failed)`)
+      // The privacy chip shows the mode of the project the chat is now in.
+      await sendToFrontend({ type: 'project_mode', mode: projectModeOf(cwd) })
       const switchArtifacts = listWorkspaceArtifacts(cwd, target)
       if (switchArtifacts.length > 0) {
         await sendToFrontend({
@@ -6770,7 +6772,7 @@ async function main() {
           ...describeRoles(),
           keepWorking: true,
           approvalMode,
-          projectMode: readPublicSince(workingDir) ? 'public' : 'incognito',
+          projectMode: projectModeOf(workingDir),
         })
       }
       const readyInterval = setInterval(sendReady, 2000)
@@ -7049,7 +7051,7 @@ async function main() {
         }
         // A refused mode change: that tab's picker shows the mode that is really on.
         if (data.type === 'set_project_mode' && participant?.identity) {
-          await sendToFrontend({ type: 'project_mode', mode: readPublicSince(workingDir) ? 'public' : 'incognito', error: 'Another device controls this session' }, participant.identity)
+          await sendToFrontend({ type: 'project_mode', mode: projectModeOf(workingDir), error: 'Another device controls this session' }, participant.identity)
         }
         if (data.type === 'set_approval_mode' && participant?.identity) {
           await sendToFrontend({ type: 'approval_mode', mode: approvalMode, error: 'Another device controls this session' }, participant.identity)
@@ -7142,15 +7144,13 @@ async function main() {
         sendToFrontend({ type: 'approval_mode', mode: approvalMode })
       } else if (data.type === 'set_project_mode') {
         // The project's privacy picker (#688, #663). Saved per project folder; echoed so every client shows it.
+        let error: string | undefined
         if (data.mode === 'incognito' || data.mode === 'public') {
           const saved = writeProjectMode(workingDir, data.mode)
           console.log(`🕶️ Project mode: ${data.mode}${saved ? '' : ' (not saved: config.yaml unreadable)'}`)
-          if (!saved) {
-            sendToFrontend({ type: 'project_mode', mode: readPublicSince(workingDir) ? 'public' : 'incognito', error: 'config.yaml could not be written' })
-            return
-          }
+          if (!saved) error = 'config.yaml could not be written'
         }
-        sendToFrontend({ type: 'project_mode', mode: readPublicSince(workingDir) ? 'public' : 'incognito' })
+        sendToFrontend({ type: 'project_mode', mode: projectModeOf(workingDir), error })
       } else if (data.type === 'favorite_changed') {
         // L2b (UI#21): a favorite is a UI action, not something the user said.
         // Queue it as hidden context for the next real user turn; no reply, no

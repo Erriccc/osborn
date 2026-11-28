@@ -75,6 +75,11 @@ export function readPublicSince(cwd: string, file = CONFIG_FILE): string | undef
   }
 }
 
+/** The project's privacy mode as the picker shows it (#688): public only when `readPublicSince` says so. */
+export function projectModeOf(cwd: string, file = CONFIG_FILE): 'incognito' | 'public' {
+  return readPublicSince(cwd, file) ? 'public' : 'incognito'
+}
+
 /** The saved cross-project recall opt-in (config.yaml `crossProjectRecall`); false when unset or unreadable. */
 export function readCrossProjectRecall(file = CONFIG_FILE): boolean {
   try {
