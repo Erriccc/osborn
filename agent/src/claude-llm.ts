@@ -3018,7 +3018,7 @@ class ClaudeLLMStream extends llm.LLMStream {
                   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' }, reason: gate.message }
                 }
                 if (gate.decision === 'advise') stewardNote = gate.message ?? null
-                // Filing an issue or creating a repo (#651): incognito keeps the handoff local; public asks the user.
+                // An issue, PR, push or new repo (#651, #689): incognito keeps the work local; public asks the user.
                 const filing = issueGate(String(toolInput.command || ''), this.#opts.workingDirectory || process.cwd())
                 if (filing.decision === 'deny') {
                   this.#eventEmitter.emit('tool_blocked', { name: toolName, reason: filing.message, agent: agentType ?? 'main' })

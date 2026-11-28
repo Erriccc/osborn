@@ -1,8 +1,7 @@
-// Issue-filing gate (#651, privacy mode #663; `git push` and `gh pr create` since #689). The agent may file a handoff issue with
-// `gh issue create` only in a project switched to public mode, only on the repo named by
-// the project's own github.com origin, and only through the approval mode (the dialog unless the
-// user chose Allow all). Incognito (the default) keeps the handoff local: no issue is filed,
-// nothing is pushed and no PR is opened; a public project's push or PR goes through the approval mode.
+// GitHub write gate (#651, privacy mode #663, push and PR #689). In a project switched to public
+// mode the agent may run `gh issue create` and `gh pr create` (on the repo of the project's own
+// github.com origin only) and `git push`, each through the approval mode (the dialog unless the user
+// chose Allow all). Incognito (the default) keeps the work local: nothing is filed, pushed or opened.
 // `gh repo create` asks (private) or is refused (public): a new project never gets a public
 // repo by default. Like the steward gate it guides the agent and is not a sandbox (`gh api`,
 // `GH_REPO=` are not parsed).
@@ -27,7 +26,7 @@ function repoArg(args: string[]): string | undefined {
   return undefined
 }
 
-/** Rule on every `gh issue create` and `gh repo create` in a Bash command; the strictest answer wins. */
+/** Rule on every `gh issue|pr|repo create` and `git push` in a Bash command; the strictest answer wins. */
 export function issueGate(cmd: string, cwd: string, deps: IssueGateDeps = {}): IssueGateResult {
   let result: IssueGateResult = { decision: 'allow' }
   for (const hit of gitActions(cmd, cwd)) {

@@ -14,7 +14,7 @@ const run = promisify(execFile)
 
 export type StewardMode = 'advise' | 'block' | 'off'
 export type GitAction = 'commit' | 'push' | 'pr'
-/** `gh issue create` / `gh repo create`: not steward-checked; issue-gate.ts rules on them (#651). push and pr are ruled on there too (#689). */
+/** `gh issue create` / `gh repo create`: not steward-checked; issue-gate.ts rules on them, and on push and pr (#651, #689). */
 export type GhAction = 'issue' | 'repo'
 
 export const MARKER_FILE = 'osborn-steward'
@@ -148,7 +148,7 @@ function scan(cmd: string, cwd: string | null): { hits: Hit[]; dir: string | nul
       else if (w[i] === '-c' || w[i] === '--git-dir' || w[i] === '--work-tree' || w[i] === '--namespace') i += 2
       else i += 1
     }
-    if (w[i] === 'commit' || w[i] === 'push') hits.push({ action: w[i] as GitAction, dir: gdir, args: w.slice(i + 1) })
+    if (w[i] === 'commit' || w[i] === 'push') hits.push({ action: w[i] as GitAction, dir: gdir })
   }
   for (let k = 0; k < cmd.length; k++) {
     const c = cmd[k]
