@@ -410,6 +410,14 @@ export function staleWork(records: LoopRecord[], now: number, opts: { sinceMs?: 
   return out
 }
 
+/** Work opened by an earlier agent process (before `sinceMs`) that never returned a result: its worker died with the restart. Oldest first, bounded. */
+export function interruptedWork(records: LoopRecord[], sinceMs: number, max = 3): LoopItem[] {
+  return [...foldLoops(records).values()]
+    .filter((i) => i.fg && i.open && i.state === 'opened' && Date.parse(i.at) < sinceMs)
+    .sort((a, b) => a.at.localeCompare(b.at))
+    .slice(0, max)
+}
+
 /** Work rows whose result exists but was never delivered, oldest first, bounded: what to surface at the next idle moment. */
 export function pendingDeliveries(records: LoopRecord[], now: number, opts: { max?: number; ttlMs?: number; sinceMs?: number; spoken?: SpokenLine[] } = {}): LoopItem[] {
   const ttl = opts.ttlMs ?? WORK_TTL_MS

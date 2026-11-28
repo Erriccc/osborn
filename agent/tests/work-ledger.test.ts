@@ -12,7 +12,7 @@ process.env.OSBORN_WORK_LEDGER = 'on'
 const cwd = join(home, 'proj')
 mkdirSync(cwd, { recursive: true })
 const L = await import('../src/loops-ledger.js')
-const { getUndeliveredNote } = await import('../src/prompts.js')
+const { getUndeliveredNote, getInterruptedWorkNote } = await import('../src/prompts.js')
 const { createClaudeLLM } = await import('../src/claude-llm.js')
 const { createPipelineDirectLLM } = await import('../src/pipeline-direct-llm.js')
 type R = import('../src/loops-ledger.js').LoopRecord
@@ -300,6 +300,16 @@ t('stale/redundant rows produce zero notices; unsurfaced moved-on rows stay pend
   const dead = L.staleWork(rs, NOW, { spoken })
   assert.equal(dead.length, 20)
   assert.deepEqual(pend(rs, spoken).sort(), [wid(30), wid(31), wid(32)].sort())
+})
+
+t('interruptedWork: only rows opened before this process with no result; closes as dropped', () => {
+  const later = T0 + 3_600_000
+  assert.deepEqual(L.interruptedWork([opened], later).map((i) => i.id), [id])
+  assert.equal(L.interruptedWork([opened], T0).length, 0)  // opened by this process
+  assert.equal(L.interruptedWork([opened, result], later).length, 0)  // has a result: pendingDeliveries owns it
+  assert.equal(L.interruptedWork([opened, rec(5, { kind: 'work_dropped', id, reason: 'interrupted' })], later).length, 0)
+  const note = getInterruptedWorkNote([{ text: 'writer: fix login', owner: 'local:writer' }])
+  assert.ok(note.includes('writer: fix login') && note.includes('interrupted'))
 })
 
 rmSync(home, { recursive: true, force: true })
