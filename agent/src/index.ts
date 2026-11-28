@@ -8,6 +8,7 @@ import './boot-secrets.js'
 import { voice, initializeLogger, type Agent } from '@livekit/agents'
 import { CloudTurnDetector } from './turn-detector-shim.js'
 import { SayPacer } from './say-pacer.js'
+import { speechRecord, appendSpeechRecord, type SpeechOutcome } from './speech-record.js'
 import { staleIdOnConsume, isStaleBlock, heardSlice, expiredChars, isExpired, ReplayScheduler, takePending, putBack, settleAfterSay, expireDecision, appendBlock, partitionForReplay, liveBlocks, joinBlocks, totalChars, type SuppressedBlock } from './stale-turn.js'
 import {
   Room, RoomEvent, RemoteParticipant, LocalParticipant, DisconnectReason, ParticipantKind,
@@ -4166,6 +4167,7 @@ async function main() {
     const t = text.trim()
     if (!t) return
     lastInterruption = appendBlock(lastInterruption, t, messageId, Date.now())
+    recordSpeech('held', { messageId, unheard: t })
     console.log(`🤐 [suppressed] BUFFERED +${t.length} chars, total ${totalChars(lastInterruption.suppressedBlocks)} (agent: ${agentState}, user: ${userState})`)
   }
 
@@ -4193,10 +4195,18 @@ async function main() {
     }
     if (sayPacer.size && userState === 'speaking') sayPumpTimer = setTimeout(pumpSay, 250)
   }
+  /** One line per outcome in the session's speech.jsonl (#694); a failed write never touches speech. */
+  function recordSpeech(outcome: SpeechOutcome, p: { messageId?: string; heard?: string; unheard?: string; estimate?: boolean }) {
+    try {
+      const sid = currentLLM?.sessionId
+      if (sid) appendSpeechRecord(sid, workingDir, speechRecord(outcome, p))
+    } catch (e) { console.warn('speech record persist failed:', e instanceof Error ? e.message : e) }
+  }
   /** A late block from a turn the user already cut off (#456): dropped, never buffered, or the 1.2s replay could still speak it. */
   function staleSay(d: SayItem): boolean {
     if (!isStaleBlock(staleTurnId, d.messageId, (id) => !!d.retired?.(id))) return false
     console.log(`🔇 tts_say dropped (turn was interrupted): "${d.text.slice(0, 60)}"`)
+    recordSpeech('stale', { messageId: d.messageId, unheard: d.text })
     return true
   }
   /**
@@ -4230,6 +4240,7 @@ async function main() {
     cutTurnIds.clear()
   }
   function issueSay(data: SayItem) {
+    if (userState === 'speaking') { appendSuppressedText(data.text, data.messageId); return }  // no TTS request while the user talks, whoever called
     const sayId = Date.now() // simple ID to correlate start/end logs
     markSay()
     console.log(`🗣️ [${sayId}] session.say START (${data.text.length} chars): "${data.text}"`)
@@ -4313,10 +4324,12 @@ async function main() {
               fullChars: data.text.length,
               heard: spokenText.slice(0, 80) + (spokenText.length > 80 ? '...' : '')
             }))
+            recordSpeech('cut', { messageId: data.messageId, heard: spokenText, unheard: data.text.startsWith(spokenText) ? data.text.slice(spokenText.length) : data.text, estimate: !sdkTranscript })
             handleSpeechDone(sh, spokenText, data.text, data.messageId, !sdkTranscript)
           } else {
             bargeInPausedAt = null
             console.log(`✅ [${sayId}] session.say DONE`)
+            recordSpeech('heard', { messageId: data.messageId, heard: data.text })
             if (currentSpeechHandle === sh) {
               // Text buffered after this say started was never covered by it (#539 C).
               const kept = settleAfterSay(lastInterruption)
@@ -4357,6 +4370,7 @@ async function main() {
 
   /** Speak buffered reply text (#539 A/B); tracked so 'agent speaking' sees it and a barge-in flushes it. */
   function speakBuffered(why: string) {
+    if (userState === 'speaking') return  // never start speech, or its TTS, over the user; the replay timer comes back when they are quiet
     const { blocks, rest } = takePending(lastInterruption)
     if (!blocks.length || !currentSession) return
     // Blocks of a turn the user cut off (a phone "stop that" interrupts without a new turn) are never spoken, but stay buffered so the next prompt still carries them; expired ones go.
@@ -4366,6 +4380,7 @@ async function main() {
     droppedUnspokenChars += expiredChars(blocks, now)
     if (expired) console.log(`🤐 [suppressed] REPLAY EXPIRED ${expired} block(s) older than 60s`)
     if (keep.length) console.log(`🔇 [suppressed] REPLAY DROPPED ${keep.length} block(s), ${totalChars(keep)} chars (their turn was interrupted)`)
+    for (const b of keep) recordSpeech('stale', { messageId: b.turnId, unheard: b.text })
     if (!speak.length) return
     const text = joinBlocks(speak)
     console.log(`🔁 [suppressed] REPLAY ${text.length} chars (${why})`)
