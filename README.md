@@ -28,6 +28,7 @@ It researches your code, plans, and builds — out loud. Powered by LiveKit + th
 
 - **You talk, it works.** Real-time voice (interrupt it, think out loud) instead of typing prompts.
 - **It actually reasons over your repo.** A persistent Claude Agent SDK session with researcher / reasoner / writer sub-agents — not a one-shot chat.
+- **Your commits stay yours.** Osborn runs on your machine with your git identity. Claude Code can add a `Co-Authored-By` line and a "Generated with" footer to commits and PRs; turn them off with the `attribution` setting in `.claude/settings.json` (empty `commit` and `pr` strings).
 - **Open source, self-hostable.** Run the whole stack yourself, or just talk to the hosted one.
 
 ## By the numbers
