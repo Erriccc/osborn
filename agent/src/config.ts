@@ -154,6 +154,7 @@ export function writeProjectMode(cwd: string, mode: ProjectMode, configFile = CO
   return editConfigDoc((doc) => {
     if (mode === 'public') {
       if (readPublicSince(dir, configFile)) return
+      if (!isMap(doc.get('projectModes'))) doc.set('projectModes', doc.createNode({}))
       doc.setIn(['projectModes', dir], doc.createNode({ mode: 'public', since: now.toISOString() }))
     } else if (doc.hasIn(['projectModes', dir])) {
       doc.deleteIn(['projectModes', dir])

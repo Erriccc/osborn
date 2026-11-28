@@ -8,7 +8,7 @@ export type ProjectMode = 'incognito' | 'public'
 // default) files nothing on GitHub; public lets follow-through file items recorded from now on.
 const MODES: { value: ProjectMode; label: string; hint: string }[] = [
   { value: 'incognito', label: 'Incognito', hint: 'Nothing from this project is filed on GitHub (default)' },
-  { value: 'public', label: 'Public', hint: 'Follow-through may file issues in this project’s GitHub repo, for items recorded from now on' },
+  { value: 'public', label: 'Public', hint: 'Osborn may file issues on GitHub for this project (its repo, or the configured default repo), including ones the agent opens itself; items recorded from now on' },
 ]
 
 export function PrivacyPicker({ mode, onChange }: { mode: ProjectMode; onChange: (m: ProjectMode) => void }) {
